@@ -462,6 +462,91 @@ func TestGCSRewriteResumableAndPreconditions(t *testing.T) {
 	}
 }
 
+func TestGCSRetentionPolicyAPI(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+
+	req := httptest.NewRequest(http.MethodPost, "/storage/v1/b?project="+project, strings.NewReader(`{"name":"lab-gcs-retain"}`))
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+
+	patch := httptest.NewRequest(http.MethodPatch, "/storage/v1/b/lab-gcs-retain",
+		strings.NewReader(`{"retentionPolicy":{"retentionPeriod":"3600"}}`))
+	patch.Header.Set("Authorization", auth)
+	patch.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, patch)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch retention: %d %s", rec.Code, rec.Body.String())
+	}
+	var bucket map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &bucket); err != nil {
+		t.Fatal(err)
+	}
+	rp, _ := bucket["retentionPolicy"].(map[string]any)
+	if rp["retentionPeriod"] != "3600" {
+		t.Fatalf("retentionPolicy = %#v", rp)
+	}
+
+	up := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/lab-gcs-retain/o?uploadType=media&name=held.txt", strings.NewReader("held"))
+	up.Header.Set("Authorization", auth)
+	up.Header.Set("Content-Type", "text/plain")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, up)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
+	}
+
+	del := httptest.NewRequest(http.MethodDelete, "/storage/v1/b/lab-gcs-retain/o/held.txt", nil)
+	del.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, del)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("delete while retained: %d %s", rec.Code, rec.Body.String())
+	}
+	var errBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := errBody["error"].(map[string]any); e["status"] != "FAILED_PRECONDITION" {
+		t.Fatalf("error = %#v", errBody)
+	}
+
+	over := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/lab-gcs-retain/o?uploadType=media&name=held.txt", strings.NewReader("new"))
+	over.Header.Set("Authorization", auth)
+	over.Header.Set("Content-Type", "text/plain")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, over)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("overwrite while retained: %d %s", rec.Code, rec.Body.String())
+	}
+
+	lock := httptest.NewRequest(http.MethodPatch, "/storage/v1/b/lab-gcs-retain",
+		strings.NewReader(`{"retentionPolicy":{"retentionPeriod":"3600","isLocked":true}}`))
+	lock.Header.Set("Authorization", auth)
+	lock.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, lock)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("lock: %d %s", rec.Code, rec.Body.String())
+	}
+	shorten := httptest.NewRequest(http.MethodPatch, "/storage/v1/b/lab-gcs-retain",
+		strings.NewReader(`{"retentionPolicy":{"retentionPeriod":"60"}}`))
+	shorten.Header.Set("Authorization", auth)
+	shorten.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, shorten)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("shorten locked: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestPubSubFilterSeekPushConfig(t *testing.T) {
 	srv, cfg := testServer(t)
 	auth := "Bearer " + cfg.RootAccessToken
@@ -535,6 +620,118 @@ func TestPubSubFilterSeekPushConfig(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, seek)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("seek: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPubSubOIDCPushCatcher(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+	store.ClearHTTPCatcher()
+
+	putTopic := httptest.NewRequest(http.MethodPut, "/v1/projects/"+project+"/topics/oidc-topic", strings.NewReader(`{}`))
+	putTopic.Header.Set("Authorization", auth)
+	putTopic.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, putTopic)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("topic: %d %s", rec.Code, rec.Body.String())
+	}
+
+	catcher := "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/oidc-push"
+	saEmail := "push-sa@" + project + ".iam.gserviceaccount.com"
+	audience := "https://example.com/push"
+	subBody := `{"topic":"projects/` + project + `/topics/oidc-topic","ackDeadlineSeconds":10,"pushConfig":{"pushEndpoint":"` + catcher + `","oidcToken":{"serviceAccountEmail":"` + saEmail + `","audience":"` + audience + `"}}}`
+	putSub := httptest.NewRequest(http.MethodPut, "/v1/projects/"+project+"/subscriptions/oidc-sub", strings.NewReader(subBody))
+	putSub.Header.Set("Authorization", auth)
+	putSub.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, putSub)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sub: %d %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	pc, _ := created["pushConfig"].(map[string]any)
+	oidc, _ := pc["oidcToken"].(map[string]any)
+	if pc["pushEndpoint"] != catcher || oidc["serviceAccountEmail"] != saEmail || oidc["audience"] != audience {
+		t.Fatalf("create pushConfig round-trip: %#v", created["pushConfig"])
+	}
+
+	pubBody := `{"messages":[{"data":"` + base64.StdEncoding.EncodeToString([]byte("oidc-ping")) + `"}]}`
+	pub := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/topics/oidc-topic:publish", strings.NewReader(pubBody))
+	pub.Header.Set("Authorization", auth)
+	pub.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, pub)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish: %d %s", rec.Code, rec.Body.String())
+	}
+
+	caught := store.ListHTTPCatcher()
+	if len(caught) == 0 {
+		t.Fatal("expected catcher payload after OIDC push")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(caught[len(caught)-1]), &payload); err != nil {
+		t.Fatalf("catcher json: %v body=%s", err, caught[len(caught)-1])
+	}
+	authz, _ := payload["authorization"].(string)
+	if !strings.HasPrefix(authz, "Bearer ") {
+		t.Fatalf("expected Bearer authorization in catcher, got %#v", payload["authorization"])
+	}
+	jwt := strings.TrimPrefix(authz, "Bearer ")
+	parts := strings.Split(jwt, ".")
+	if len(parts) != 3 {
+		t.Fatalf("expected JWT shape, got %q", jwt)
+	}
+	claimsRaw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("jwt payload: %v", err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(claimsRaw, &claims); err != nil {
+		t.Fatalf("claims: %v", err)
+	}
+	if claims["aud"] != audience {
+		t.Fatalf("jwt aud=%v want %s", claims["aud"], audience)
+	}
+	if claims["email"] != saEmail || claims["sub"] != saEmail {
+		t.Fatalf("jwt email/sub=%v/%v want %s", claims["email"], claims["sub"], saEmail)
+	}
+
+	modBody := `{"pushConfig":{"pushEndpoint":"` + catcher + `","oidcToken":{"serviceAccountEmail":"other@` + project + `.iam.gserviceaccount.com","audience":"https://other.example"}}}`
+	mod := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/subscriptions/oidc-sub:modifyPushConfig", strings.NewReader(modBody))
+	mod.Header.Set("Authorization", auth)
+	mod.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, mod)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("modifyPushConfig: %d %s", rec.Code, rec.Body.String())
+	}
+	var modded map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &modded)
+	mpc, _ := modded["pushConfig"].(map[string]any)
+	moidc, _ := mpc["oidcToken"].(map[string]any)
+	if moidc["serviceAccountEmail"] != "other@"+project+".iam.gserviceaccount.com" || moidc["audience"] != "https://other.example" {
+		t.Fatalf("modifyPushConfig oidc round-trip: %#v", modded["pushConfig"])
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/subscriptions/oidc-sub", nil)
+	get.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, get)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get: %d %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	gpc, _ := got["pushConfig"].(map[string]any)
+	goidc, _ := gpc["oidcToken"].(map[string]any)
+	if goidc["audience"] != "https://other.example" {
+		t.Fatalf("get oidcToken stripped or wrong: %#v", got["pushConfig"])
 	}
 }
 

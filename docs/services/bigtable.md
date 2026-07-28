@@ -1,12 +1,14 @@
 # Cloud Bigtable
 
-Lab Bigtable Admin API v2 for instances and tables. Control-plane theatre only:
+Lab Bigtable Admin for instances and tables. Control-plane theatre only:
 no Bigtable server binary, and no row mutate/read path.
 
 ## Status
 
-**lab** — instance and table CRUD; optional cluster metadata stored on create;
-create returns the resource in `READY` (no LRO).
+**lab** — instance and table CRUD (REST); Instance Admin gRPC lite for
+Create/Get/List/Delete instance; optional cluster metadata stored on create;
+REST create returns the resource in `READY` (no LRO). gRPC CreateInstance
+returns a done Operation with the Instance in `response` (no Operations.get).
 
 ## Wire protocol
 
@@ -25,6 +27,10 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 
 Uses `/v2/...` so it does not collide with Spanner Admin `/v1/.../instances`.
 
+gRPC on the same listener (gRPC-over-HTTP/2):
+`google.bigtable.admin.v2.BigtableInstanceAdmin` —
+`CreateInstance`, `GetInstance`, `ListInstances`, `DeleteInstance`.
+
 ## Authz
 
 Checked on `projects/{project}`:
@@ -38,17 +44,20 @@ Seeded Service Usage: `bigtableadmin.googleapis.com`.
 
 - Control-plane only; no data plane (no ReadRows / MutateRows)
 - Cluster map is stored on create as JSON metadata but omitted from get/list responses; no real cluster capacity
-- Create is synchronous (resource returned ready; no long-running Operation)
+- REST create is synchronous (resource returned ready; no long-running Operation)
+- gRPC CreateInstance returns a done Operation immediately; there is no
+  Operations service to poll. Table Admin gRPC, app profiles, clusters CRUD,
+  and backups are not implemented.
 
 ## Deferred depth
 
 - Cluster CRUD endpoints, backups, app profiles
-- Data API / official gRPC Bigtable surface
+- Table Admin gRPC and data API / Bigtable data-plane gRPC
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/bigtable/ ./internal/server/ -run Bigtable -count=1
+go test ./internal/services/bigtable/ ./internal/server/ -run 'Bigtable|BT' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/instances" \
@@ -60,7 +69,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```bash
 gcloud config set api_endpoint_overrides/bigtableadmin http://127.0.0.1:4588/
-# No Terraform stack: hashicorp/google google_bigtable_* uses gRPC
-# InstanceAdminClient; lab exposes REST Admin /v2/ only. bigtable_custom_endpoint
-# alone is not enough for apply against this lab.
+# Instance Admin gRPC lite is registered for Create/Get/List/Delete instance.
+# Terraform google_bigtable_* may still need Table Admin / app profiles /
+# cluster APIs that are not implemented; no dedicated TF stack yet.
 ```

@@ -11,6 +11,7 @@ Noctaxris-GCP (`127.0.0.1:4588` by default).
 | Area | Methods |
 |------|---------|
 | Buckets | `POST /storage/v1/b?project=`, `GET /storage/v1/b/{bucket}`, `GET /storage/v1/b?project=`, `PATCH /storage/v1/b/{bucket}`, `DELETE /storage/v1/b/{bucket}` |
+| Retention | Bucket `retentionPolicy` (`retentionPeriod`, `isLocked`, `effectiveTime`); delete/overwrite fail closed while object age < period |
 | Bucket IAM | `GET` / `PUT /storage/v1/b/{bucket}/iam`, `GET .../iam/testPermissions` |
 | Objects | `GET` / `PATCH` / `DELETE /storage/v1/b/{bucket}/o/{object}`, `GET /storage/v1/b/{bucket}/o` |
 | List | `prefix` and `delimiter` (common prefixes / directory theatre) |
@@ -57,7 +58,8 @@ returned by `:generateSignedUrl`.
 ## Emulator limits
 
 - No object ACLs or object-level IAM documents (skipped; use bucket IAM)
-- Soft delete, retention, and lifecycle are not enforced
+- Soft delete and lifecycle are not enforced
+- Bucket retention is lab-lite: `retentionPeriod` is a minimum object age before delete or overwrite of the same name; locked policies reject shortening or clearing; no event-based hold, temporary hold, or per-object retention
 - Multipart upload supports metadata JSON + media parts only
 - Resumable uploads are single-chunk lab complete (no multi-chunk / status resume)
 - Max upload body size in this lab: 64 MiB per request
@@ -107,12 +109,12 @@ SIGNED=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: applicatio
 curl -sS "$SIGNED"
 ```
 
-Also: `go test ./internal/store/ ./internal/server/ -run 'TestGCS|Signed' -count=1`
+Also: `go test ./internal/store/ ./internal/server/ -run 'TestGCS|Signed|Retention' -count=1`
 
 ## Deferred depth
 
 - RSA (GOOG4-RSA-SHA256) signed URLs via IAM signBlob
 - Multi-chunk resumable resume / status queries
 - User-managed HMAC key CRUD
-- Autoclass, soft delete / retention enforcement
+- Autoclass, soft delete, event-based / temporary hold, per-object retention
 - Object-level IAM and uniform bucket-level access edge cases

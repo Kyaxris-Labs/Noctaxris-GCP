@@ -56,6 +56,11 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /compute/v1/projects/{project}/global/firewalls/{firewall}", s.wrap(principalFrom, s.getFirewallOrValidate))
 	mux.HandleFunc("DELETE /compute/v1/projects/{project}/global/firewalls/{firewall}", s.wrap(principalFrom, s.deleteFirewall))
 	mux.HandleFunc("PATCH /compute/v1/projects/{project}/global/firewalls/{firewall}", s.wrap(principalFrom, s.patchFirewall))
+
+	// Global images (fixed theatre catalog for Terraform ResolveImage)
+	mux.HandleFunc("GET /compute/v1/projects/{project}/global/images", s.wrap(principalFrom, s.listImages))
+	mux.HandleFunc("GET /compute/v1/projects/{project}/global/images/family/{family}", s.wrap(principalFrom, s.getImageFromFamily))
+	mux.HandleFunc("GET /compute/v1/projects/{project}/global/images/{image}", s.wrap(principalFrom, s.getImage))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -997,6 +1002,105 @@ func toFirewallJSON(fw store.GCEFirewall) map[string]any {
 	out["selfLink"] = selfLink("projects", fw.ProjectID, "global", "firewalls", fw.FirewallID)
 	out["creationTimestamp"] = fw.CreatedAt
 	return out
+}
+
+// --- Images (fixed theatre catalog) ---
+
+// labImage is a canned Compute Image for ResolveImage / family lookups.
+type labImage struct {
+	Name        string
+	Family      string
+	Description string
+	DiskSizeGb  string
+}
+
+// theatreImages is the fixed set served for any project path (including
+// debian-cloud / ubuntu-os-cloud / cos-cloud style project IDs).
+var theatreImages = []labImage{
+	{Name: "debian-12-bookworm-v20240701", Family: "debian-12", Description: "lab Debian 12", DiskSizeGb: "10"},
+	{Name: "ubuntu-2204-jammy-v20240701", Family: "ubuntu-2204-lts", Description: "lab Ubuntu 22.04 LTS", DiskSizeGb: "10"},
+	{Name: "cos-stable-117-18613-0-0", Family: "cos-stable", Description: "lab Container-Optimized OS", DiskSizeGb: "10"},
+}
+
+func (s *Service) listImages(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "compute.images.list", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(theatreImages))
+	for _, img := range theatreImages {
+		items = append(items, toImageJSON(project, img))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":     "compute#imageList",
+		"id":       "projects/" + project + "/global/images",
+		"items":    items,
+		"selfLink": selfLink("projects", project, "global", "images"),
+	})
+}
+
+func (s *Service) getImage(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	name := r.PathValue("image")
+	if err := s.require(p, "compute.images.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	img, ok := findTheatreImageByName(name)
+	if !ok {
+		gcperrors.NotFound(w, "Image not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, toImageJSON(project, img))
+}
+
+func (s *Service) getImageFromFamily(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	family := r.PathValue("family")
+	if err := s.require(p, "compute.images.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	img, ok := findTheatreImageByFamily(family)
+	if !ok {
+		gcperrors.NotFound(w, "Image not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, toImageJSON(project, img))
+}
+
+func findTheatreImageByName(name string) (labImage, bool) {
+	for _, img := range theatreImages {
+		if img.Name == name || img.Family == name {
+			return img, true
+		}
+	}
+	return labImage{}, false
+}
+
+func findTheatreImageByFamily(family string) (labImage, bool) {
+	for _, img := range theatreImages {
+		if img.Family == family {
+			return img, true
+		}
+	}
+	return labImage{}, false
+}
+
+func toImageJSON(project string, img labImage) map[string]any {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return map[string]any{
+		"kind":              "compute#image",
+		"id":                store.NewGCEResourceID(),
+		"creationTimestamp": now,
+		"name":              img.Name,
+		"description":       img.Description,
+		"family":            img.Family,
+		"status":            "READY",
+		"diskSizeGb":        img.DiskSizeGb,
+		"selfLink":          selfLink("projects", project, "global", "images", img.Name),
+	}
 }
 
 // normalizeInstanceMetadata accepts either a string map or Compute items[] form

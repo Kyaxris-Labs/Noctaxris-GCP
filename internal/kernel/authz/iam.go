@@ -188,6 +188,8 @@ func roleGrants(role, permission string) bool {
 	case "roles/iam.serviceAccountAdmin":
 		return strings.HasPrefix(permission, "iam.serviceAccounts.") ||
 			strings.HasPrefix(permission, "iam.serviceAccountKeys.")
+	case "roles/iam.serviceAccountTokenCreator":
+		return tokenCreatorGrants(permission)
 	case "roles/serviceusage.serviceUsageAdmin":
 		return strings.HasPrefix(permission, "serviceusage.")
 	default:
@@ -200,6 +202,22 @@ func roleGrants(role, permission string) bool {
 				return strings.HasPrefix(permission, svc+".")
 			}
 		}
+		return false
+	}
+}
+
+// tokenCreatorGrants mirrors roles/iam.serviceAccountTokenCreator (impersonation).
+func tokenCreatorGrants(permission string) bool {
+	switch permission {
+	case "iam.serviceAccounts.getAccessToken",
+		"iam.serviceAccounts.actAs",
+		"iam.serviceAccounts.signBlob",
+		"iam.serviceAccounts.signJwt",
+		"iam.serviceAccounts.implicitDelegation",
+		"iam.serviceAccounts.generateAccessToken",
+		"iam.serviceAccounts.generateIdToken":
+		return true
+	default:
 		return false
 	}
 }

@@ -82,6 +82,194 @@ func TestIAMWIFAndGenerateAccessToken(t *testing.T) {
 	}
 }
 
+func TestTokenCreatorGenerateAccessToken(t *testing.T) {
+	srv, cfg := testServer(t)
+	rootAuth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+
+	caller := createLabServiceAccount(t, srv, cfg, "tok-caller", "Token Caller")
+	target := createLabServiceAccount(t, srv, cfg, "tok-target", "Token Target")
+	callerBearer := mintLabSABearer(t, srv, cfg, caller)
+
+	scopeBody := []byte(`{"scope":["https://www.googleapis.com/auth/cloud-platform"],"lifetime":"600s"}`)
+	denyReq := httptest.NewRequest(http.MethodPost,
+		"/v1/projects/"+project+"/serviceAccounts/"+target+":generateAccessToken", bytes.NewReader(scopeBody))
+	denyReq.Header.Set("Authorization", "Bearer "+callerBearer)
+	denyReq.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, denyReq)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("without TokenCreator expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var denyBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &denyBody); err != nil {
+		t.Fatal(err)
+	}
+	errObj, _ := denyBody["error"].(map[string]any)
+	if errObj["status"] != "PERMISSION_DENIED" {
+		t.Fatalf("deny error = %#v", errObj)
+	}
+
+	pol := `{"policy":{"bindings":[{"role":"roles/iam.serviceAccountTokenCreator","members":["serviceAccount:` + caller + `"]}],"etag":"tc1"}}`
+	setReq := httptest.NewRequest(http.MethodPost,
+		"/v1/projects/"+project+"/serviceAccounts/"+target+":setIamPolicy", strings.NewReader(pol))
+	setReq.Header.Set("Authorization", rootAuth)
+	setReq.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, setReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setIamPolicy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	allowReq := httptest.NewRequest(http.MethodPost,
+		"/v1/projects/-/serviceAccounts/"+target+":generateAccessToken", bytes.NewReader(scopeBody))
+	allowReq.Header.Set("Authorization", "Bearer "+callerBearer)
+	allowReq.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, allowReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("with TokenCreator generateAccessToken status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var tokResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &tokResp); err != nil {
+		t.Fatal(err)
+	}
+	if tok, _ := tokResp["accessToken"].(string); tok == "" {
+		t.Fatalf("token resp = %#v", tokResp)
+	}
+}
+
+func TestSTSTokenExchangeWIF(t *testing.T) {
+	srv, cfg := testServer(t)
+	rootAuth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+	providerName := "projects/" + project + "/locations/global/workloadIdentityPools/sts-pool/providers/oidc"
+
+	createPool := httptest.NewRequest(http.MethodPost,
+		"/v1/projects/"+project+"/locations/global/workloadIdentityPools?workloadIdentityPoolId=sts-pool",
+		strings.NewReader(`{"displayName":"STS Pool"}`))
+	createPool.Header.Set("Authorization", rootAuth)
+	createPool.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, createPool)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create pool status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	createProv := httptest.NewRequest(http.MethodPost,
+		"/v1/projects/"+project+"/locations/global/workloadIdentityPools/sts-pool/providers?workloadIdentityPoolProviderId=oidc",
+		strings.NewReader(`{"displayName":"OIDC","oidc":{"issuerUri":"https://example.com"}}`))
+	createProv.Header.Set("Authorization", rootAuth)
+	createProv.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, createProv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create provider status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Missing audience / subject_token fail closed.
+	for _, body := range []string{
+		`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token=lab-sub`,
+		`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&audience=` + url.QueryEscape(providerName),
+	} {
+		bad := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+		bad.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec = httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, bad)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("missing field expected 400, got %d body=%s for %q", rec.Code, rec.Body.String(), body)
+		}
+	}
+
+	// Unknown provider.
+	unknown := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(
+		"grant_type="+url.QueryEscape("urn:ietf:params:oauth:grant-type:token-exchange")+
+			"&audience="+url.QueryEscape("projects/"+project+"/locations/global/workloadIdentityPools/sts-pool/providers/missing")+
+			"&subject_token=lab-sub"))
+	unknown.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, unknown)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown provider expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Disabled provider.
+	createDisabled := httptest.NewRequest(http.MethodPost,
+		"/v1/projects/"+project+"/locations/global/workloadIdentityPools/sts-pool/providers?workloadIdentityPoolProviderId=disabled",
+		strings.NewReader(`{"displayName":"Disabled","disabled":true,"oidc":{"issuerUri":"https://example.com"}}`))
+	createDisabled.Header.Set("Authorization", rootAuth)
+	createDisabled.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, createDisabled)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create disabled provider status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	disabledAud := "projects/" + project + "/locations/global/workloadIdentityPools/sts-pool/providers/disabled"
+	disReq := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(
+		"grant_type="+url.QueryEscape("urn:ietf:params:oauth:grant-type:token-exchange")+
+			"&audience="+url.QueryEscape("//iam.googleapis.com/"+disabledAud)+
+			"&subject_token=lab-sub"))
+	disReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, disReq)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled provider expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Happy path: form exchange with //iam.googleapis.com/ audience prefix.
+	exch := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(
+		"grant_type="+url.QueryEscape("urn:ietf:params:oauth:grant-type:token-exchange")+
+			"&audience="+url.QueryEscape("//iam.googleapis.com/"+providerName)+
+			"&subject_token=lab-sub"+
+			"&subject_token_type="+url.QueryEscape("urn:ietf:params:oauth:token-type:jwt")))
+	exch.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, exch)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("STS exchange status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var stsResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &stsResp); err != nil {
+		t.Fatal(err)
+	}
+	accessToken, _ := stsResp["access_token"].(string)
+	if accessToken == "" || stsResp["token_type"] != "Bearer" {
+		t.Fatalf("sts resp = %#v", stsResp)
+	}
+
+	// Without project binding: authenticated but denied.
+	getDenied := httptest.NewRequest(http.MethodGet, "/v3/projects/"+project, nil)
+	getDenied.Header.Set("Authorization", "Bearer "+accessToken)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, getDenied)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("WIF bearer unauthenticated: %s", rec.Body.String())
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("WIF without binding expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Bind viewer for wif:{providerId}:{subject} and retry.
+	wifMember := "wif:oidc:lab-sub"
+	pol := `{"policy":{"bindings":[{"role":"roles/viewer","members":["` + wifMember + `"]}],"etag":"wif1"}}`
+	setPol := httptest.NewRequest(http.MethodPost, "/v3/projects/"+project+":setIamPolicy", strings.NewReader(pol))
+	setPol.Header.Set("Authorization", rootAuth)
+	setPol.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, setPol)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("project setIamPolicy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	getOK := httptest.NewRequest(http.MethodGet, "/v3/projects/"+project, nil)
+	getOK.Header.Set("Authorization", "Bearer "+accessToken)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, getOK)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("WIF viewer GET project status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCRMTagKeysAndBindingsViaServer(t *testing.T) {
 	srv, cfg := testServer(t)
 	auth := "Bearer " + cfg.RootAccessToken

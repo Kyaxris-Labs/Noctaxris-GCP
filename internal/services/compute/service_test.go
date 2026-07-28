@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -284,6 +285,70 @@ func TestInstanceMetadataAndFirewallValidate(t *testing.T) {
 	perms, _ := iam["permissions"].([]any)
 	if len(perms) != 2 {
 		t.Fatalf("permissions=%#v", iam)
+	}
+}
+
+func TestComputeImagesListGetFamily(t *testing.T) {
+	mux, _, project := mountCompute(t)
+	base := "/compute/v1/projects/" + project + "/global/images"
+
+	req := httptest.NewRequest(http.MethodGet, base, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list images status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var list map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	items, _ := list["items"].([]any)
+	if len(items) < 3 {
+		t.Fatalf("expected theatre images, got %#v", list)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base+"/family/debian-12", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get family status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var img map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &img)
+	if img["status"] != "READY" || img["family"] != "debian-12" {
+		t.Fatalf("family image=%#v", img)
+	}
+	name, _ := img["name"].(string)
+	if name == "" {
+		t.Fatalf("missing name: %#v", img)
+	}
+	selfLink, _ := img["selfLink"].(string)
+	if !strings.Contains(selfLink, "/global/images/"+name) {
+		t.Fatalf("selfLink=%q", selfLink)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base+"/"+name, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get image status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Public image project path (Terraform ResolveImage often uses debian-cloud).
+	req = httptest.NewRequest(http.MethodGet, "/compute/v1/projects/debian-cloud/global/images/family/ubuntu-2204-lts", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cross-project family status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &img)
+	if img["family"] != "ubuntu-2204-lts" || img["status"] != "READY" {
+		t.Fatalf("ubuntu family=%#v", img)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base+"/family/no-such-family", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing family status=%d", rec.Code)
 	}
 }
 

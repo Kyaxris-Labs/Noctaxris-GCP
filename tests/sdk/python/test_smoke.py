@@ -410,3 +410,113 @@ def test_gcs_generate_signed_url_smoke() -> None:
         assert parsed.get("signedUrl"), body
     finally:
         do_json("DELETE", bucket_path, token)
+
+
+def test_sts_token_exchange_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+    pool_id = unique_id("sdk-sts-pool")
+    if len(pool_id) > 32:
+        pool_id = pool_id[:32].rstrip("-")
+    provider_id = "oidc"
+    pool_base = f"{ep}/v1/projects/{project}/locations/global/workloadIdentityPools/{pool_id}"
+    provider_name = (
+        f"projects/{project}/locations/global/workloadIdentityPools/{pool_id}/providers/{provider_id}"
+    )
+
+    q = urllib.parse.urlencode({"workloadIdentityPoolId": pool_id})
+    status, body = do_json(
+        "POST",
+        f"{ep}/v1/projects/{project}/locations/global/workloadIdentityPools?{q}",
+        token,
+        {"displayName": "sdk sts pool"},
+    )
+    assert status == 200, body
+    try:
+        pq = urllib.parse.urlencode({"workloadIdentityPoolProviderId": provider_id})
+        status, body = do_json(
+            "POST",
+            f"{pool_base}/providers?{pq}",
+            token,
+            {"displayName": "sdk oidc", "oidc": {"issuerUri": "https://example.com"}},
+        )
+        assert status == 200, body
+        try:
+            form = urllib.parse.urlencode(
+                {
+                    "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                    "audience": f"//iam.googleapis.com/{provider_name}",
+                    "subject_token": "sdk-sts-sub",
+                    "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+                }
+            )
+            req = urllib.request.Request(
+                f"{ep}/v1/token",
+                data=form.encode(),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    status, body = resp.status, resp.read().decode()
+            except urllib.error.HTTPError as err:
+                status, body = err.code, err.read().decode(errors="replace")
+            assert status == 200, body
+            parsed = json.loads(body)
+            assert parsed.get("access_token"), body
+            assert parsed.get("token_type") == "Bearer", body
+        finally:
+            do_json("DELETE", f"{pool_base}/providers/{provider_id}", token)
+    finally:
+        do_json("DELETE", pool_base, token)
+
+
+def test_gcs_retention_delete_deny_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+    bucket = unique_id("sdk-retain")
+    bucket_path = f"{ep}/storage/v1/b/{urllib.parse.quote(bucket, safe='')}"
+    object_path = f"{bucket_path}/o/{urllib.parse.quote('held.txt', safe='')}"
+
+    status, body = do_json(
+        "POST",
+        f"{ep}/storage/v1/b?project={urllib.parse.quote(project)}",
+        token,
+        {"name": bucket},
+    )
+    assert status == 200, body
+    try:
+        status, body = do_json(
+            "PATCH",
+            bucket_path,
+            token,
+            {"retentionPolicy": {"retentionPeriod": "3600"}},
+        )
+        assert status == 200, body
+
+        up_url = (
+            f"{ep}/upload/storage/v1/b/{urllib.parse.quote(bucket, safe='')}/o"
+            f"?uploadType=media&name={urllib.parse.quote('held.txt')}"
+        )
+        up_req = urllib.request.Request(
+            up_url,
+            data=b"held",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "text/plain"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(up_req, timeout=5) as resp:
+                up_status, up_body = resp.status, resp.read().decode()
+        except urllib.error.HTTPError as err:
+            up_status, up_body = err.code, err.read().decode(errors="replace")
+        assert up_status == 200, up_body
+
+        status, body = do_json("DELETE", object_path, token)
+        assert status != 200, body
+        parsed = json.loads(body)
+        assert parsed.get("error", {}).get("status") == "FAILED_PRECONDITION", body
+    finally:
+        do_json("DELETE", object_path, token)
+        do_json("DELETE", bucket_path, token)

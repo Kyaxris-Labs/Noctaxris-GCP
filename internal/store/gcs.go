@@ -17,15 +17,31 @@ import (
 
 // Bucket is Cloud Storage bucket metadata.
 type Bucket struct {
-	Name           string
-	ProjectID      string
-	Location       string
-	StorageClass   string
-	Labels         map[string]string
-	Metageneration int64
-	CreatedAt      string
-	UpdatedAt      string
+	Name                   string
+	ProjectID              string
+	Location               string
+	StorageClass           string
+	Labels                 map[string]string
+	Metageneration         int64
+	RetentionPeriodSeconds int64
+	RetentionIsLocked      bool
+	RetentionEffectiveTime string
+	CreatedAt              string
+	UpdatedAt              string
 }
+
+// BucketRetentionPolicy is a bucket retention policy patch/value (lab).
+type BucketRetentionPolicy struct {
+	RetentionPeriodSeconds int64
+	IsLocked               bool
+	EffectiveTime          string
+}
+
+// ErrRetentionPolicyNotMet is returned when delete/overwrite is blocked by retention.
+var ErrRetentionPolicyNotMet = fmt.Errorf("retention policy not met")
+
+// ErrRetentionPolicyLocked is returned when a locked retention policy cannot be shortened or cleared.
+var ErrRetentionPolicyLocked = fmt.Errorf("retention policy is locked")
 
 // ObjectMeta is Cloud Storage object metadata (one generation).
 type ObjectMeta struct {
@@ -96,17 +112,22 @@ func (s *Store) CreateBucket(name, projectID, location, storageClass string) (*B
 func (s *Store) GetBucket(name string) (*Bucket, bool, error) {
 	var b Bucket
 	var labelsJSON string
+	var locked int
 	err := s.db.QueryRow(
-		`SELECT name, project_id, location, storage_class, COALESCE(labels_json, '{}'), COALESCE(metageneration, 1), created_at, COALESCE(updated_at, '')
+		`SELECT name, project_id, location, storage_class, COALESCE(labels_json, '{}'), COALESCE(metageneration, 1),
+		 COALESCE(retention_period_seconds, 0), COALESCE(retention_is_locked, 0), COALESCE(retention_effective_time, ''),
+		 created_at, COALESCE(updated_at, '')
 		 FROM buckets WHERE name = ?`,
 		name,
-	).Scan(&b.Name, &b.ProjectID, &b.Location, &b.StorageClass, &labelsJSON, &b.Metageneration, &b.CreatedAt, &b.UpdatedAt)
+	).Scan(&b.Name, &b.ProjectID, &b.Location, &b.StorageClass, &labelsJSON, &b.Metageneration,
+		&b.RetentionPeriodSeconds, &locked, &b.RetentionEffectiveTime, &b.CreatedAt, &b.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
+	b.RetentionIsLocked = locked != 0
 	b.Labels = decodeStringMap(labelsJSON)
 	if b.UpdatedAt == "" {
 		b.UpdatedAt = b.CreatedAt
@@ -117,7 +138,9 @@ func (s *Store) GetBucket(name string) (*Bucket, bool, error) {
 // ListBuckets returns buckets for a project.
 func (s *Store) ListBuckets(projectID string) ([]Bucket, error) {
 	rows, err := s.db.Query(
-		`SELECT name, project_id, location, storage_class, COALESCE(labels_json, '{}'), COALESCE(metageneration, 1), created_at, COALESCE(updated_at, '')
+		`SELECT name, project_id, location, storage_class, COALESCE(labels_json, '{}'), COALESCE(metageneration, 1),
+		 COALESCE(retention_period_seconds, 0), COALESCE(retention_is_locked, 0), COALESCE(retention_effective_time, ''),
+		 created_at, COALESCE(updated_at, '')
 		 FROM buckets WHERE project_id = ? ORDER BY name`,
 		projectID,
 	)
@@ -129,9 +152,12 @@ func (s *Store) ListBuckets(projectID string) ([]Bucket, error) {
 	for rows.Next() {
 		var b Bucket
 		var labelsJSON string
-		if err := rows.Scan(&b.Name, &b.ProjectID, &b.Location, &b.StorageClass, &labelsJSON, &b.Metageneration, &b.CreatedAt, &b.UpdatedAt); err != nil {
+		var locked int
+		if err := rows.Scan(&b.Name, &b.ProjectID, &b.Location, &b.StorageClass, &labelsJSON, &b.Metageneration,
+			&b.RetentionPeriodSeconds, &locked, &b.RetentionEffectiveTime, &b.CreatedAt, &b.UpdatedAt); err != nil {
 			return nil, err
 		}
+		b.RetentionIsLocked = locked != 0
 		b.Labels = decodeStringMap(labelsJSON)
 		if b.UpdatedAt == "" {
 			b.UpdatedAt = b.CreatedAt
@@ -142,7 +168,8 @@ func (s *Store) ListBuckets(projectID string) ([]Bucket, error) {
 }
 
 // PatchBucket updates mutable bucket fields. Nil maps leave labels unchanged; empty map clears.
-func (s *Store) PatchBucket(name string, location, storageClass *string, labels *map[string]string) (*Bucket, error) {
+// Nil retention leaves the policy unchanged.
+func (s *Store) PatchBucket(name string, location, storageClass *string, labels *map[string]string, retention *BucketRetentionPolicy) (*Bucket, error) {
 	b, ok, err := s.GetBucket(name)
 	if err != nil {
 		return nil, err
@@ -162,12 +189,40 @@ func (s *Store) PatchBucket(name string, location, storageClass *string, labels 
 			b.Labels = map[string]string{}
 		}
 	}
+	if retention != nil {
+		if b.RetentionIsLocked {
+			if retention.RetentionPeriodSeconds < b.RetentionPeriodSeconds || retention.RetentionPeriodSeconds == 0 {
+				return nil, ErrRetentionPolicyLocked
+			}
+		}
+		prevPeriod := b.RetentionPeriodSeconds
+		b.RetentionPeriodSeconds = retention.RetentionPeriodSeconds
+		if retention.IsLocked || b.RetentionIsLocked {
+			b.RetentionIsLocked = true
+		}
+		if b.RetentionPeriodSeconds > 0 && (b.RetentionEffectiveTime == "" || prevPeriod == 0) {
+			b.RetentionEffectiveTime = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+		if b.RetentionPeriodSeconds == 0 {
+			b.RetentionEffectiveTime = ""
+			b.RetentionIsLocked = false
+		}
+		if retention.EffectiveTime != "" {
+			b.RetentionEffectiveTime = retention.EffectiveTime
+		}
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	b.Metageneration++
 	b.UpdatedAt = now
+	locked := 0
+	if b.RetentionIsLocked {
+		locked = 1
+	}
 	_, err = s.db.Exec(
-		`UPDATE buckets SET location = ?, storage_class = ?, labels_json = ?, metageneration = ?, updated_at = ? WHERE name = ?`,
-		b.Location, b.StorageClass, encodeStringMap(b.Labels), b.Metageneration, b.UpdatedAt, name,
+		`UPDATE buckets SET location = ?, storage_class = ?, labels_json = ?, metageneration = ?, updated_at = ?,
+		 retention_period_seconds = ?, retention_is_locked = ?, retention_effective_time = ? WHERE name = ?`,
+		b.Location, b.StorageClass, encodeStringMap(b.Labels), b.Metageneration, b.UpdatedAt,
+		b.RetentionPeriodSeconds, locked, b.RetentionEffectiveTime, name,
 	)
 	if err != nil {
 		return nil, err
@@ -210,6 +265,9 @@ func (s *Store) PutObjectBytesMeta(bucket, name, contentType string, data []byte
 		return nil, err
 	} else if !ok {
 		return nil, fmt.Errorf("bucket not found")
+	}
+	if err := s.checkObjectRetention(bucket, name, 0); err != nil {
+		return nil, err
 	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -611,6 +669,9 @@ func (s *Store) DeleteObject(bucket, name string, generation int64) (bool, error
 	if err != nil || !ok {
 		return ok, err
 	}
+	if err := s.checkObjectRetention(bucket, name, o.Generation); err != nil {
+		return true, err
+	}
 	res, err := s.db.Exec(`DELETE FROM objects WHERE bucket = ? AND name = ? AND generation = ?`, o.Bucket, o.Name, o.Generation)
 	if err != nil {
 		return false, err
@@ -624,6 +685,57 @@ func (s *Store) DeleteObject(bucket, name string, generation int64) (bool, error
 	}
 	_ = os.Remove(filepath.Join(s.dataRoot, "gcs", o.BlobPath))
 	return true, nil
+}
+
+// SetObjectCreatedAt updates created_at for lab retention tests.
+func (s *Store) SetObjectCreatedAt(bucket, name string, generation int64, createdAt string) error {
+	o, ok, err := s.GetObject(bucket, name, generation)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("object not found")
+	}
+	_, err = s.db.Exec(
+		`UPDATE objects SET created_at = ? WHERE bucket = ? AND name = ? AND generation = ?`,
+		createdAt, o.Bucket, o.Name, o.Generation,
+	)
+	return err
+}
+
+// checkObjectRetention fails closed while the live object is younger than the bucket retention period.
+// generation 0 checks the latest object; missing objects are allowed (new put).
+func (s *Store) checkObjectRetention(bucket, name string, generation int64) error {
+	b, ok, err := s.GetBucket(bucket)
+	if err != nil {
+		return err
+	}
+	if !ok || b.RetentionPeriodSeconds <= 0 {
+		return nil
+	}
+	o, ok, err := s.GetObject(bucket, name, generation)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	created, err := parseGCSTime(o.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("parse object created_at: %w", err)
+	}
+	minAge := time.Duration(b.RetentionPeriodSeconds) * time.Second
+	if time.Since(created) < minAge {
+		return ErrRetentionPolicyNotMet
+	}
+	return nil
+}
+
+func parseGCSTime(raw string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, raw)
 }
 
 // ReadObjectBytes loads object payload from disk.

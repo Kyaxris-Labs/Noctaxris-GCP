@@ -8,6 +8,7 @@ returned. No CA issuance, DNS authorization, or load-balancer attachment.
 
 **lab** — certificates and certificateMaps create/get/list/delete under
 `/v1/projects/{p}/locations/{loc}/...`. Location `global` is supported.
+Create returns a completed Operation (`done: true` + `response`).
 
 ## Wire protocol
 
@@ -23,12 +24,21 @@ REST on the shared listener (`http://127.0.0.1:4588`):
 | `GET` | `/v1/projects/{p}/locations/{loc}/certificateMaps` |
 | `GET` | `/v1/projects/{p}/locations/{loc}/certificateMaps/{id}` |
 | `DELETE` | `/v1/projects/{p}/locations/{loc}/certificateMaps/{id}` |
+| `GET` | `/v1/projects/{p}/locations/{loc}/operations/{operation}` |
 
 Create certificate body fields used: `description`, `labels`, `scope`,
 `managed` (domains; lab sets `state=ACTIVE`), or `selfManaged` (PEM stored as
 redacted theatre flags only). Create map body: `description`, `labels`.
-Responses return the resource (LRO wrapping deferred). Colon methods use
-`splitColonAction` (none mounted).
+
+Create certificate / certificateMap returns a completed Operation:
+
+```json
+{"name":"projects/.../locations/.../operations/create-{id}","done":true,"response":{"@type":"...","name":"projects/.../certificates/{id}",...}}
+```
+
+`GET` of the certificate or map by resource name still returns the resource.
+`GET .../operations/{operation}` returns `{name, done: true}` so provider poll
+paths succeed immediately. Colon methods use `splitColonAction` (none mounted).
 
 ## Authz
 
@@ -36,6 +46,7 @@ Checked on `projects/{project}`:
 
 - `certificatemanager.certs.create|get|list|delete`
 - `certificatemanager.certmaps.create|get|list|delete`
+- `certificatemanager.operations.get`
 
 Seeded Service Usage: `certificatemanager.googleapis.com`.
 
@@ -44,13 +55,12 @@ Seeded Service Usage: `certificatemanager.googleapis.com`.
 - No real certificate issuance, renewal, or DNS authorization
 - No certificate map entries / GCLB target wiring
 - Self-managed PEM private key material is not persisted in cleartext responses
-- Create returns the resource, not a long-running Operation
+- Create Operation is completed immediately (no async worker / poll queue)
 
 ## Deferred depth
 
 - `patch` on certificates / maps; certificateMapEntries CRUD
 - DnsAuthorizations / CertificateIssuanceConfigs
-- Operation-shaped create responses for SDK parity
 
 ## Verification / CLI smoke
 

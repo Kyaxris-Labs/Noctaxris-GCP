@@ -476,3 +476,122 @@ test("gcs generateSignedUrl smoke", async (t) => {
   const parsed = JSON.parse(body);
   assert.ok(parsed.signedUrl, body);
 });
+
+test("sts token exchange smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+  let poolId = uniqueID("sdk-sts-pool");
+  if (poolId.length > 32) {
+    poolId = poolId.slice(0, 32).replace(/-+$/, "");
+  }
+  const providerId = "oidc";
+  const poolBase = `${ep}/v1/projects/${project}/locations/global/workloadIdentityPools/${poolId}`;
+  const providerName = `projects/${project}/locations/global/workloadIdentityPools/${poolId}/providers/${providerId}`;
+
+  const pool = await doJSON(
+    "POST",
+    `${ep}/v1/projects/${project}/locations/global/workloadIdentityPools?workloadIdentityPoolId=${encodeURIComponent(poolId)}`,
+    token,
+    { displayName: "sdk sts pool" },
+  );
+  assert.equal(pool.status, 200, `create WIF pool status=${pool.status} body=${pool.body}`);
+  t.after(async () => {
+    try {
+      await doJSON("DELETE", poolBase, token);
+    } catch {
+      /* best-effort cleanup */
+    }
+  });
+
+  const provider = await doJSON(
+    "POST",
+    `${poolBase}/providers?workloadIdentityPoolProviderId=${encodeURIComponent(providerId)}`,
+    token,
+    { displayName: "sdk oidc", oidc: { issuerUri: "https://example.com" } },
+  );
+  assert.equal(provider.status, 200, `create WIF provider status=${provider.status} body=${provider.body}`);
+  t.after(async () => {
+    try {
+      await doJSON("DELETE", `${poolBase}/providers/${providerId}`, token);
+    } catch {
+      /* best-effort cleanup */
+    }
+  });
+
+  const form = new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+    audience: `//iam.googleapis.com/${providerName}`,
+    subject_token: "sdk-sts-sub",
+    subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+  });
+  const res = await fetch(`${ep}/v1/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form.toString(),
+    signal: AbortSignal.timeout(5000),
+  });
+  const body = await res.text();
+  assert.equal(res.status, 200, `STS /v1/token status=${res.status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(parsed.access_token, body);
+  assert.equal(parsed.token_type, "Bearer", body);
+});
+
+test("gcs retention delete deny smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+  const bucket = uniqueID("sdk-retain");
+  const bucketPath = `${ep}/storage/v1/b/${encodeURIComponent(bucket)}`;
+  const objectPath = `${bucketPath}/o/${encodeURIComponent("held.txt")}`;
+
+  const created = await doJSON(
+    "POST",
+    `${ep}/storage/v1/b?project=${encodeURIComponent(project)}`,
+    token,
+    { name: bucket },
+  );
+  assert.equal(created.status, 200, `create bucket status=${created.status} body=${created.body}`);
+  t.after(async () => {
+    try {
+      await doJSON("DELETE", objectPath, token);
+    } catch {
+      /* best-effort cleanup */
+    }
+    try {
+      await doJSON("DELETE", bucketPath, token);
+    } catch {
+      /* best-effort cleanup */
+    }
+  });
+
+  const patched = await doJSON("PATCH", bucketPath, token, {
+    retentionPolicy: { retentionPeriod: "3600" },
+  });
+  assert.equal(patched.status, 200, `patch retention status=${patched.status} body=${patched.body}`);
+
+  const upRes = await fetch(
+    `${ep}/upload/storage/v1/b/${encodeURIComponent(bucket)}/o?uploadType=media&name=${encodeURIComponent("held.txt")}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "text/plain",
+      },
+      body: "held",
+      signal: AbortSignal.timeout(5000),
+    },
+  );
+  const upBody = await upRes.text();
+  assert.equal(upRes.status, 200, `upload status=${upRes.status} body=${upBody}`);
+
+  const deleted = await doJSON("DELETE", objectPath, token);
+  assert.notEqual(deleted.status, 200, `delete under retention should fail; body=${deleted.body}`);
+  const errBody = JSON.parse(deleted.body);
+  assert.equal(errBody.error?.status, "FAILED_PRECONDITION", deleted.body);
+});

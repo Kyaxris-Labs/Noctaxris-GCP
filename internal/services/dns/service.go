@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
@@ -15,10 +16,15 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
-// Service serves Cloud DNS REST v1 (managedZones + resourceRecordSets CRUD).
+// Service serves Cloud DNS REST v1 (managedZones + resourceRecordSets CRUD + Changes theatre).
+// Change records are kept in-process (not SQLite); process restart clears history.
 type Service struct {
 	Store *store.Store
 	Authz *authz.Evaluator
+
+	mu      sync.Mutex
+	changes map[string]map[string]any // key: project+"/"+zoneID+"/"+changeID
+	order   []string                  // insertion order for list
 }
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
@@ -35,6 +41,10 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /dns/v1/projects/{project}/managedZones/{managedZone}/rrsets", s.wrap(principalFrom, s.createRrset))
 	mux.HandleFunc("GET /dns/v1/projects/{project}/managedZones/{managedZone}/rrsets/{name}/{type}", s.wrap(principalFrom, s.getRrset))
 	mux.HandleFunc("DELETE /dns/v1/projects/{project}/managedZones/{managedZone}/rrsets/{name}/{type}", s.wrap(principalFrom, s.deleteRrset))
+
+	mux.HandleFunc("GET /dns/v1/projects/{project}/managedZones/{managedZone}/changes", s.wrap(principalFrom, s.listChanges))
+	mux.HandleFunc("POST /dns/v1/projects/{project}/managedZones/{managedZone}/changes", s.wrap(principalFrom, s.createChange))
+	mux.HandleFunc("GET /dns/v1/projects/{project}/managedZones/{managedZone}/changes/{changeId}", s.wrap(principalFrom, s.getChange))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -403,6 +413,200 @@ func (s *Service) deleteRrset(w http.ResponseWriter, r *http.Request, p authn.Pr
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Changes (Terraform google_dns_record_set path) ---
+
+func (s *Service) changeKey(project, zoneID, changeID string) string {
+	return project + "/" + zoneID + "/" + changeID
+}
+
+func (s *Service) createChange(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	zoneID, _ := splitAction(r.PathValue("managedZone"))
+	if err := s.require(p, "dns.changes.create", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	z, ok, err := s.resolveZone(project, zoneID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "ManagedZone not found")
+		return
+	}
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body == nil {
+		body = map[string]any{}
+	}
+	deletions := parseRrsetList(body["deletions"])
+	additions := parseRrsetList(body["additions"])
+
+	// Apply deletions first, then additions (GCP Change semantics; lab is not transactional).
+	for _, rr := range deletions {
+		if _, err := s.Store.DeleteDNSRrset(z.Name, rr.name, rr.rrType); err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+	}
+	for _, rr := range additions {
+		if err := s.Store.UpsertDNSRrset(store.DNSRrset{
+			ProjectID: project, ZoneName: z.Name, ZoneID: z.ZoneID,
+			RrsetName: rr.name, RrsetType: rr.rrType, TTL: rr.ttl,
+			RrdatasJSON: store.MarshalStringSlice(rr.rrdatas),
+		}); err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+	}
+
+	changeID := strconv.FormatInt(time.Now().UnixNano(), 10)
+	startTime := time.Now().UTC().Format(time.RFC3339Nano)
+	additionJSON := make([]map[string]any, 0, len(additions))
+	for _, rr := range additions {
+		additionJSON = append(additionJSON, map[string]any{
+			"kind": "dns#resourceRecordSet", "name": rr.name, "type": rr.rrType,
+			"ttl": rr.ttl, "rrdatas": rr.rrdatas,
+		})
+	}
+	deletionJSON := make([]map[string]any, 0, len(deletions))
+	for _, rr := range deletions {
+		deletionJSON = append(deletionJSON, map[string]any{
+			"kind": "dns#resourceRecordSet", "name": rr.name, "type": rr.rrType,
+			"ttl": rr.ttl, "rrdatas": rr.rrdatas,
+		})
+	}
+	change := map[string]any{
+		"kind":      "dns#change",
+		"id":        changeID,
+		"status":    "done",
+		"startTime": startTime,
+		"additions": additionJSON,
+		"deletions": deletionJSON,
+	}
+
+	s.mu.Lock()
+	if s.changes == nil {
+		s.changes = map[string]map[string]any{}
+	}
+	key := s.changeKey(project, z.ZoneID, changeID)
+	s.changes[key] = change
+	s.order = append(s.order, key)
+	s.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, change)
+}
+
+func (s *Service) getChange(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	zoneID, _ := splitAction(r.PathValue("managedZone"))
+	changeID := r.PathValue("changeId")
+	if err := s.require(p, "dns.changes.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	z, ok, err := s.resolveZone(project, zoneID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "ManagedZone not found")
+		return
+	}
+	s.mu.Lock()
+	change, found := s.changes[s.changeKey(project, z.ZoneID, changeID)]
+	s.mu.Unlock()
+	if !found {
+		gcperrors.NotFound(w, "Change not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, change)
+}
+
+func (s *Service) listChanges(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	zoneID, _ := splitAction(r.PathValue("managedZone"))
+	if err := s.require(p, "dns.changes.list", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	z, ok, err := s.resolveZone(project, zoneID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "ManagedZone not found")
+		return
+	}
+	prefix := project + "/" + z.ZoneID + "/"
+	s.mu.Lock()
+	items := make([]map[string]any, 0)
+	for _, key := range s.order {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if ch, ok := s.changes[key]; ok {
+			items = append(items, ch)
+		}
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":    "dns#changesListResponse",
+		"changes": items,
+	})
+}
+
+type parsedRrset struct {
+	name    string
+	rrType  string
+	ttl     int64
+	rrdatas []string
+}
+
+func parseRrsetList(v any) []parsedRrset {
+	arr, ok := v.([]any)
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+	out := make([]parsedRrset, 0, len(arr))
+	for _, item := range arr {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := m["name"].(string)
+		name = strings.TrimSpace(name)
+		rrType, _ := m["type"].(string)
+		rrType = strings.TrimSpace(rrType)
+		if name == "" || rrType == "" {
+			continue
+		}
+		if !strings.HasSuffix(name, ".") {
+			name += "."
+		}
+		ttl := int64(300)
+		switch t := m["ttl"].(type) {
+		case float64:
+			ttl = int64(t)
+		case json.Number:
+			n, _ := t.Int64()
+			ttl = n
+		case string:
+			if n, err := strconv.ParseInt(t, 10, 64); err == nil {
+				ttl = n
+			}
+		}
+		out = append(out, parsedRrset{
+			name: name, rrType: strings.ToUpper(rrType), ttl: ttl,
+			rrdatas: extractStringSlice(m["rrdatas"]),
+		})
+	}
+	return out
 }
 
 func decodePathName(raw string) string {

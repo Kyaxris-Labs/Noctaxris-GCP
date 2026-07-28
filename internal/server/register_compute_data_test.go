@@ -61,6 +61,27 @@ func TestCloudDNSViaServer(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("rrset status=%d body=%s", rec.Code, rec.Body.String())
 	}
+
+	req = httptest.NewRequest(http.MethodPost, base+"/srv-zone/changes", bytes.NewReader([]byte(
+		`{"additions":[{"name":"b.srv.example.","type":"A","ttl":60,"rrdatas":["10.0.0.2"]}],"deletions":[]}`,
+	)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("changes.create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var change map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &change)
+	if change["status"] != "done" {
+		t.Fatalf("change=%#v", change)
+	}
+	id, _ := change["id"].(string)
+	req = httptest.NewRequest(http.MethodGet, base+"/srv-zone/changes/"+id, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("changes.get status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestDataflowViaServer(t *testing.T) {
@@ -141,6 +162,20 @@ func TestComputeEngineViaServer(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get network status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	imgBase := "/compute/v1/projects/" + project + "/global/images"
+	req = httptest.NewRequest(http.MethodGet, imgBase+"/family/cos-stable", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get image family status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var img map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &img)
+	if img["status"] != "READY" || img["family"] != "cos-stable" {
+		t.Fatalf("image=%#v", img)
 	}
 }
 

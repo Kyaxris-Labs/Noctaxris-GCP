@@ -218,3 +218,56 @@ func TestNilEvaluatorFailClosed(t *testing.T) {
 		t.Fatalf("nil evaluator still allows root: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestTokenCreatorGrantsGetAccessToken(t *testing.T) {
+	saResource := "projects/noctaxris-gcp-local/serviceAccounts/target@noctaxris-gcp-local.iam.gserviceaccount.com"
+	caller := "caller@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			saResource: mustPolicy(t, "roles/iam.serviceAccountTokenCreator", "serviceAccount:"+caller),
+		},
+	}
+	for _, perm := range []string{
+		"iam.serviceAccounts.getAccessToken",
+		"iam.serviceAccounts.actAs",
+		"iam.serviceAccounts.signBlob",
+		"iam.serviceAccounts.signJwt",
+		"iam.serviceAccounts.generateAccessToken",
+		"iam.serviceAccounts.generateIdToken",
+	} {
+		ok, err := e.Evaluate(caller, false, perm, saResource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Fatalf("TokenCreator should grant %s", perm)
+		}
+	}
+	// TokenCreator is not a general SA admin role.
+	ok, err := e.Evaluate(caller, false, "iam.serviceAccounts.delete", saResource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("TokenCreator must not grant iam.serviceAccounts.delete")
+	}
+}
+
+func TestViewerAndEditorDenyGetAccessToken(t *testing.T) {
+	resource := "projects/noctaxris-gcp-local"
+	for _, role := range []string{"roles/viewer", "roles/editor"} {
+		email := "user@noctaxris-gcp-local.iam.gserviceaccount.com"
+		e := &authz.Evaluator{
+			Policies: memPolicies{
+				resource: mustPolicy(t, role, "serviceAccount:"+email),
+			},
+		}
+		ok, err := e.Evaluate(email, false, "iam.serviceAccounts.getAccessToken", resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			t.Fatalf("%s must deny getAccessToken", role)
+		}
+	}
+}

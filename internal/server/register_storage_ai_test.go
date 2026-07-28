@@ -26,10 +26,14 @@ func TestFilestoreViaServer(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var inst map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &inst)
-	if inst["state"] != "READY" {
-		t.Fatalf("instance=%#v", inst)
+	var createOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &createOp)
+	if createOp["done"] != true {
+		t.Fatalf("create expected done Operation: %#v", createOp)
+	}
+	inst, _ := createOp["response"].(map[string]any)
+	if inst == nil || inst["state"] != "READY" {
+		t.Fatalf("instance=%#v createOp=%#v", inst, createOp)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, base+"/srv-nfs", nil)

@@ -3,9 +3,11 @@ module github.com/Kyaxris-Labs/Noctaxris-GCP
 go 1.26.5
 
 require (
+	cloud.google.com/go/bigtable v1.51.0
 	cloud.google.com/go/datastore v1.26.0
 	cloud.google.com/go/firestore v1.24.0
 	cloud.google.com/go/iam v1.12.0
+	cloud.google.com/go/longrunning v1.2.0
 	cloud.google.com/go/pubsub/v2 v2.6.1
 	cloud.google.com/go/secretmanager v1.21.0
 	github.com/docker/docker v28.5.2+incompatible

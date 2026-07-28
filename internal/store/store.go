@@ -117,6 +117,8 @@ func (s *Store) ensureDataColumns() error {
 		`ALTER TABLE pubsub_subscriptions ADD COLUMN dead_letter_topic TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE pubsub_subscriptions ADD COLUMN max_delivery_attempts INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE pubsub_subscriptions ADD COLUMN enable_exactly_once_delivery INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE pubsub_subscriptions ADD COLUMN oidc_service_account_email TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pubsub_subscriptions ADD COLUMN oidc_audience TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE pubsub_messages ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE secrets ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE secrets ADD COLUMN annotations_json TEXT NOT NULL DEFAULT '{}'`,

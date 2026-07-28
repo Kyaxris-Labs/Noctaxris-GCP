@@ -303,6 +303,38 @@ func (s *Store) DeleteDNSRrset(zoneName, rrsetName, rrsetType string) (bool, err
 	return n > 0, err
 }
 
+// UpsertDNSRrset inserts or replaces a record set by zone + name + type.
+func (s *Store) UpsertDNSRrset(r DNSRrset) error {
+	if r.ZoneName == "" || r.RrsetName == "" || r.RrsetType == "" {
+		return fmt.Errorf("dns rrset zone/name/type required")
+	}
+	if r.ID == "" {
+		r.ID = uuid.NewString()
+	}
+	if r.RrdatasJSON == "" {
+		r.RrdatasJSON = "[]"
+	}
+	if r.TTL <= 0 {
+		r.TTL = 300
+	}
+	rrType := strings.ToUpper(r.RrsetType)
+	_, err := s.db.Exec(
+		`INSERT INTO dns_rrsets
+		 (id, project_id, zone_name, zone_id, rrset_name, rrset_type, ttl, rrdatas_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(zone_name, rrset_name, rrset_type) DO UPDATE SET
+		   ttl = excluded.ttl,
+		   rrdatas_json = excluded.rrdatas_json,
+		   project_id = excluded.project_id,
+		   zone_id = excluded.zone_id`,
+		r.ID, r.ProjectID, r.ZoneName, r.ZoneID, r.RrsetName, rrType, r.TTL, r.RrdatasJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert dns rrset: %w", err)
+	}
+	return nil
+}
+
 // CreateDataflowJob inserts a job. created=false means already exists.
 func (s *Store) CreateDataflowJob(j DataflowJob) (bool, error) {
 	if j.Name == "" || j.ProjectID == "" || j.Location == "" || j.JobID == "" {

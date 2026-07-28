@@ -36,6 +36,9 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/certificateMaps", s.wrap(principalFrom, s.createCertificateMap))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/certificateMaps/{certificateMap}", s.wrap(principalFrom, s.getCertificateMap))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/certificateMaps/{certificateMap}", s.wrap(principalFrom, s.deleteCertificateMap))
+
+	// Lab Operations.get: create returns done:true; poll path succeeds immediately for TF waiters.
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/operations/{operation}", s.wrap(principalFrom, s.getOperation))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -192,7 +195,8 @@ func (s *Service) createCertificate(w http.ResponseWriter, r *http.Request, p au
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created certificate missing")
 		return
 	}
-	writeJSON(w, http.StatusOK, toCertificateJSON(out))
+	writeDoneOperation(w, project, location, "create-"+certID, withType(toCertificateJSON(out),
+		"type.googleapis.com/google.cloud.certificatemanager.v1.Certificate"))
 }
 
 func (s *Service) getCertificate(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -314,7 +318,23 @@ func (s *Service) createCertificateMap(w http.ResponseWriter, r *http.Request, p
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created certificate map missing")
 		return
 	}
-	writeJSON(w, http.StatusOK, toCertificateMapJSON(out))
+	writeDoneOperation(w, project, location, "create-"+mapID, withType(toCertificateMapJSON(out),
+		"type.googleapis.com/google.cloud.certificatemanager.v1.CertificateMap"))
+}
+
+func (s *Service) getOperation(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	opID, _ := splitColonAction(r.PathValue("operation"))
+	if err := s.require(p, "certificatemanager.operations.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	opName := fmt.Sprintf("projects/%s/locations/%s/operations/%s", project, location, opID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": opName,
+		"done": true,
+	})
 }
 
 func (s *Service) getCertificateMap(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -381,6 +401,21 @@ func (s *Service) deleteCertificateMap(w http.ResponseWriter, r *http.Request, p
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{})
+}
+
+// writeDoneOperation returns a completed LRO so Terraform
+// CertificateManagerOperationWaitTime does not treat the resource name as an unfinished op.
+func writeDoneOperation(w http.ResponseWriter, project, location, opID string, response any) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":     fmt.Sprintf("projects/%s/locations/%s/operations/%s", project, location, opID),
+		"done":     true,
+		"response": response,
+	})
+}
+
+func withType(m map[string]any, typeURL string) map[string]any {
+	m["@type"] = typeURL
+	return m
 }
 
 func toCertificateJSON(c store.CertManagerCertificate) map[string]any {

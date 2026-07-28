@@ -6,20 +6,32 @@
 
 | Area | Change |
 |------|--------|
+| Bigtable | Instance Admin gRPC lite (`CreateInstance`/`GetInstance`/`ListInstances`/`DeleteInstance`); Create returns a done Operation with Instance response; REST `/v2/` unchanged |
+| Certificate Manager | Create certificate / certificateMap returns completed Operation (`done: true` + `response`); `GET .../operations/{operation}` immediate done theatre |
+| Filestore | Create instance returns completed Operation (`done: true` + `response`); `GET /file/v1/.../operations/{operation}` immediate done theatre |
 | HTTP egress | Shared `internal/kernel/httpegress` gate for Pub/Sub push, Eventarc HTTP, Cloud Tasks, Scheduler; lab catcher + loopback `:4588`; opt-in `NOCTAXRIS_GCP_HTTP_EGRESS` + exact allowlist; no redirects |
 | Cloud Build | Regional `.../locations/.../triggers` via shared mux with Eventarc (body-shape dispatch) |
+| Pub/Sub | Push `oidcToken` (serviceAccountEmail + audience) persisted and returned; push sets `Authorization: Bearer` with unsigned lab JWT (`alg=none`); catcher records authorization |
 | CI | Docker image build + SPDX SBOM artifact jobs |
 | Docs | `COMPARISON.md` Noctaxris vs Noctaxris-GCP sibling section |
+| Cloud Storage | Bucket `retentionPolicy` persist + JSON API patch/get; delete/overwrite fail closed while object age < `retentionPeriod`; locked policy rejects shortening |
+| IAM | STS `POST /v1/token` WIF token-exchange theatre (`wif:{provider}:{subject}` Bearer); `roles/iam.serviceAccountTokenCreator` evaluated on SA for `generateAccessToken` |
+| Cloud DNS | `changes.create` / `changes.get` / `changes.list` theatre applies rrset additions/deletions (`status: done`); in-process change history |
+| Compute Engine | Global Images list/get/family stubs (`debian-12`, `ubuntu-2204-lts`, `cos-stable`) for Terraform ResolveImage |
+| SDK smokes | Soft-skip HTTP coverage for STS `/v1/token`, GCS retention delete deny, Pub/Sub OIDC push round-trip, nested fail-closed `:invoke` (Go; Node/Python mirror STS + retention) |
 
 ### Changed
 
 | Area | Change |
 |------|--------|
+| Maintainability | Shared `internal/kernel/restlab` REST authn/authz helpers; Filestore + Eventarc adopt them |
+| Store | Split analytics store into domain files (`analytics_migrate`, `bq_*`, `firebase_*`, `monitoring_*`, `datastore_*`, `eventarc_*`) |
 | IAM | `roles/viewer` suffix-only reads (no `Contains(".get")`); no `secretmanager.versions.access`; `roles/editor` denies `setIamPolicy` + SA token/signing |
+| IAM docs | Document TokenCreator + STS; remove outdated "metadata only / no STS" and "does not evaluate TokenCreator" limits |
 | Image allowlist | Exact refs or trailing-`/` prefixes with digest; bare ambiguous prefixes rejected |
 | Signed URL middleware | Bearer skip limited to `/storage/` and `/upload/storage/` |
 | SQLite | `SetMaxOpenConns(1)` + WAL for Eventarc delivery concurrency |
-| Nested invoke | Soft-fail responses omit raw engine error strings |
+| Nested invoke | Soft-fail responses omit raw engine error strings; opt-in `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` hard-errors on dial/run/disabled |
 | Dependencies | Bump firestore `v1.24.0`, iam `v1.12.0`, secretmanager `v1.21.0`, genproto (2026-07-27), otelhttp `v0.69.0`, modernc.org/libc `v1.74.4` (go 1.26.5 unchanged; docker/grpc/sqlite already current) |
 
 ### Fixed

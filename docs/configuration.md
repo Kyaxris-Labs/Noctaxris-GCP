@@ -17,6 +17,7 @@ All settings use the `NOCTAXRIS_GCP_*` prefix.
 | `NOCTAXRIS_GCP_DOCKER_HOST` | empty | Nested DinD engine URL. Empty disables nested compute (default; unit tests need no Docker). Rejects `unix://`, `npipe://`, and `docker.sock`. Must be `tcp://noctaxris-gcp-engine:2376` or an entry in `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST`. |
 | `NOCTAXRIS_GCP_DOCKER_CERT_PATH` | empty | Directory with `ca.pem`, `cert.pem`, and `key.pem` for engine TLS. Required whenever `NOCTAXRIS_GCP_DOCKER_HOST` is set. |
 | `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST` | empty | Comma-separated exact `tcp://` URLs allowed in addition to `tcp://noctaxris-gcp-engine:2376`. |
+| `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` | unset / false | Set to `1` or `true` so Cloud Run nested `:invoke` returns an error when the engine dial/run fails instead of soft-failing to mock with `engine.mode: mock` in the body. Default unset keeps soft-fail (unit tests without DinD stay green). |
 | `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` | empty | Comma-separated exact image refs, or registry prefixes ending in `/` (digest `@sha256:` required for registry hosts). Bare substring prefixes without a trailing `/` are rejected. |
 | `NOCTAXRIS_GCP_HTTP_EGRESS` | empty (off) | Set to `1` to honor `NOCTAXRIS_GCP_HTTP_ALLOWLIST` for Pub/Sub push, Eventarc HTTP, Cloud Tasks, and Scheduler destinations beyond lab-local URLs. Unset/off: only `http://127.0.0.1:4588/_noctaxris-gcp/http-catcher...` and other loopback `:4588` lab-local URLs (allowlist ignored). |
 | `NOCTAXRIS_GCP_HTTP_ALLOWLIST` | empty | Comma-separated exact HTTP(S) URLs allowed when egress is on. Listed URLs still reject private, loopback, link-local, and metadata hosts; delivery does not follow redirects. Ignored when egress is off. |
@@ -82,7 +83,7 @@ before starting. Startup refuses that pair on the non-loopback container bind.
 | Filestore | Base URL must include `/file/v1/` (e.g. `http://127.0.0.1:4588/file/v1/`); bare host misses the lab path prefix (no NFS) |
 | Vertex AI | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/projects/.../publishers/google/models/{id}:predict` / `:generateContent`; allowlisted model ids only) |
 | Cloud Armor | Same Compute Engine endpoint (`/compute/v1/.../global/securityPolicies`); ByteMatchSet `:validate` is lab preview only (no edge enforce) |
-| Certificate Manager | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/projects/.../locations/...`; Terraform LRO skip) |
+| Certificate Manager | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/projects/.../locations/...`; create returns completed Operation) |
 | Other Google clients | `option.WithEndpoint("127.0.0.1:4588")` (or language equivalent) + Bearer |
 | Terraform Google provider | Custom endpoints with versioned path suffixes (see below) |
 
@@ -110,9 +111,9 @@ provider "google" {
   compute_custom_endpoint        = "http://127.0.0.1:4588/compute/v1/"
   # Filestore: provider field is filestore_custom_endpoint (BaseUrl …/v1/).
   # Lab mounts under /file/v1/ (Memorystore owns bare /v1/.../instances), so the
-  # override must be http://127.0.0.1:4588/file/v1/ — and Terraform still cannot
-  # stack today (provider waits on LRO; lab create is synchronous). See
-  # tests/terraform/README.md honest skips.
+  # override must be http://127.0.0.1:4588/file/v1/. Create returns completed
+  # Operation theatre; remaining stack gap is the /file/v1/ BaseUrl prefix.
+  # See tests/terraform/README.md honest skips.
 }
 ```
 
@@ -133,8 +134,9 @@ REST `:predict` / `:generateContent` with `api_endpoint_overrides/aiplatform`.
 
 Not stacked: DNS record sets (provider `Changes.create`; lab has no Changes API),
 Compute instances (Images API / `ResolveImage`), Bigtable (provider gRPC admin
-client vs lab REST `/v2/`), Certificate Manager and Filestore (provider LRO wait
-on synchronous create). See `tests/terraform/README.md`.
+client vs lab REST `/v2/`), Filestore (lab `/file/v1/` path prefix vs provider
+BaseUrl `…/v1/`). Certificate Manager create returns completed Operation theatre.
+See `tests/terraform/README.md`.
 
 ### gcloud `api_endpoint_overrides`
 
@@ -169,7 +171,7 @@ gcloud config set api_endpoint_overrides/bigtableadmin http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/redis http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/certificatemanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
-# Filestore: filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/" (lab /file/v1/; Terraform LRO skip)
+# Filestore: filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/" (lab /file/v1/ path prefix)
 gcloud projects describe noctaxris-gcp-local --format=json
 ```
 

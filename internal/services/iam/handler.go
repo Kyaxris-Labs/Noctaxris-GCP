@@ -45,6 +45,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/projects/{project}/serviceAccounts/{account}/keys/{key}", h.getKey)
 	mux.HandleFunc("DELETE /v1/projects/{project}/serviceAccounts/{account}/keys/{key}", h.deleteKey)
 	h.MountWIF(mux)
+	h.MountSTS(mux)
 }
 
 func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {
@@ -332,8 +333,22 @@ func (h *Handler) resolveServiceAccount(projectID, account string) (store.Servic
 
 // generateAccessToken mints a lab Bearer token for the target SA (impersonation theatre).
 // Shape matches IAM Credentials generateAccessToken (accessToken + expireTime).
+// Authz requires iam.serviceAccounts.getAccessToken on the SA resource (TokenCreator)
+// or the parent project (owner / explicit grant). Root still bypasses.
 func (h *Handler) generateAccessToken(w http.ResponseWriter, r *http.Request, projectResource string, sa store.ServiceAccount) {
-	if _, ok := h.require(w, r, "iam.serviceAccounts.getAccessToken", projectResource); !ok {
+	saResource := fmt.Sprintf("projects/%s/serviceAccounts/%s", sa.ProjectID, sa.Email)
+	p, ok := h.principal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return
+	}
+	allowed, err := h.Authz.EvaluateAny(p.Email, p.IsRoot, "iam.serviceAccounts.getAccessToken", saResource, projectResource)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !allowed {
+		gcperrors.PermissionDenied(w, "")
 		return
 	}
 	if sa.Disabled {

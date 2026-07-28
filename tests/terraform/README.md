@@ -42,11 +42,10 @@ STACKS="lab-storage lab-run lab-dns lab-compute lab-armor" bash tests/terraform/
 
 | Gap | Why not a stack |
 |-----|-----------------|
-| `google_dns_record_set` | Provider uses `Changes.create`; lab has rrsets CRUD only (no Changes API) |
-| `google_compute_instance` | Provider `ResolveImage` needs Images API; lab has no disks/images |
-| `google_bigtable_*` | Provider uses gRPC `InstanceAdminClient`; lab Bigtable Admin is REST `/v2/` only (`bigtable_custom_endpoint` alone is not enough) |
-| `google_certificate_manager_certificate` / `certificate_map` | Provider `certificate_manager_custom_endpoint` (BaseUrl `…/v1/`) can hit lab REST, but create returns the resource (with `name`); `CertificateManagerOperationWaitTime` treats `name` as an LRO and polls until timeout. Lab create is synchronous (no Operation). |
-| `google_filestore_instance` | Provider knob is `filestore_custom_endpoint` (BaseUrl `https://file.googleapis.com/v1/`); lab paths need `…/file/v1/` after the host. Same LRO wait: create returns instance resource with `name`, provider polls as Operation. Lab create is synchronous under `/file/v1/`. |
+| `google_dns_record_set` | Changes.create/get theatre exists; not yet wired into `lab-dns` (zone-only stack). No authoritative DNS / DNSSEC. |
+| `google_compute_instance` | Images list/get/family theatre exists for ResolveImage; lab still has no disks/boot attach (metadata instances only). |
+| `google_bigtable_*` | Instance Admin gRPC lite is present (Create/Get/List/Delete instance; Create returns a done Operation). Still no Table Admin gRPC, app profiles, cluster CRUD, or backups; provider table/app-profile resources will not apply end-to-end |
+| `google_filestore_instance` | Provider BaseUrl is `https://file.googleapis.com/v1/`; lab mounts under `/file/v1/` (Memorystore owns bare `/v1/.../instances`), so `filestore_custom_endpoint` must end in `/file/v1/`. Create returns completed Operation (`done: true` + `response`) theatre; Operations.get is immediate. |
 
 When Compose publishes `127.0.0.1:4588` on a Windows host, run Terraform from
 that host (not WSL loopback).

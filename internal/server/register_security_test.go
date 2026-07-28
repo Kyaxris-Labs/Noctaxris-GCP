@@ -64,8 +64,15 @@ func TestCertificateManagerViaServer(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create cert status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var cert map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &cert)
+	var createOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &createOp)
+	if createOp["done"] != true {
+		t.Fatalf("create expected done Operation: %#v", createOp)
+	}
+	cert, _ := createOp["response"].(map[string]any)
+	if cert == nil {
+		t.Fatalf("create missing response: %#v", createOp)
+	}
 	if sm, _ := cert["selfManaged"].(map[string]any); sm != nil {
 		if sm["pemPrivateKey"] != nil {
 			t.Fatalf("private key must not be returned: %#v", sm)
@@ -97,6 +104,11 @@ func TestCertificateManagerViaServer(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create map status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var mapOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &mapOp)
+	if mapOp["done"] != true {
+		t.Fatalf("create map expected done Operation: %#v", mapOp)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, mapBase+"/srv-map", nil)

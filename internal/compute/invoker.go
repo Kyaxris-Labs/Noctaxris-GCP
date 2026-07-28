@@ -20,6 +20,10 @@ const EnvDockerHost = "NOCTAXRIS_GCP_DOCKER_HOST"
 // EnvDockerCertPath is the TLS material directory (ca.pem, cert.pem, key.pem).
 const EnvDockerCertPath = "NOCTAXRIS_GCP_DOCKER_CERT_PATH"
 
+// EnvNestedInvokeFailClosed opts into hard errors when nested dial/run fails (1/true).
+// Default unset: DockerInvoker soft-fails to mock with engine detail in the body.
+const EnvNestedInvokeFailClosed = "NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED"
+
 // InvokeRequest is the lab invoke payload passed to an Invoker.
 type InvokeRequest struct {
 	ServiceName string
@@ -81,12 +85,14 @@ func (MockInvoker) Invoke(ctx context.Context, req InvokeRequest) (InvokeResult,
 }
 
 // DockerInvoker dials the opt-in nested engine for a short allowlisted one-shot.
-// Soft-fails to Fallback (mock) with engine status detail when dial/run fails.
+// Soft-fails to Fallback (mock) with engine status detail when dial/run fails,
+// unless FailClosed is set (or EnvNestedInvokeFailClosed is truthy via NewInvoker).
 // Never mounts host docker.sock.
 type DockerInvoker struct {
 	Host       string
 	TLSCertDir string
 	Fallback   Invoker
+	FailClosed bool
 }
 
 // Invoke attempts nested RunLabOneShot; on failure soft-fails to mock with detail.
@@ -105,10 +111,16 @@ func (d DockerInvoker) Invoke(ctx context.Context, req InvokeRequest) (InvokeRes
 
 	cli, err := Dial(d.Host, d.TLSCertDir)
 	if err != nil {
+		if d.FailClosed {
+			return InvokeResult{}, nestedInvokeFailClosedErr("engine dial failed", err)
+		}
 		return softFailMock(ctx, fb, req, "engine dial failed")
 	}
 	defer cli.Close()
 	if !cli.Enabled() {
+		if d.FailClosed {
+			return InvokeResult{}, nestedInvokeFailClosedErr("engine disabled", nil)
+		}
 		return softFailMock(ctx, fb, req, "engine disabled")
 	}
 
@@ -120,6 +132,9 @@ func (d DockerInvoker) Invoke(ctx context.Context, req InvokeRequest) (InvokeRes
 	}
 	out, err := cli.RunLabOneShot(ctx, image)
 	if err != nil {
+		if d.FailClosed {
+			return InvokeResult{}, nestedInvokeFailClosedErr("engine run failed", err)
+		}
 		return softFailMock(ctx, fb, req, "engine run failed")
 	}
 
@@ -143,6 +158,18 @@ func (d DockerInvoker) Invoke(ctx context.Context, req InvokeRequest) (InvokeRes
 		Body:       body,
 		Headers:    map[string]string{"Content-Type": "application/json; charset=utf-8"},
 	}, nil
+}
+
+func nestedInvokeFailClosedErr(detail string, cause error) error {
+	if cause != nil {
+		return fmt.Errorf("compute: nested invoke %s: %w", detail, cause)
+	}
+	return fmt.Errorf("compute: nested invoke %s", detail)
+}
+
+func nestedInvokeFailClosedFromEnv() bool {
+	v := strings.TrimSpace(os.Getenv(EnvNestedInvokeFailClosed))
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 func softFailMock(ctx context.Context, fb Invoker, req InvokeRequest, detail string) (InvokeResult, error) {
@@ -190,6 +217,7 @@ func isHostDockerSock(host string) bool {
 }
 
 // NewInvoker returns MockInvoker when host is empty; otherwise DockerInvoker.
+// FailClosed follows EnvNestedInvokeFailClosed when truthy.
 func NewInvoker(dockerHost, tlsCertPath string) Invoker {
 	host := strings.TrimSpace(dockerHost)
 	if host == "" {
@@ -199,11 +227,12 @@ func NewInvoker(dockerHost, tlsCertPath string) Invoker {
 		Host:       host,
 		TLSCertDir: strings.TrimSpace(tlsCertPath),
 		Fallback:   MockInvoker{},
+		FailClosed: nestedInvokeFailClosedFromEnv(),
 	}
 }
 
 // NewInvokerFromEnv selects MockInvoker when Docker host is unset; otherwise a
-// DockerInvoker that attempts nested invoke and soft-fails to mock.
+// DockerInvoker that attempts nested invoke (soft-fail or fail-closed per env).
 func NewInvokerFromEnv() Invoker {
 	return NewInvoker(os.Getenv(EnvDockerHost), os.Getenv(EnvDockerCertPath))
 }

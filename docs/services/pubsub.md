@@ -20,7 +20,8 @@ address; Terraform typically uses the REST surface.
 | Seek | Seek to time (gRPC + REST `:seek`); clears ack state for later messages, deletes earlier backlog |
 | StreamingPull | Long-lived loop: recv acks/modacks, send messages until client cancels |
 | Push | If `pushConfig.pushEndpoint` is set, best-effort HTTP POST on publish (2xx acks that copy) |
-| Push update | REST `PATCH` and `:modifyPushConfig` |
+| Push OIDC | `pushConfig.oidcToken` (`serviceAccountEmail`, `audience`) stored and returned; push sets `Authorization: Bearer` with unsigned lab JWT (`alg=none`) |
+| Push update | REST `PATCH` and `:modifyPushConfig` (including OIDC fields) |
 
 REST paths (colon actions live inside path wildcards):
 
@@ -38,6 +39,14 @@ Publish fans out one stored copy per matching subscription. Pull leases messages
 subscription ack deadline; Acknowledge deletes them. Push delivery is best-effort
 and does not block publish success when the endpoint is unreachable.
 
+When `pushConfig.oidcToken.serviceAccountEmail` is set, push requests include
+`Authorization: Bearer <lab JWT>`. The lab JWT is unsigned theatre (`alg=none`,
+empty signature segment) with `aud` = audience (or the push endpoint when audience
+is empty), and `email` / `sub` = the service account email. This is not Google-signed
+OIDC. Unlike Cloud Scheduler, Pub/Sub returns `oidcToken` on get (API-shaped config).
+Lab catcher deliveries also record the `authorization` header value on the catcher
+JSON for tests.
+
 ### Authz
 
 Permissions such as `pubsub.topics.*`, `pubsub.subscriptions.*`, and
@@ -54,7 +63,7 @@ re-check IAM when a principal is present.
 - Snapshots are metadata-only (no backlog retention); seek-to-snapshot returns invalid argument
 - Filter language is attribute equality only (no HAS, OR, NOT)
 - Message retention and backlog quotas are not enforced
-- Push has no OIDC / auth header injection
+- Push OIDC uses unsigned lab JWT theatre (`alg=none`), not real Google-signed tokens
 - Dead-letter publishes on pull attempt count only (no separate deliveryAttempt metric API)
 
 ## Pointing clients
@@ -108,11 +117,11 @@ curl -sS -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   "$EP/v1/projects/$PROJECT/snapshots/lab-snap"
 
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"pushConfig":{"pushEndpoint":"http://127.0.0.1:9/push"}}' \
+  -d '{"pushConfig":{"pushEndpoint":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/push","oidcToken":{"serviceAccountEmail":"push-sa@noctaxris-gcp-local.iam.gserviceaccount.com","audience":"https://example.com"}}}' \
   "$EP/v1/projects/$PROJECT/subscriptions/lab-sub:modifyPushConfig"
 ```
 
-Also: `go test ./internal/store/ ./internal/server/ -run 'PubSub|DeadLetter' -count=1`
+Also: `go test ./internal/store/ ./internal/server/ -run 'PubSub|DeadLetter|OIDC' -count=1`
 (DLQ redelivery needs repeated pull + `modifyAckDeadline` 0 or expired lease; see store test.)
 
 ## Deferred depth
@@ -120,4 +129,4 @@ Also: `go test ./internal/store/ ./internal/server/ -run 'PubSub|DeadLetter' -co
 - Ordering keys / full exactly-once ack semantics / schemas
 - Snapshot backlog retention and seek-to-snapshot
 - Full filter language (OR / NOT / HAS)
-- Authenticated push (OIDC)
+- Real Google-signed push OIDC (lab uses `alg=none` theatre)

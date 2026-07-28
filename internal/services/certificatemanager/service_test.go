@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -51,10 +52,34 @@ func TestCertificatesAndMapsCRUD(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create cert status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var cert map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &cert)
-	if cert["name"] != "projects/"+project+"/locations/"+loc+"/certificates/lab-cert" {
+	var createOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &createOp)
+	if createOp["done"] != true {
+		t.Fatalf("create expected done Operation: %#v", createOp)
+	}
+	cert, _ := createOp["response"].(map[string]any)
+	if cert == nil {
+		t.Fatalf("create missing response: %#v", createOp)
+	}
+	wantName := "projects/" + project + "/locations/" + loc + "/certificates/lab-cert"
+	if cert["name"] != wantName {
 		t.Fatalf("cert=%#v", cert)
+	}
+	opName, _ := createOp["name"].(string)
+	if !strings.HasSuffix(opName, "/operations/create-lab-cert") {
+		t.Fatalf("op name=%q", opName)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/locations/"+loc+"/operations/create-lab-cert", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get operation status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var polled map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &polled)
+	if polled["done"] != true {
+		t.Fatalf("poll expected done: %#v", polled)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, certBase+"/lab-cert", nil)
@@ -72,6 +97,15 @@ func TestCertificatesAndMapsCRUD(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create map status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var mapOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &mapOp)
+	if mapOp["done"] != true {
+		t.Fatalf("create map expected done Operation: %#v", mapOp)
+	}
+	createdMap, _ := mapOp["response"].(map[string]any)
+	if createdMap == nil || createdMap["name"] == nil {
+		t.Fatalf("create map missing response: %#v", mapOp)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, mapBase, nil)

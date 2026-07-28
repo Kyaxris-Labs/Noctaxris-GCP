@@ -1,9 +1,13 @@
+cloud.google.com/go/bigtable v1.51.0 h1:AZh/vDoRdn8cz+CbdUjx/ajQGqit831Wo8dtIWsfNTY=
+cloud.google.com/go/bigtable v1.51.0/go.mod h1:PL9WVm/o2ET/MDj6i1Zt7eNW7YNY0iFOmSHTVvLdPmo=
 cloud.google.com/go/datastore v1.26.0 h1:9lgjj+DRv5Ay/tQ+vk9Ryz/G84ncnfwRC0RuHUGZm0U=
 cloud.google.com/go/datastore v1.26.0/go.mod h1:jvJVNe+S2nHVIndV1H/B4s9K3MLsTMqOKlxSrzHTxB4=
 cloud.google.com/go/firestore v1.24.0 h1:x0Z3hrgjYgo2wI9whuBRQcNc2hYwzZDQy/7pkUXbXcs=
 cloud.google.com/go/firestore v1.24.0/go.mod h1:5aojyjN4olKUnBZDCRWwM+NsdrrCX3t1qfyERZGOonM=
 cloud.google.com/go/iam v1.12.0 h1:Aki3bX9aHUDKPHfnRJfDcTdVedvy6quGBQcTqx3DRXk=
 cloud.google.com/go/iam v1.12.0/go.mod h1:FEZ4lXpADAC2AIpQY7LANNjjwyQ2jK439CI2VaD+sLY=
+cloud.google.com/go/longrunning v1.2.0 h1:WjYH3YHBGCxGJP9M4dWGHBfXr/cFIjMkNgWcJj7/iMM=
+cloud.google.com/go/longrunning v1.2.0/go.mod h1:5KMQALFGOCtFoi2xSOA1u3H7WKlhmckgiyFw7+LGQp0=
 cloud.google.com/go/pubsub/v2 v2.6.1 h1:jX6gnC4n8BgYx6MOYICgbbaXZpr1vKeNOE3Bn17P5zg=
 cloud.google.com/go/pubsub/v2 v2.6.1/go.mod h1:1y2lZnKfUFPZz0PU4YmXyk4lA11+xmYA42zbC32RkxQ=
 cloud.google.com/go/secretmanager v1.21.0 h1:e56QQaKWRyzBdUz40AeZaio/ZHAl268cFx3QFAAw9CY=

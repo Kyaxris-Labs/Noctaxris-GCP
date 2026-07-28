@@ -1,10 +1,10 @@
 # IAM
 
 Lab-complete IAM Admin REST for service accounts and user-managed keys, plus
-Workload Identity Federation pool/provider CRUD theatre and service account
-`generateAccessToken` impersonation theatre. Project IAM policies live on Cloud
-Resource Manager; per-service-account IAM policies are stored on the SA resource
-name.
+Workload Identity Federation pool/provider CRUD, STS token-exchange theatre, and
+service account `generateAccessToken` impersonation theatre. Project IAM
+policies live on Cloud Resource Manager; per-service-account IAM policies are
+stored on the SA resource name.
 
 ## Lab actions
 
@@ -36,6 +36,7 @@ name.
 | List WIF providers | `GET` | `.../workloadIdentityPools/{pool}/providers` |
 | Get WIF provider | `GET` | `.../workloadIdentityPools/{pool}/providers/{provider}` |
 | Delete WIF provider | `DELETE` | `.../workloadIdentityPools/{pool}/providers/{provider}` |
+| STS token exchange (lab) | `POST` | `/v1/token` |
 
 Permissions: `iam.serviceAccounts.*`, `iam.serviceAccountKeys.*`,
 `iam.workloadIdentityPools.*`, `iam.workloadIdentityPoolProviders.*` on
@@ -69,15 +70,41 @@ within 12 hours (same bound as the official Credentials API).
 optional `lifetime` (Duration ending in `s`, max 12h, default 1h), optional
 `delegates` (accepted, not enforced). Returns `accessToken` + `expireTime` and
 registers the token so Bearer auth becomes the target SA. Project may be `-`
-(Credentials-style) or a concrete project id. This is impersonation theatre, not
-STS / WIF token exchange.
+(Credentials-style) or a concrete project id.
 
-### Workload Identity Federation (metadata only)
+Authz uses `EvaluateAny` for `iam.serviceAccounts.getAccessToken` on the SA
+resource **or** the parent project. Bind
+`roles/iam.serviceAccountTokenCreator` on the target SA (or grant
+`getAccessToken` via `roles/owner` / an explicit project binding). Basic
+`roles/viewer` and `roles/editor` do **not** grant token impersonation. Root
+still bypasses.
+
+### Workload Identity Federation + STS
 
 Pool/provider CRUD stores display name, description, disabled flag, OIDC
 `issuerUri`, and `attributeMapping` JSON. Soft-delete sets `state=DELETED`.
-There is no STS endpoint, no OIDC discovery, and no federation into lab
-principals. Document clients accordingly: this is not real federation.
+
+`POST /v1/token` is a public STS theatre endpoint (no Bearer required; the
+`subject_token` authenticates the external identity). Required fields:
+
+| Field | Notes |
+|-------|--------|
+| `grant_type` | Must be `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `audience` | WIF provider resource name; optional `//iam.googleapis.com/` prefix |
+| `subject_token` | Lab accepts any non-empty string (no OIDC signature verify) |
+
+Optional: `subject_token_type` (accepted, not validated). JSON camelCase and
+form `snake_case` field names are both accepted.
+
+On success the lab returns `access_token`, `token_type=Bearer`, `expires_in=3600`,
+and registers the token as principal `wif:{providerId}:{subject}` where
+`subject` is a sanitized form of `subject_token` (alnum/`-`/`_`/`.`; others
+become `-`; max 64 chars). Unknown, deleted, or disabled pools/providers fail
+closed (`UNAUTHENTICATED`). Bind that principal on CRM/IAM policies using the
+literal member string `wif:{providerId}:{subject}` (the evaluator does not
+rewrite it to `serviceAccount:`).
+
+There is no OIDC discovery document and no real IdP signature verification.
 
 List keys accepts `pageSize` (default 100, max 100) and `pageToken` (integer
 offset); responses may include `nextPageToken`.
@@ -87,9 +114,7 @@ Create service account fails with `FAILED_PRECONDITION` when
 
 ## Emulator limits
 
-- WIF is metadata theatre only; no token exchange or federated auth.
-- `generateAccessToken` does not evaluate `roles/iam.serviceAccountTokenCreator`
-  on the target SA (root / project IAM `getAccessToken` permission only).
+- STS does not verify OIDC JWTs or call external IdPs; `subject_token` is lab theatre.
 - `signBlob` is SHA-256 theatre, not PKCS#1 / RSA signing.
 - `signJwt` is unsigned lab JWT theatre (`alg=none`), not RSA/ES256.
 - Soft-delete has no 30-day purge timer; rows remain until process data is wiped.
@@ -98,14 +123,14 @@ Create service account fails with `FAILED_PRECONDITION` when
 
 ## Deferred depth
 
-- STS / OIDC token exchange into lab principals
+- OIDC discovery + signature verification for real external IdPs
 - Custom roles CRUD beyond seeded roles
 - gRPC IAM Admin service registration
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ -run 'IAM|WIF|GenerateAccess' -count=1
+go test ./internal/kernel/authz/ ./internal/services/iam/ ./internal/kernel/authn/ ./internal/server/ -count=1 -run 'TokenCreator|STS|WIF|GenerateAccess|IAM|Token'
 gcloud config set api_endpoint_overrides/iam http://127.0.0.1:4588/
 gcloud iam service-accounts create lab-runner \
   --display-name="Lab Runner" --project=noctaxris-gcp-local
@@ -113,6 +138,14 @@ TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"displayName":"Lab Pool"}' \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/workloadIdentityPools?workloadIdentityPoolId=lab-pool"
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"displayName":"OIDC","oidc":{"issuerUri":"https://example.com"}}' \
+  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/workloadIdentityPools/lab-pool/providers?workloadIdentityPoolProviderId=oidc"
+curl -s -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  --data-urlencode "audience=//iam.googleapis.com/projects/noctaxris-gcp-local/locations/global/workloadIdentityPools/lab-pool/providers/oidc" \
+  --data-urlencode "subject_token=lab-sub" \
+  "http://127.0.0.1:4588/v1/token"
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"],"lifetime":"600s"}' \
   "http://127.0.0.1:4588/v1/projects/-/serviceAccounts/lab-runner@noctaxris-gcp-local.iam.gserviceaccount.com:generateAccessToken"

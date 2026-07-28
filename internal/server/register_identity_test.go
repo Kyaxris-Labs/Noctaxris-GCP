@@ -527,3 +527,34 @@ func createLabServiceAccount(t *testing.T, srv *server.Server, cfg config.Config
 	}
 	return email
 }
+
+// mintLabSABearer creates a user-managed key and returns the lab Bearer token from private_key.
+func mintLabSABearer(t *testing.T, srv *server.Server, cfg config.Config, email string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts/"+email+"/keys", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create key status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var keyBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &keyBody); err != nil {
+		t.Fatal(err)
+	}
+	b64, _ := keyBody["privateKeyData"].(string)
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cred map[string]any
+	if err := json.Unmarshal(raw, &cred); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := cred["private_key"].(string)
+	if token == "" {
+		t.Fatalf("missing private_key in %#v", cred)
+	}
+	return token
+}

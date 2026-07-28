@@ -28,7 +28,8 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   extended with `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` (exact refs, or prefixes
   ending in `/` with digest required for registry hosts).
 - Nested invoke soft-fail responses expose engine mode (`mock` / `nested`) but
-  not raw dial/run error strings to clients.
+  not raw dial/run error strings to clients. Set `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED=1`
+  (or `true`) to return an error on dial/run/disabled instead of soft-failing to mock.
 - If nested containers fail on Desktop/WSL2, add `compose.engine-privileged.yaml`
   (`privileged: true`). Keep host publish on `127.0.0.1:4588`.
 
@@ -38,8 +39,10 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 - Root token comes from `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` and maps to `NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT`.
 - Other tokens are SHA-256 hashed and looked up in `access_tokens` (minted when IAM creates a service account key).
 - Missing or invalid credentials return Google JSON `UNAUTHENTICATED` (HTTP 401).
-- Public paths: `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`.
+- Public paths: `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`,
+  and STS `POST /v1/token` (WIF subject_token exchange; no Bearer).
   Lab HTTP catcher deliveries are recorded in-process (no public POST required).
+  See [services/iam.md](services/iam.md) for TokenCreator and STS theatre.
 
 ## Example root refusal
 
@@ -59,8 +62,10 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
   `roles/viewer` is read-only metadata (suffix `.get` / `.list` / `.getIamPolicy`
   / `.search` only — never substring `.get`, so `getAccessToken` is denied).
   Viewer does **not** grant `secretmanager.versions.access` (needs
-  `roles/secretmanager.secretAccessor` or owner). `testIamPermissions` returns
-  only granted permissions.
+  `roles/secretmanager.secretAccessor` or owner).
+  `roles/iam.serviceAccountTokenCreator` on a service account grants
+  `getAccessToken` / `actAs` / sign methods for impersonation theatre.
+  `testIamPermissions` returns only granted permissions.
 
 ## Outbound HTTP (SSRF fail-closed)
 

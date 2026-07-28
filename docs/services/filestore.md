@@ -5,7 +5,8 @@ Lab Cloud Filestore Admin REST for instances. No NFS server is started;
 
 ## Status
 
-**lab** — location-scoped instance CRUD under a `/file/v1/` path prefix (no LRO).
+**lab** — location-scoped instance CRUD under a `/file/v1/` path prefix.
+Create returns a completed Operation (`done: true` + `response`).
 
 ## Wire protocol
 
@@ -17,6 +18,16 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 | `GET` | `/file/v1/projects/{p}/locations/{loc}/instances` |
 | `GET` | `/file/v1/projects/{p}/locations/{loc}/instances/{instance}` |
 | `DELETE` | `/file/v1/projects/{p}/locations/{loc}/instances/{instance}` |
+| `GET` | `/file/v1/projects/{p}/locations/{loc}/operations/{operation}` |
+
+Create returns a completed Operation:
+
+```json
+{"name":"projects/.../locations/.../operations/create-{id}","done":true,"response":{"@type":"...Instance","name":"...","state":"READY",...}}
+```
+
+`GET` of the instance by resource name still returns the instance.
+`GET .../operations/{operation}` returns `{name, done: true}` immediately.
 
 ### Path prefix (Memorystore conflict)
 
@@ -41,13 +52,14 @@ Official `file.googleapis.com/v1/...` shape is preserved after the `/file` prefi
 Checked on `projects/{project}`:
 
 - `file.instances.create|get|list|delete`
+- `file.operations.get`
 
 Seeded Service Usage: `file.googleapis.com`.
 
 ## Emulator limits
 
 - No NFS binary / TCP listener; file share capacity and network modes are stored JSON only
-- Create is synchronous (resource returned `READY`; no long-running Operation)
+- Create Operation is completed immediately (`READY` in `response`; no async worker)
 - No backups, snapshots, or replication APIs
 
 ## Deferred depth
@@ -68,6 +80,6 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 ```
 
 ```bash
-# Prefer filestore_custom_endpoint ending in /file/v1/ (Terraform LRO skip; see tests/terraform/README.md)
+# Prefer filestore_custom_endpoint ending in /file/v1/ (see tests/terraform/README.md)
 # gcloud api_endpoint_overrides/file alone (bare host) will miss /file/v1 on this lab.
 ```

@@ -77,6 +77,9 @@ func TestIsPublicPath(t *testing.T) {
 	if !authn.IsPublicPath("/identitytoolkit.googleapis.com/v1/accounts:signUp") {
 		t.Fatal("Identity Toolkit client paths should be public")
 	}
+	if !authn.IsPublicPath("/v1/token") {
+		t.Fatal("STS /v1/token should be public")
+	}
 	if authn.IsPublicPath("/v1/projects") {
 		t.Fatal("API path should require auth")
 	}

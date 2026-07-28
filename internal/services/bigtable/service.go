@@ -1,23 +1,32 @@
 package bigtable
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/bigtable/admin/apiv2/adminpb"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
+	"google.golang.org/grpc"
 )
 
-// Service serves Bigtable Admin REST v2 (instances/tables control-plane theatre).
-// No Bigtable server binary; no row reads/writes.
+// PrincipalResolver resolves a principal for gRPC.
+type PrincipalResolver func(ctx context.Context) (authn.Principal, error)
+
+// Service serves Bigtable Admin REST v2 and Instance Admin gRPC lite
+// (instances/tables control-plane theatre). No Bigtable server binary; no row reads/writes.
 type Service struct {
-	Store *store.Store
-	Authz *authz.Evaluator
+	adminpb.UnimplementedBigtableInstanceAdminServer
+
+	Store         *store.Store
+	Authz         *authz.Evaluator
+	GRPCPrincipal PrincipalResolver
 }
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
@@ -33,6 +42,11 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v2/projects/{project}/instances/{instance}/tables", s.wrap(principalFrom, s.createTable))
 	mux.HandleFunc("GET /v2/projects/{project}/instances/{instance}/tables/{table}", s.wrap(principalFrom, s.getTable))
 	mux.HandleFunc("DELETE /v2/projects/{project}/instances/{instance}/tables/{table}", s.wrap(principalFrom, s.deleteTable))
+}
+
+// RegisterGRPC attaches BigtableInstanceAdmin to gs.
+func (s *Service) RegisterGRPC(gs *grpc.Server) {
+	adminpb.RegisterBigtableInstanceAdminServer(gs, s)
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)

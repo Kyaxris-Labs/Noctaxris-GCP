@@ -277,17 +277,38 @@ func (s *Service) deliverPush(copies []store.PubSubMessage) {
 			},
 			"subscription": m.Subscription,
 		})
+		authHeader := ""
+		if email := strings.TrimSpace(sub.OidcServiceAccountEmail); email != "" {
+			aud := strings.TrimSpace(sub.OidcAudience)
+			if aud == "" {
+				aud = sub.PushEndpoint
+			}
+			authHeader = "Bearer " + labPushOIDCJWT(email, aud)
+		}
 		u, err := http.NewRequest(http.MethodPost, sub.PushEndpoint, bytes.NewReader(body))
 		if err != nil {
 			continue
 		}
+		u.Header.Set("Content-Type", "application/json")
+		if authHeader != "" {
+			u.Header.Set("Authorization", authHeader)
+		}
 		// Lab catcher: acknowledge without outbound HTTP (same-process theatre).
 		if pu, perr := parsePushURL(sub.PushEndpoint); perr == nil && httpegress.IsLabCatcher(pu, strings.ToLower(pu.Scheme)) {
-			store.RecordHTTPCatcher(string(body))
+			catcherBody := string(body)
+			if authHeader != "" {
+				var wrapped map[string]any
+				if err := json.Unmarshal(body, &wrapped); err == nil {
+					wrapped["authorization"] = authHeader
+					if raw, err := json.Marshal(wrapped); err == nil {
+						catcherBody = string(raw)
+					}
+				}
+			}
+			store.RecordHTTPCatcher(catcherBody)
 			_ = s.Store.Acknowledge(m.Subscription, []string{m.AckID})
 			continue
 		}
-		u.Header.Set("Content-Type", "application/json")
 		resp, err := s.httpClient().Do(u)
 		if err != nil {
 			continue
@@ -298,6 +319,25 @@ func (s *Service) deliverPush(copies []store.PubSubMessage) {
 			_ = s.Store.Acknowledge(m.Subscription, []string{m.AckID})
 		}
 	}
+}
+
+// labPushOIDCJWT mints an unsigned lab JWT (alg=none, empty signature) for push Authorization.
+// Claims: aud, email, sub. Not real Google-signed OIDC.
+func labPushOIDCJWT(serviceAccountEmail, audience string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload, _ := json.Marshal(map[string]any{
+		"aud":   audience,
+		"email": serviceAccountEmail,
+		"sub":   serviceAccountEmail,
+	})
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + "."
+}
+
+func oidcFromPushConfig(pc *pubsubpb.PushConfig) (email, audience string) {
+	if pc == nil || pc.GetOidcToken() == nil {
+		return "", ""
+	}
+	return strings.TrimSpace(pc.GetOidcToken().GetServiceAccountEmail()), strings.TrimSpace(pc.GetOidcToken().GetAudience())
 }
 
 func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscription) (*pubsubpb.Subscription, error) {
@@ -316,6 +356,7 @@ func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscrip
 	if err := validatePushEndpoint(push); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	oidcEmail, oidcAud := oidcFromPushConfig(sub.GetPushConfig())
 	dlTopic := ""
 	maxAttempts := 0
 	if dl := sub.GetDeadLetterPolicy(); dl != nil {
@@ -324,7 +365,7 @@ func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscrip
 	}
 	created, ok, err := s.Store.CreateSubscriptionFull(
 		sub.GetName(), sub.GetTopic(), projectID, ack, push, sub.GetLabels(), sub.GetFilter(),
-		dlTopic, maxAttempts, sub.GetEnableExactlyOnceDelivery(),
+		dlTopic, maxAttempts, sub.GetEnableExactlyOnceDelivery(), oidcEmail, oidcAud,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "topic not found") || strings.Contains(err.Error(), "dead letter topic not found") {
@@ -415,12 +456,13 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 	var filter *string
 	var deadLetter *store.PubSubDeadLetterPolicy
 	var enableExactlyOnce *bool
+	var oidc *store.PubSubOIDCToken
 	for _, p := range paths {
 		switch p {
 		case "ack_deadline_seconds":
 			v := int(req.GetSubscription().GetAckDeadlineSeconds())
 			ack = &v
-		case "push_config", "push_config.push_endpoint":
+		case "push_config", "push_config.push_endpoint", "push_config.oidc_token":
 			ep := ""
 			if req.GetSubscription().GetPushConfig() != nil {
 				ep = req.GetSubscription().GetPushConfig().GetPushEndpoint()
@@ -429,6 +471,8 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 				return nil, status.Error(codes.InvalidArgument, err.Error())
 			}
 			push = &ep
+			email, aud := oidcFromPushConfig(req.GetSubscription().GetPushConfig())
+			oidc = &store.PubSubOIDCToken{ServiceAccountEmail: email, Audience: aud}
 		case "labels":
 			l := req.GetSubscription().GetLabels()
 			if l == nil {
@@ -450,7 +494,7 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 			enableExactlyOnce = &v
 		}
 	}
-	updated, err := s.Store.UpdateSubscription(name, ack, push, labels, filter, deadLetter, enableExactlyOnce)
+	updated, err := s.Store.UpdateSubscription(name, ack, push, labels, filter, deadLetter, enableExactlyOnce, oidc)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, status.Error(codes.NotFound, err.Error())
@@ -461,6 +505,32 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 	return subscriptionPB(updated), nil
+}
+
+func (s *Service) ModifyPushConfig(ctx context.Context, req *pubsubpb.ModifyPushConfigRequest) (*emptypb.Empty, error) {
+	projectID := projectFromResource(req.GetSubscription())
+	if projectID == "" {
+		return nil, gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid subscription name")
+	}
+	if err := s.require(ctx, "pubsub.subscriptions.update", projectResource(projectID)); err != nil {
+		return nil, err
+	}
+	ep := ""
+	if req.GetPushConfig() != nil {
+		ep = req.GetPushConfig().GetPushEndpoint()
+	}
+	if err := validatePushEndpoint(ep); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	email, aud := oidcFromPushConfig(req.GetPushConfig())
+	oidc := &store.PubSubOIDCToken{ServiceAccountEmail: email, Audience: aud}
+	if _, err := s.Store.UpdateSubscription(req.GetSubscription(), nil, &ep, nil, nil, nil, nil, oidc); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, status.Error(codes.NotFound, "subscription not found")
+		}
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return &emptypb.Empty{}, nil
 }
 
 func (s *Service) Pull(ctx context.Context, req *pubsubpb.PullRequest) (*pubsubpb.PullResponse, error) {
@@ -748,8 +818,17 @@ func subscriptionPB(sub *store.PubSubSubscription) *pubsubpb.Subscription {
 		Filter:                    sub.Filter,
 		EnableExactlyOnceDelivery: sub.EnableExactlyOnceDelivery,
 	}
-	if sub.PushEndpoint != "" {
-		out.PushConfig = &pubsubpb.PushConfig{PushEndpoint: sub.PushEndpoint}
+	if sub.PushEndpoint != "" || sub.OidcServiceAccountEmail != "" {
+		pc := &pubsubpb.PushConfig{PushEndpoint: sub.PushEndpoint}
+		if sub.OidcServiceAccountEmail != "" {
+			pc.AuthenticationMethod = &pubsubpb.PushConfig_OidcToken_{
+				OidcToken: &pubsubpb.PushConfig_OidcToken{
+					ServiceAccountEmail: sub.OidcServiceAccountEmail,
+					Audience:            sub.OidcAudience,
+				},
+			}
+		}
+		out.PushConfig = pc
 	}
 	if sub.DeadLetterTopic != "" {
 		out.DeadLetterPolicy = &pubsubpb.DeadLetterPolicy{

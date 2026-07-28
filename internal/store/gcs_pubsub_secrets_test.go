@@ -120,7 +120,7 @@ func TestGCSComposeCopyPatchIAM(t *testing.T) {
 		t.Fatalf("patch = %#v", patched)
 	}
 	loc := "EU"
-	b, err := st.PatchBucket("lab-bucket", &loc, nil, &map[string]string{"env": "lab"})
+	b, err := st.PatchBucket("lab-bucket", &loc, nil, &map[string]string{"env": "lab"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,12 +150,12 @@ func TestPubSubUpdateModifyPushFields(t *testing.T) {
 	if err != nil || !ok || tgot.Labels["a"] != "2" {
 		t.Fatalf("topic labels = %#v", tgot)
 	}
-	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/push", nil, "", "", 0, false); err != nil || !created {
+	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/push", nil, "", "", 0, false, "", ""); err != nil || !created {
 		t.Fatalf("sub: %v %v", created, err)
 	}
 	ack := 30
 	ep := ""
-	updated, err := st.UpdateSubscription(sub, &ack, &ep, &map[string]string{"s": "1"}, nil, nil, nil)
+	updated, err := st.UpdateSubscription(sub, &ack, &ep, &map[string]string{"s": "1"}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +168,52 @@ func TestPubSubUpdateModifyPushFields(t *testing.T) {
 	}
 	if err := st.ModifyAckDeadline(sub, []string{copies[0].AckID}, 60); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPubSubOIDCTokenPersist(t *testing.T) {
+	st := openTestStore(t)
+	topic := "projects/noctaxris-gcp-local/topics/oidc-t"
+	sub := "projects/noctaxris-gcp-local/subscriptions/oidc-s"
+	if _, created, err := st.CreateTopic(topic, "noctaxris-gcp-local"); err != nil || !created {
+		t.Fatalf("topic: %v %v", created, err)
+	}
+	created, ok, err := st.CreateSubscriptionFull(
+		sub, topic, "noctaxris-gcp-local", 10,
+		"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/oidc",
+		nil, "", "", 0, false,
+		"sa@noctaxris-gcp-local.iam.gserviceaccount.com", "https://aud.example",
+	)
+	if err != nil || !ok {
+		t.Fatalf("create: ok=%v err=%v", ok, err)
+	}
+	if created.OidcServiceAccountEmail != "sa@noctaxris-gcp-local.iam.gserviceaccount.com" || created.OidcAudience != "https://aud.example" {
+		t.Fatalf("created oidc = %#v", created)
+	}
+	got, ok, err := st.GetSubscription(sub)
+	if err != nil || !ok {
+		t.Fatalf("get: %v %v", ok, err)
+	}
+	if got.OidcServiceAccountEmail != created.OidcServiceAccountEmail || got.OidcAudience != created.OidcAudience {
+		t.Fatalf("get oidc = %#v", got)
+	}
+	ep := "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/oidc2"
+	updated, err := st.UpdateSubscription(sub, nil, &ep, nil, nil, nil, nil, &store.PubSubOIDCToken{
+		ServiceAccountEmail: "other@noctaxris-gcp-local.iam.gserviceaccount.com",
+		Audience:            "https://other.aud",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.OidcAudience != "https://other.aud" || updated.PushEndpoint != ep {
+		t.Fatalf("updated = %#v", updated)
+	}
+	cleared, err := st.UpdateSubscription(sub, nil, &ep, nil, nil, nil, nil, &store.PubSubOIDCToken{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.OidcServiceAccountEmail != "" || cleared.OidcAudience != "" {
+		t.Fatalf("expected oidc cleared, got %#v", cleared)
 	}
 }
 
@@ -275,7 +321,7 @@ func TestPubSubFilterAndSeek(t *testing.T) {
 	if _, created, err := st.CreateTopic(topic, "noctaxris-gcp-local"); err != nil || !created {
 		t.Fatalf("topic: %v %v", created, err)
 	}
-	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "", nil, `attributes.region = "us"`, "", 0, false); err != nil || !created {
+	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "", nil, `attributes.region = "us"`, "", 0, false, "", ""); err != nil || !created {
 		t.Fatalf("sub: %v %v", created, err)
 	}
 	if _, _, err := st.PublishFanout(topic, []byte("eu"), map[string]string{"region": "eu"}); err != nil {
@@ -385,7 +431,7 @@ func TestPubSubDeadLetterAndExactlyOnce(t *testing.T) {
 	if _, created, err := st.CreateTopic(dlTopic, "noctaxris-gcp-local"); err != nil || !created {
 		t.Fatalf("dl topic: %v %v", created, err)
 	}
-	created, ok, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 1, "", nil, "", dlTopic, 5, true)
+	created, ok, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 1, "", nil, "", dlTopic, 5, true, "", "")
 	if err != nil || !ok {
 		t.Fatalf("sub: ok=%v err=%v", ok, err)
 	}
@@ -424,6 +470,71 @@ func TestPubSubDeadLetterAndExactlyOnce(t *testing.T) {
 	}
 	if len(dlMsgs) != 1 || string(dlMsgs[0].Data) != "poison" {
 		t.Fatalf("dl msgs = %#v", dlMsgs)
+	}
+}
+
+func TestGCSRetentionEnforce(t *testing.T) {
+	st := openTestStore(t)
+	if _, created, err := st.CreateBucket("retain-bucket", "noctaxris-gcp-local", "US", "STANDARD"); err != nil || !created {
+		t.Fatalf("create bucket: created=%v err=%v", created, err)
+	}
+	_, err := st.PatchBucket("retain-bucket", nil, nil, nil, &store.BucketRetentionPolicy{
+		RetentionPeriodSeconds: 3600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, ok, err := st.GetBucket("retain-bucket")
+	if err != nil || !ok {
+		t.Fatalf("get bucket: ok=%v err=%v", ok, err)
+	}
+	if b.RetentionPeriodSeconds != 3600 || b.RetentionEffectiveTime == "" {
+		t.Fatalf("retention = %#v", b)
+	}
+	if _, err := st.PutObjectBytes("retain-bucket", "keep.txt", "text/plain", []byte("held")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DeleteObject("retain-bucket", "keep.txt", 0); err != store.ErrRetentionPolicyNotMet {
+		t.Fatalf("delete while retained: err=%v", err)
+	}
+	if _, err := st.PutObjectBytes("retain-bucket", "keep.txt", "text/plain", []byte("overwrite")); err != store.ErrRetentionPolicyNotMet {
+		t.Fatalf("overwrite while retained: err=%v", err)
+	}
+	past := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano)
+	if err := st.SetObjectCreatedAt("retain-bucket", "keep.txt", 0, past); err != nil {
+		t.Fatal(err)
+	}
+	found, err := st.DeleteObject("retain-bucket", "keep.txt", 0)
+	if err != nil || !found {
+		t.Fatalf("delete after retention: found=%v err=%v", found, err)
+	}
+
+	if _, err := st.PutObjectBytes("retain-bucket", "lock.txt", "text/plain", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.PatchBucket("retain-bucket", nil, nil, nil, &store.BucketRetentionPolicy{
+		RetentionPeriodSeconds: 3600,
+		IsLocked:               true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.PatchBucket("retain-bucket", nil, nil, nil, &store.BucketRetentionPolicy{
+		RetentionPeriodSeconds: 60,
+	})
+	if err != store.ErrRetentionPolicyLocked {
+		t.Fatalf("shorten locked: err=%v", err)
+	}
+	_, err = st.PatchBucket("retain-bucket", nil, nil, nil, &store.BucketRetentionPolicy{
+		RetentionPeriodSeconds: 7200,
+		IsLocked:               true,
+	})
+	if err != nil {
+		t.Fatalf("lengthen locked: %v", err)
+	}
+	got, ok, err := st.GetBucket("retain-bucket")
+	if err != nil || !ok || got.RetentionPeriodSeconds != 7200 || !got.RetentionIsLocked {
+		t.Fatalf("after lengthen = %#v ok=%v err=%v", got, ok, err)
 	}
 }
 

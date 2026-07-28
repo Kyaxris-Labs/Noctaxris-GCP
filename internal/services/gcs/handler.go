@@ -141,7 +141,7 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(body.Labels) > 0 {
-		b, err = h.Store.PatchBucket(body.Name, nil, nil, &body.Labels)
+		b, err = h.Store.PatchBucket(body.Name, nil, nil, &body.Labels, nil)
 		if err != nil {
 			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 			return
@@ -209,16 +209,36 @@ func (h *Handler) patchBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Location     *string            `json:"location"`
-		StorageClass *string            `json:"storageClass"`
-		Labels       *map[string]string `json:"labels"`
+		Location        *string            `json:"location"`
+		StorageClass    *string            `json:"storageClass"`
+		Labels          *map[string]string `json:"labels"`
+		RetentionPolicy *struct {
+			RetentionPeriod json.RawMessage `json:"retentionPeriod"`
+			IsLocked        *bool           `json:"isLocked"`
+		} `json:"retentionPolicy"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid bucket patch body")
 		return
 	}
-	updated, err := h.Store.PatchBucket(name, body.Location, body.StorageClass, body.Labels)
+	var retention *store.BucketRetentionPolicy
+	if body.RetentionPolicy != nil {
+		period, err := parseRetentionPeriod(body.RetentionPolicy.RetentionPeriod)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "invalid retentionPeriod")
+			return
+		}
+		retention = &store.BucketRetentionPolicy{RetentionPeriodSeconds: period}
+		if body.RetentionPolicy.IsLocked != nil && *body.RetentionPolicy.IsLocked {
+			retention.IsLocked = true
+		}
+	}
+	updated, err := h.Store.PatchBucket(name, body.Location, body.StorageClass, body.Labels, retention)
 	if err != nil {
+		if err == store.ErrRetentionPolicyLocked {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "retention policy is locked")
+			return
+		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
@@ -559,6 +579,10 @@ func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 	found, err := h.Store.DeleteObject(bucket, object, gen)
 	if err != nil {
+		if err == store.ErrRetentionPolicyNotMet {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "retention policy not met")
+			return
+		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
@@ -719,6 +743,10 @@ func (h *Handler) composeObject(w http.ResponseWriter, r *http.Request, dest str
 	}
 	obj, err := h.Store.ComposeObject(bucket, dest, sources, body.Destination.ContentType)
 	if err != nil {
+		if err == store.ErrRetentionPolicyNotMet {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "retention policy not met")
+			return
+		}
 		if strings.Contains(err.Error(), "at most 32") {
 			gcperrors.InvalidArgument(w, err.Error())
 			return
@@ -775,6 +803,10 @@ func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, srcObject, 
 	}
 	obj, err := h.Store.CopyObject(srcBucket, srcObject, gen, dstBucket, dstObject)
 	if err != nil {
+		if err == store.ErrRetentionPolicyNotMet {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "retention policy not met")
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			gcperrors.NotFound(w, err.Error())
 			return
@@ -827,6 +859,10 @@ func (h *Handler) rewriteObject(w http.ResponseWriter, r *http.Request, srcObjec
 	}
 	obj, err := h.Store.RewriteObject(srcBucket, srcObject, gen, dstBucket, dstObject)
 	if err != nil {
+		if err == store.ErrRetentionPolicyNotMet {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "retention policy not met")
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			gcperrors.NotFound(w, err.Error())
 			return
@@ -943,6 +979,10 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 	}
 	obj, err := h.Store.PutObjectBytes(bucket, name, contentType, data)
 	if err != nil {
+		if err == store.ErrRetentionPolicyNotMet {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "retention policy not met")
+			return
+		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
@@ -1027,6 +1067,10 @@ func (h *Handler) putResumableUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	obj, err := h.Store.CompleteUploadSession(uploadID, data)
 	if err != nil {
+		if err == store.ErrRetentionPolicyNotMet {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "retention policy not met")
+			return
+		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
@@ -1065,6 +1109,10 @@ func (h *Handler) putMediaUpload(w http.ResponseWriter, r *http.Request, bucket 
 	}
 	obj, err := h.Store.PutObjectBytes(bucket, name, contentType, data)
 	if err != nil {
+		if err == store.ErrRetentionPolicyNotMet {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "retention policy not met")
+			return
+		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
@@ -1111,7 +1159,7 @@ func bucketJSON(b *store.Bucket) map[string]any {
 	if updated == "" {
 		updated = b.CreatedAt
 	}
-	return map[string]any{
+	out := map[string]any{
 		"kind":           "storage#bucket",
 		"id":             b.Name,
 		"name":           b.Name,
@@ -1123,6 +1171,43 @@ func bucketJSON(b *store.Bucket) map[string]any {
 		"updated":        updated,
 		"selfLink":       "/storage/v1/b/" + b.Name,
 	}
+	if b.RetentionPeriodSeconds > 0 {
+		out["retentionPolicy"] = map[string]any{
+			"retentionPeriod": strconv.FormatInt(b.RetentionPeriodSeconds, 10),
+			"isLocked":        b.RetentionIsLocked,
+			"effectiveTime":   b.RetentionEffectiveTime,
+		}
+	}
+	return out
+}
+
+func parseRetentionPeriod(raw json.RawMessage) (int64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+	var asNum int64
+	if err := json.Unmarshal(raw, &asNum); err == nil {
+		if asNum < 0 {
+			return 0, fmt.Errorf("negative retentionPeriod")
+		}
+		return asNum, nil
+	}
+	var asStr string
+	if err := json.Unmarshal(raw, &asStr); err != nil {
+		return 0, err
+	}
+	asStr = strings.TrimSpace(asStr)
+	if asStr == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(asStr, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("negative retentionPeriod")
+	}
+	return n, nil
 }
 
 func objectJSON(o *store.ObjectMeta) map[string]any {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -44,14 +45,37 @@ func TestFilestoreInstancesCRUD(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var inst map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &inst)
+	var createOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &createOp)
+	if createOp["done"] != true {
+		t.Fatalf("create expected done Operation: %#v", createOp)
+	}
+	inst, _ := createOp["response"].(map[string]any)
+	if inst == nil {
+		t.Fatalf("create missing response: %#v", createOp)
+	}
 	if inst["state"] != "READY" || inst["tier"] != "BASIC_HDD" {
 		t.Fatalf("instance=%#v", inst)
 	}
 	shares, _ := inst["fileShares"].([]any)
 	if len(shares) != 1 {
 		t.Fatalf("fileShares=%#v", inst["fileShares"])
+	}
+	opName, _ := createOp["name"].(string)
+	if !strings.HasSuffix(opName, "/operations/create-lab-nfs") {
+		t.Fatalf("op name=%q", opName)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/file/v1/projects/noctaxris-gcp-local/locations/"+loc+"/operations/create-lab-nfs", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get operation status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var polled map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &polled)
+	if polled["done"] != true {
+		t.Fatalf("poll expected done: %#v", polled)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, base+"/lab-nfs", nil)

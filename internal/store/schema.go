@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS buckets (
   storage_class TEXT NOT NULL DEFAULT 'STANDARD',
   labels_json TEXT NOT NULL DEFAULT '{}',
   metageneration INTEGER NOT NULL DEFAULT 1,
+  retention_period_seconds INTEGER NOT NULL DEFAULT 0,
+  retention_is_locked INTEGER NOT NULL DEFAULT 0,
+  retention_effective_time TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT ''
 );
@@ -103,6 +106,8 @@ CREATE TABLE IF NOT EXISTS pubsub_subscriptions (
   dead_letter_topic TEXT NOT NULL DEFAULT '',
   max_delivery_attempts INTEGER NOT NULL DEFAULT 0,
   enable_exactly_once_delivery INTEGER NOT NULL DEFAULT 0,
+  oidc_service_account_email TEXT NOT NULL DEFAULT '',
+  oidc_audience TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 

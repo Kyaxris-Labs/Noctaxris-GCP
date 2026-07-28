@@ -6,15 +6,15 @@ with honest emulator limits on each page.
 | Service | Status | Doc | Protocol |
 |---------|--------|-----|----------|
 | Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects, org seed, folders, tag keys/bindings lite |
-| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys, WIF pool/provider theatre, generateAccessToken |
+| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys, WIF pool/provider + STS `/v1/token`, TokenCreator `generateAccessToken` |
 | Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable |
-| Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL theatre (`STORAGE_EMULATOR_HOST`) |
-| Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST topics/subscriptions/snapshots; dead-letter + exactly-once flag (`PUBSUB_EMULATOR_HOST`) |
+| Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL; bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
+| Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST topics/subscriptions/snapshots; dead-letter + exactly-once; push `oidcToken` Bearer JWT (`PUBSUB_EMULATOR_HOST`) |
 | Secret Manager | lab | [secret-manager.md](secret-manager.md) | REST + gRPC; rotation config + lab `:rotateSecret` |
 | Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1; atomic Commit + BatchWrite (`FIRESTORE_EMULATOR_HOST`) |
 | Cloud KMS | lab | [kms.md](kms.md) | REST v1 symmetric + RSA_SIGN_PSS sign/verify |
 | Cloud Logging | lab | [logging.md](logging.md) | REST v2 entries, sinks, one-shot tail, copy theatre |
-| Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke` status/delay + Invoker hooks |
+| Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke` status/delay; opt-in nested fail-closed |
 | Cloud Functions | lab | [cloud-functions.md](cloud-functions.md) | REST Functions v2, upload URL + source accept, IAM, `:invoke` stub |
 | Cloud Scheduler | lab | [cloud-scheduler.md](cloud-scheduler.md) | REST v1 jobs, 5-field cron next-run, pause/resume, OIDC audience |
 | Cloud Tasks | lab | [cloud-tasks.md](cloud-tasks.md) | REST v2 queues/tasks, rate limits, retry, App Engine fields, `:run` |
@@ -28,15 +28,15 @@ with honest emulator limits on each page.
 | Workflows | lab | [workflows.md](workflows.md) | REST v1 workflows CRUD + executions SUCCEEDED theatre |
 | Cloud Spanner | lab | [spanner.md](spanner.md) | REST v1 instances/databases; session commit insert + ExecuteSql/Read rows |
 | App Engine | lab | [app-engine.md](app-engine.md) | REST Admin API v1 apps/services/versions (control-plane theatre) |
-| Compute Engine | lab | [compute-engine.md](compute-engine.md) | REST compute/v1 instances (metadata) + VPC/firewall CRUD; firewall `:validate` |
-| Cloud Bigtable | lab | [bigtable.md](bigtable.md) | REST Admin API v2 instances/tables (control-plane theatre) |
+| Compute Engine | lab | [compute-engine.md](compute-engine.md) | REST compute/v1 instances (metadata) + VPC/firewall CRUD; Images list/get/family stubs; firewall `:validate` |
+| Cloud Bigtable | lab | [bigtable.md](bigtable.md) | REST Admin API v2 + Instance Admin gRPC lite (instances/tables control-plane) |
 | Memorystore Redis | lab | [memorystore.md](memorystore.md) | REST v1 location-scoped instances (no Redis process) |
-| Filestore | lab | [filestore.md](filestore.md) | REST `/file/v1/` instances CRUD theatre (no NFS; avoids Memorystore path clash) |
+| Filestore | lab | [filestore.md](filestore.md) | REST `/file/v1/` instances CRUD; create returns completed Operation (`done:true`; no NFS; avoids Memorystore path clash) |
 | Vertex AI | lab | [vertex-ai.md](vertex-ai.md) | Publisher `:predict` / `:generateContent` canned JSON; allowlisted model ids |
-| Cloud DNS | lab | [cloud-dns.md](cloud-dns.md) | REST dns/v1 managedZones + rrsets CRUD |
+| Cloud DNS | lab | [cloud-dns.md](cloud-dns.md) | REST dns/v1 managedZones + rrsets CRUD + Changes create/get/list theatre |
 | Dataflow | lab | [dataflow.md](dataflow.md) | REST v1b3 jobs create/get/list theatre (no workers) |
 | Cloud Armor | lab | [cloud-armor.md](cloud-armor.md) | Compute securityPolicies CRUD + ByteMatchSet `:validate` |
-| Certificate Manager | lab | [certificate-manager.md](certificate-manager.md) | certificates + certificateMaps CRUD theatre (`global` OK) |
+| Certificate Manager | lab | [certificate-manager.md](certificate-manager.md) | certificates + certificateMaps CRUD; create returns completed Operation (`done:true`; `global` OK) |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 Seeded organization: `organizations/noctaxris-gcp-org`.
@@ -53,13 +53,13 @@ Per-service deferred depth lives on each page. Shared gaps:
   `/identitytoolkit.googleapis.com/v1/accounts*` client methods are also public)
 - Root principal bypasses IAM evaluation (lab operator)
 - No host `docker.sock`; nested DinD opt-in only (see Nested DinD below)
-- Compute Engine stores instance/VPC/firewall metadata only (no VMs or NICs); firewall `:validate` is single-rule lite
+- Compute Engine stores instance/VPC/firewall metadata only (no VMs or NICs); Images are a fixed canned set; firewall `:validate` is single-rule lite
 - Bigtable Admin is control-plane theatre (no row mutate/read)
 - Memorystore Redis is control-plane theatre (no Redis process)
 - Filestore is control-plane theatre under `/file/v1/` (no NFS; path prefix avoids Memorystore clash)
 - Vertex AI returns canned predict/generateContent for allowlisted model ids only
 - Dataflow jobs advance state theatre only (no workers or pipeline execution)
-- Cloud DNS stores zones/rrsets only (no authoritative query plane)
+- Cloud DNS stores zones/rrsets + in-process Changes history (no authoritative query plane)
 - Cloud Armor stores securityPolicies + rules only (ByteMatchSet `:validate` theatre; no edge enforce)
 - Certificate Manager stores certificates/maps metadata only (no CA issuance)
 
@@ -108,8 +108,10 @@ HTTP live smokes under `tests/sdk/` (Go, Node.js, Python) cover:
 | Certificate Manager | list certificates in `global` |
 | Filestore | list instances in `us-central1` (`/file/v1/`) |
 | Vertex AI | `:generateContent` for allowlisted `gemini-1.5-flash` |
-| IAM | create SA + `:generateAccessToken`; delete on cleanup |
-| GCS | create bucket + `:generateSignedUrl`; delete on cleanup |
+| IAM | create SA + `:generateAccessToken`; STS `/v1/token` WIF exchange; delete on cleanup |
+| GCS | create bucket + `:generateSignedUrl`; retentionPolicy delete deny |
+| Pub/Sub | OIDC push create/round-trip + publish (Authorization assert soft-skips without catcher dump) |
+| Cloud Run | nested fail-closed `:invoke` only when `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` set |
 
 Terraform apply/destroy soft-skips the same way. Stacks under
 `tests/terraform/stacks/`:
@@ -124,7 +126,7 @@ Terraform apply/destroy soft-skips the same way. Stacks under
 
 Default run (`bash tests/terraform/run.sh`) applies all five stacks.
 Override with `STACK=lab-armor` or `STACKS="lab-storage lab-run"`. Honest skips
-(Certificate Manager, Filestore LRO wait, and others): [tests/terraform/README.md](../../tests/terraform/README.md).
+(Filestore `/file/v1/` BaseUrl prefix, and others): [tests/terraform/README.md](../../tests/terraform/README.md).
 
 ```bash
 export NOCTAXRIS_GCP_ENDPOINT=http://127.0.0.1:4588
@@ -174,7 +176,7 @@ gcloud config set api_endpoint_overrides/redis http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/certificatemanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
 # Filestore lab paths are under /file/v1/ — use filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/"
-# (Terraform still skips: provider LRO wait on synchronous create; see tests/terraform/README.md)
+# (see tests/terraform/README.md for BaseUrl prefix skip; create returns completed Operation)
 # (bare api_endpoint_overrides/file to :4588/ alone misses the /file prefix)
 ```
 

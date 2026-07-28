@@ -49,6 +49,7 @@ func TestNewInvokerFromEnvDefaultMock(t *testing.T) {
 func TestNewInvokerFromEnvDockerStub(t *testing.T) {
 	t.Setenv(compute.EnvDockerHost, "tcp://127.0.0.1:2376")
 	t.Setenv(compute.EnvDockerHostAllowlist, "tcp://127.0.0.1:2376")
+	_ = os.Unsetenv(compute.EnvNestedInvokeFailClosed)
 	inv := compute.NewInvokerFromEnv()
 	d, ok := inv.(compute.DockerInvoker)
 	if !ok {
@@ -67,5 +68,44 @@ func TestNewInvokerFromEnvDockerStub(t *testing.T) {
 	}
 	if !strings.Contains(string(res.Body), `"mode":"mock"`) {
 		t.Fatalf("expected soft-fail engine detail, body=%s", res.Body)
+	}
+}
+
+func TestDockerInvokerFailClosedUnreachable(t *testing.T) {
+	t.Setenv(compute.EnvDockerHost, "tcp://127.0.0.1:2376")
+	t.Setenv(compute.EnvDockerHostAllowlist, "tcp://127.0.0.1:2376")
+	t.Setenv(compute.EnvNestedInvokeFailClosed, "1")
+	inv := compute.NewInvokerFromEnv()
+	d, ok := inv.(compute.DockerInvoker)
+	if !ok {
+		t.Fatalf("expected DockerInvoker, got %T", inv)
+	}
+	if !d.FailClosed {
+		t.Fatal("expected FailClosed from env")
+	}
+	_, err := d.Invoke(context.Background(), compute.InvokeRequest{ServiceName: "svc"})
+	if err == nil {
+		t.Fatal("expected error in fail-closed mode")
+	}
+	if !strings.Contains(err.Error(), "nested invoke") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(err.Error(), `"mode":"mock"`) {
+		t.Fatalf("should not soft-fail to mock, got %v", err)
+	}
+}
+
+func TestDockerInvokerFailClosedFieldUnreachable(t *testing.T) {
+	_ = os.Unsetenv(compute.EnvNestedInvokeFailClosed)
+	t.Setenv(compute.EnvDockerHostAllowlist, "tcp://127.0.0.1:2376")
+	inv := compute.DockerInvoker{
+		Host:       "tcp://127.0.0.1:2376",
+		TLSCertDir: "",
+		FailClosed: true,
+		Fallback:   compute.MockInvoker{},
+	}
+	_, err := inv.Invoke(context.Background(), compute.InvokeRequest{})
+	if err == nil || !strings.Contains(err.Error(), "nested invoke") {
+		t.Fatalf("want nested invoke error, got %v", err)
 	}
 }

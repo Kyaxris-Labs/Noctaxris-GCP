@@ -11,8 +11,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
-// MountWIF registers Workload Identity Federation pool/provider CRUD theatre.
-// These store metadata only; the lab does not exchange external tokens or federate identities.
+// MountWIF registers Workload Identity Federation pool/provider CRUD.
+// Pair with MountSTS (POST /v1/token) for lab token-exchange into wif:{provider}:{subject}.
 func (h *Handler) MountWIF(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/workloadIdentityPools", h.listWIFPools)
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/workloadIdentityPools", h.createWIFPool)

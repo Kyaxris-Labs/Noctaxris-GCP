@@ -81,7 +81,8 @@ func HashToken(token string) string {
 // IsPublicPath reports whether path skips authentication.
 func IsPublicPath(path string) bool {
 	switch path {
-	case "/_noctaxris-gcp/health", "/_noctaxris-gcp/ready", "/_noctaxris-gcp/version":
+	case "/_noctaxris-gcp/health", "/_noctaxris-gcp/ready", "/_noctaxris-gcp/version",
+		"/v1/token": // STS token exchange (subject_token authenticates)
 		return true
 	default:
 		// Identity Toolkit client auth methods (Firebase Auth emulator shape).

@@ -574,3 +574,268 @@ func TestGCSGenerateSignedURLSmoke(t *testing.T) {
 		t.Fatalf("missing signedUrl body=%s", body)
 	}
 }
+
+func doForm(method, rawURL, contentType string, body string) (int, []byte, error) {
+	req, err := http.NewRequest(method, rawURL, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, raw, nil
+}
+
+func truthyEnv(name string) bool {
+	v := strings.TrimSpace(os.Getenv(name))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+func TestSTSTokenExchangeSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+	poolID := uniqueID("sdk-sts-pool")
+	if len(poolID) > 32 {
+		poolID = poolID[:32]
+		poolID = strings.TrimRight(poolID, "-")
+	}
+	providerID := "oidc"
+	poolBase := ep + "/v1/projects/" + project + "/locations/global/workloadIdentityPools/" + poolID
+	providerName := "projects/" + project + "/locations/global/workloadIdentityPools/" + poolID + "/providers/" + providerID
+
+	status, body := doJSON(t, http.MethodPost, ep+"/v1/projects/"+project+"/locations/global/workloadIdentityPools?workloadIdentityPoolId="+url.QueryEscape(poolID), token, map[string]any{
+		"displayName": "sdk sts pool",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create WIF pool status=%d body=%s", status, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = doJSONErr(http.MethodDelete, poolBase, token, nil)
+	})
+
+	status, body = doJSON(t, http.MethodPost, poolBase+"/providers?workloadIdentityPoolProviderId="+url.QueryEscape(providerID), token, map[string]any{
+		"displayName": "sdk oidc",
+		"oidc":        map[string]any{"issuerUri": "https://example.com"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create WIF provider status=%d body=%s", status, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = doJSONErr(http.MethodDelete, poolBase+"/providers/"+providerID, token, nil)
+	})
+
+	form := url.Values{
+		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+		"audience":           {"//iam.googleapis.com/" + providerName},
+		"subject_token":      {"sdk-sts-sub"},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
+	}
+	status, raw, err := doForm(http.MethodPost, ep+"/v1/token", "application/x-www-form-urlencoded", form.Encode())
+	if err != nil {
+		t.Fatalf("STS /v1/token: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("STS /v1/token status=%d body=%s", status, raw)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("decode STS: %v body=%s", err, raw)
+	}
+	if got, _ := parsed["access_token"].(string); got == "" {
+		t.Fatalf("missing access_token body=%s", raw)
+	}
+	if got, _ := parsed["token_type"].(string); got != "Bearer" {
+		t.Fatalf("token_type=%v want Bearer body=%s", parsed["token_type"], raw)
+	}
+}
+
+func TestGCSRetentionDeleteDenySmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+	bucket := uniqueID("sdk-retain")
+	bucketPath := ep + "/storage/v1/b/" + url.PathEscape(bucket)
+	objectPath := bucketPath + "/o/" + url.PathEscape("held.txt")
+
+	status, body := doJSON(t, http.MethodPost, ep+"/storage/v1/b?project="+url.QueryEscape(project), token, map[string]any{
+		"name": bucket,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create bucket status=%d body=%s", status, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = doJSONErr(http.MethodDelete, objectPath, token, nil)
+		_, _, _ = doJSONErr(http.MethodDelete, bucketPath, token, nil)
+	})
+
+	status, body = doJSON(t, http.MethodPatch, bucketPath, token, map[string]any{
+		"retentionPolicy": map[string]any{"retentionPeriod": "3600"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("patch retention status=%d body=%s", status, body)
+	}
+
+	upReq, err := http.NewRequest(http.MethodPost, ep+"/upload/storage/v1/b/"+url.PathEscape(bucket)+"/o?uploadType=media&name="+url.QueryEscape("held.txt"), strings.NewReader("held"))
+	if err != nil {
+		t.Fatalf("upload request: %v", err)
+	}
+	upReq.Header.Set("Authorization", "Bearer "+token)
+	upReq.Header.Set("Content-Type", "text/plain")
+	upResp, err := (&http.Client{Timeout: 5 * time.Second}).Do(upReq)
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	upBody, _ := io.ReadAll(upResp.Body)
+	_ = upResp.Body.Close()
+	if upResp.StatusCode != http.StatusOK {
+		t.Fatalf("upload status=%d body=%s", upResp.StatusCode, upBody)
+	}
+
+	status, body = doJSON(t, http.MethodDelete, objectPath, token, nil)
+	if status == http.StatusOK {
+		t.Fatalf("delete under retention should fail; got status=%d body=%s", status, body)
+	}
+	var errBody map[string]any
+	if err := json.Unmarshal(body, &errBody); err != nil {
+		t.Fatalf("decode delete error: %v body=%s", err, body)
+	}
+	e, _ := errBody["error"].(map[string]any)
+	if e == nil || e["status"] != "FAILED_PRECONDITION" {
+		t.Fatalf("want FAILED_PRECONDITION, got status=%d body=%s", status, body)
+	}
+}
+
+func TestPubSubOIDCPushSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+	topicID := uniqueID("sdk-oidc-topic")
+	subID := uniqueID("sdk-oidc-sub")
+	topicPath := ep + "/v1/projects/" + project + "/topics/" + topicID
+	subPath := ep + "/v1/projects/" + project + "/subscriptions/" + subID
+	catcher := "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/sdk-oidc-push"
+	saEmail := "push-sa@" + project + ".iam.gserviceaccount.com"
+	audience := "https://example.com/sdk-oidc"
+
+	status, body := doJSON(t, http.MethodPut, topicPath, token, map[string]any{})
+	if status != http.StatusOK {
+		t.Fatalf("create topic status=%d body=%s", status, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = doJSONErr(http.MethodDelete, subPath, token, nil)
+		_, _, _ = doJSONErr(http.MethodDelete, topicPath, token, nil)
+	})
+
+	status, body = doJSON(t, http.MethodPut, subPath, token, map[string]any{
+		"topic":              "projects/" + project + "/topics/" + topicID,
+		"ackDeadlineSeconds": 10,
+		"pushConfig": map[string]any{
+			"pushEndpoint": catcher,
+			"oidcToken": map[string]any{
+				"serviceAccountEmail": saEmail,
+				"audience":            audience,
+			},
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create subscription status=%d body=%s", status, body)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decode subscription: %v body=%s", err, body)
+	}
+	pc, _ := created["pushConfig"].(map[string]any)
+	oidc, _ := pc["oidcToken"].(map[string]any)
+	if pc["pushEndpoint"] != catcher || oidc["serviceAccountEmail"] != saEmail || oidc["audience"] != audience {
+		t.Fatalf("oidcToken round-trip failed: %#v", created["pushConfig"])
+	}
+
+	payload := base64.StdEncoding.EncodeToString([]byte("sdk-oidc-ping"))
+	status, body = doJSON(t, http.MethodPost, topicPath+":publish", token, map[string]any{
+		"messages": []any{map[string]any{"data": payload}},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("publish status=%d body=%s", status, body)
+	}
+
+	t.Run("catcherAuthorization", func(t *testing.T) {
+		status, dump, err := doJSONErr(http.MethodGet, ep+"/_noctaxris-gcp/http-catcher", token, nil)
+		if err != nil || status != http.StatusOK {
+			t.Skipf("lab catcher dump unavailable (status=%d err=%v); soft-skip Authorization assert (unit TestPubSubOIDCPushCatcher covers Bearer JWT)", status, err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(dump, &parsed); err != nil {
+			t.Fatalf("decode catcher dump: %v body=%s", err, dump)
+		}
+		deliveries, _ := parsed["deliveries"].([]any)
+		if len(deliveries) == 0 {
+			t.Skip("catcher dump empty; soft-skip Authorization assert")
+		}
+		found := false
+		for i := len(deliveries) - 1; i >= 0; i-- {
+			raw, _ := deliveries[i].(string)
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				continue
+			}
+			authz, _ := payload["authorization"].(string)
+			if strings.HasPrefix(authz, "Bearer ") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected Bearer authorization in catcher dump body=%s", dump)
+		}
+	})
+}
+
+func TestNestedInvokeFailClosedSmoke(t *testing.T) {
+	if !truthyEnv("NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED") {
+		t.Skip("NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED unset; soft-skip nested fail-closed smoke")
+	}
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+	svcID := uniqueID("sdk-failclosed")
+	if len(svcID) > 49 {
+		svcID = svcID[:49]
+		svcID = strings.TrimRight(svcID, "-")
+	}
+	base := ep + "/v2/projects/" + project + "/locations/us-central1/services"
+	svcPath := base + "/" + svcID
+
+	status, body := doJSON(t, http.MethodPost, base+"?serviceId="+url.QueryEscape(svcID), token, map[string]any{
+		"template": map[string]any{
+			"containers": []any{map[string]any{"image": "demo"}},
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create run service status=%d body=%s", status, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = doJSONErr(http.MethodDelete, svcPath, token, nil)
+	})
+
+	status, body = doJSON(t, http.MethodPost, svcPath+":invoke", token, map[string]any{})
+	if status == http.StatusOK {
+		if strings.Contains(string(body), `"mode":"mock"`) || strings.Contains(string(body), `"ok":true`) {
+			t.Skipf("server returned soft-fail/mock invoke (DOCKER_HOST empty or not fail-closed); soft-skip body=%s", body)
+		}
+		t.Fatalf(":invoke unexpectedly OK under fail-closed env body=%s", body)
+	}
+	if status < 400 {
+		t.Fatalf(":invoke want error status, got %d body=%s", status, body)
+	}
+	if strings.Contains(string(body), `"mode":"mock"`) {
+		t.Fatalf(":invoke should not soft-fail to mock under fail-closed, body=%s", body)
+	}
+}

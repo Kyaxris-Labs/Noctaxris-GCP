@@ -265,9 +265,7 @@ func (h *restHandler) createOrReplaceSubscription(w http.ResponseWriter, r *http
 	var body struct {
 		Topic              string            `json:"topic"`
 		AckDeadlineSeconds int               `json:"ackDeadlineSeconds"`
-		PushConfig         *struct {
-			PushEndpoint string `json:"pushEndpoint"`
-		} `json:"pushConfig"`
+		PushConfig         *restPushConfig   `json:"pushConfig"`
 		Labels                    map[string]string `json:"labels"`
 		Filter                    string            `json:"filter"`
 		EnableExactlyOnceDelivery bool              `json:"enableExactlyOnceDelivery"`
@@ -280,10 +278,7 @@ func (h *restHandler) createOrReplaceSubscription(w http.ResponseWriter, r *http
 		gcperrors.InvalidArgument(w, "invalid subscription body")
 		return
 	}
-	push := ""
-	if body.PushConfig != nil {
-		push = body.PushConfig.PushEndpoint
-	}
+	push, oidcEmail, oidcAud := parseRESTPushConfig(body.PushConfig)
 	if err := validatePushEndpoint(push); err != nil {
 		gcperrors.InvalidArgument(w, err.Error())
 		return
@@ -296,7 +291,7 @@ func (h *restHandler) createOrReplaceSubscription(w http.ResponseWriter, r *http
 	}
 	created, ok, err := h.svc.Store.CreateSubscriptionFull(
 		subName(project, subID), body.Topic, project, body.AckDeadlineSeconds, push, body.Labels, body.Filter,
-		dlTopic, maxAttempts, body.EnableExactlyOnceDelivery,
+		dlTopic, maxAttempts, body.EnableExactlyOnceDelivery, oidcEmail, oidcAud,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "topic not found") || strings.Contains(err.Error(), "dead letter topic not found") {
@@ -342,10 +337,8 @@ func (h *restHandler) patchSubscription(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		AckDeadlineSeconds *int `json:"ackDeadlineSeconds"`
-		PushConfig         *struct {
-			PushEndpoint string `json:"pushEndpoint"`
-		} `json:"pushConfig"`
+		AckDeadlineSeconds *int             `json:"ackDeadlineSeconds"`
+		PushConfig         *restPushConfig  `json:"pushConfig"`
 		Labels                    *map[string]string `json:"labels"`
 		Filter                    *string            `json:"filter"`
 		EnableExactlyOnceDelivery *bool              `json:"enableExactlyOnceDelivery"`
@@ -359,13 +352,15 @@ func (h *restHandler) patchSubscription(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var push *string
+	var oidc *store.PubSubOIDCToken
 	if body.PushConfig != nil {
-		ep := body.PushConfig.PushEndpoint
+		ep, email, aud := parseRESTPushConfig(body.PushConfig)
 		if err := validatePushEndpoint(ep); err != nil {
 			gcperrors.InvalidArgument(w, err.Error())
 			return
 		}
 		push = &ep
+		oidc = &store.PubSubOIDCToken{ServiceAccountEmail: email, Audience: aud}
 	}
 	var deadLetter *store.PubSubDeadLetterPolicy
 	if body.DeadLetterPolicy != nil {
@@ -374,7 +369,7 @@ func (h *restHandler) patchSubscription(w http.ResponseWriter, r *http.Request) 
 			MaxDeliveryAttempts: body.DeadLetterPolicy.MaxDeliveryAttempts,
 		}
 	}
-	updated, err := h.svc.Store.UpdateSubscription(subName(project, subID), body.AckDeadlineSeconds, push, body.Labels, body.Filter, deadLetter, body.EnableExactlyOnceDelivery)
+	updated, err := h.svc.Store.UpdateSubscription(subName(project, subID), body.AckDeadlineSeconds, push, body.Labels, body.Filter, deadLetter, body.EnableExactlyOnceDelivery, oidc)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			gcperrors.NotFound(w, err.Error())
@@ -515,23 +510,19 @@ func (h *restHandler) modifyPushConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		PushConfig *struct {
-			PushEndpoint string `json:"pushEndpoint"`
-		} `json:"pushConfig"`
+		PushConfig *restPushConfig `json:"pushConfig"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid modifyPushConfig body")
 		return
 	}
-	ep := ""
-	if body.PushConfig != nil {
-		ep = body.PushConfig.PushEndpoint
-	}
+	ep, email, aud := parseRESTPushConfig(body.PushConfig)
 	if err := validatePushEndpoint(ep); err != nil {
 		gcperrors.InvalidArgument(w, err.Error())
 		return
 	}
-	updated, err := h.svc.Store.UpdateSubscription(subName(project, subID), nil, &ep, nil, nil, nil, nil)
+	oidc := &store.PubSubOIDCToken{ServiceAccountEmail: email, Audience: aud}
+	updated, err := h.svc.Store.UpdateSubscription(subName(project, subID), nil, &ep, nil, nil, nil, nil, oidc)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			gcperrors.NotFound(w, "subscription not found")
@@ -709,8 +700,15 @@ func subscriptionJSON(sub *store.PubSubSubscription) map[string]any {
 	if sub.Filter != "" {
 		out["filter"] = sub.Filter
 	}
-	if sub.PushEndpoint != "" {
-		out["pushConfig"] = map[string]any{"pushEndpoint": sub.PushEndpoint}
+	if sub.PushEndpoint != "" || sub.OidcServiceAccountEmail != "" {
+		pc := map[string]any{"pushEndpoint": sub.PushEndpoint}
+		if sub.OidcServiceAccountEmail != "" {
+			pc["oidcToken"] = map[string]any{
+				"serviceAccountEmail": sub.OidcServiceAccountEmail,
+				"audience":            sub.OidcAudience,
+			}
+		}
+		out["pushConfig"] = pc
 	}
 	if sub.DeadLetterTopic != "" {
 		out["deadLetterPolicy"] = map[string]any{
@@ -719,6 +717,26 @@ func subscriptionJSON(sub *store.PubSubSubscription) map[string]any {
 		}
 	}
 	return out
+}
+
+type restPushConfig struct {
+	PushEndpoint string `json:"pushEndpoint"`
+	OidcToken    *struct {
+		ServiceAccountEmail string `json:"serviceAccountEmail"`
+		Audience            string `json:"audience"`
+	} `json:"oidcToken"`
+}
+
+func parseRESTPushConfig(pc *restPushConfig) (push, oidcEmail, oidcAud string) {
+	if pc == nil {
+		return "", "", ""
+	}
+	push = pc.PushEndpoint
+	if pc.OidcToken != nil {
+		oidcEmail = strings.TrimSpace(pc.OidcToken.ServiceAccountEmail)
+		oidcAud = strings.TrimSpace(pc.OidcToken.Audience)
+	}
+	return push, oidcEmail, oidcAud
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

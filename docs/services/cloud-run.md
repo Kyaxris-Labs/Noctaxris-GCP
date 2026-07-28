@@ -4,7 +4,8 @@ Lab Cloud Run Admin API v2 REST for services, revisions, and jobs. Invoke is an
 in-process mock by default (no container start, no host `docker.sock`). When
 `NOCTAXRIS_GCP_DOCKER_HOST` is set (with `NOCTAXRIS_GCP_DOCKER_CERT_PATH`),
 `:invoke` uses `DockerInvoker` for a nested one-shot; dial/run failures soft-fail
-to mock with an `engine` detail field. Host `docker.sock` is refused. Services
+to mock with an `engine` detail field unless `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED`
+is `1` or `true` (hard error, no mock fallback). Host `docker.sock` is refused. Services
 with `template.labResponseBody` stay mock-only (nested path skipped). Service
 create/update returns a completed Operation (`done: true` + `response`); GET
 returns the service. Terraform:

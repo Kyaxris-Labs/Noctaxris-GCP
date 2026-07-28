@@ -10,6 +10,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -30,50 +31,13 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 
 // Mount registers Filestore instance routes under the /file/v1/ path prefix.
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
-	mux.HandleFunc("GET /file/v1/projects/{project}/locations/{location}/instances", s.wrap(principalFrom, s.listInstances))
-	mux.HandleFunc("POST /file/v1/projects/{project}/locations/{location}/instances", s.wrap(principalFrom, s.createInstance))
-	mux.HandleFunc("GET /file/v1/projects/{project}/locations/{location}/instances/{instance}", s.wrap(principalFrom, s.getInstance))
-	mux.HandleFunc("DELETE /file/v1/projects/{project}/locations/{location}/instances/{instance}", s.wrap(principalFrom, s.deleteInstance))
-}
+	mux.HandleFunc("GET /file/v1/projects/{project}/locations/{location}/instances", restlab.Wrap(principalFrom, s.listInstances))
+	mux.HandleFunc("POST /file/v1/projects/{project}/locations/{location}/instances", restlab.Wrap(principalFrom, s.createInstance))
+	mux.HandleFunc("GET /file/v1/projects/{project}/locations/{location}/instances/{instance}", restlab.Wrap(principalFrom, s.getInstance))
+	mux.HandleFunc("DELETE /file/v1/projects/{project}/locations/{location}/instances/{instance}", restlab.Wrap(principalFrom, s.deleteInstance))
 
-type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
-
-func (s *Service) wrap(principalFrom principalFunc, h handlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		p, ok := principalFrom(r)
-		if !ok {
-			gcperrors.Unauthenticated(w, "")
-			return
-		}
-		h(w, r, p)
-	}
-}
-
-func (s *Service) require(p authn.Principal, permission, projectID string) error {
-	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, "projects/"+projectID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errDenied
-	}
-	return nil
-}
-
-var errDenied = fmt.Errorf("permission denied")
-
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeAuthzErr(w http.ResponseWriter, err error) {
-	if err == errDenied {
-		gcperrors.PermissionDenied(w, "")
-		return
-	}
-	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+	// Lab Operations.get: create returns done:true; poll path succeeds immediately for TF waiters.
+	mux.HandleFunc("GET /file/v1/projects/{project}/locations/{location}/operations/{operation}", restlab.Wrap(principalFrom, s.getOperation))
 }
 
 func splitAction(seg string) (name, action string) {
@@ -90,8 +54,8 @@ func instanceName(project, location, id string) string {
 func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
-	if err := s.require(p, "file.instances.create", project); err != nil {
-		writeAuthzErr(w, err)
+	if err := restlab.Require(s.Authz, p, "file.instances.create", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	instanceID := r.URL.Query().Get("instanceId")
@@ -151,15 +115,32 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created instance missing")
 		return
 	}
-	writeJSON(w, http.StatusOK, toInstanceJSON(out))
+	resp := toInstanceJSON(out)
+	resp["@type"] = "type.googleapis.com/google.cloud.filestore.v1.Instance"
+	writeDoneOperation(w, project, location, "create-"+instanceID, resp)
+}
+
+func (s *Service) getOperation(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	opID, _ := splitAction(r.PathValue("operation"))
+	if err := restlab.Require(s.Authz, p, "file.operations.get", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
+		return
+	}
+	opName := fmt.Sprintf("projects/%s/locations/%s/operations/%s", project, location, opID)
+	restlab.WriteJSON(w, http.StatusOK, map[string]any{
+		"name": opName,
+		"done": true,
+	})
 }
 
 func (s *Service) getInstance(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	id, _ := splitAction(r.PathValue("instance"))
-	if err := s.require(p, "file.instances.get", project); err != nil {
-		writeAuthzErr(w, err)
+	if err := restlab.Require(s.Authz, p, "file.instances.get", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	inst, ok, err := s.Store.GetFilestoreInstance(instanceName(project, location, id))
@@ -171,14 +152,14 @@ func (s *Service) getInstance(w http.ResponseWriter, r *http.Request, p authn.Pr
 		gcperrors.NotFound(w, "Instance not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, toInstanceJSON(inst))
+	restlab.WriteJSON(w, http.StatusOK, toInstanceJSON(inst))
 }
 
 func (s *Service) listInstances(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
-	if err := s.require(p, "file.instances.list", project); err != nil {
-		writeAuthzErr(w, err)
+	if err := restlab.Require(s.Authz, p, "file.instances.list", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	list, err := s.Store.ListFilestoreInstances(project, location)
@@ -190,15 +171,15 @@ func (s *Service) listInstances(w http.ResponseWriter, r *http.Request, p authn.
 	for _, inst := range list {
 		items = append(items, toInstanceJSON(inst))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"instances": items})
+	restlab.WriteJSON(w, http.StatusOK, map[string]any{"instances": items})
 }
 
 func (s *Service) deleteInstance(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	id, _ := splitAction(r.PathValue("instance"))
-	if err := s.require(p, "file.instances.delete", project); err != nil {
-		writeAuthzErr(w, err)
+	if err := restlab.Require(s.Authz, p, "file.instances.delete", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	ok, err := s.Store.DeleteFilestoreInstance(instanceName(project, location, id))
@@ -210,7 +191,17 @@ func (s *Service) deleteInstance(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.NotFound(w, "Instance not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{})
+	restlab.WriteJSON(w, http.StatusOK, map[string]any{})
+}
+
+// writeDoneOperation returns a completed LRO so Terraform Filestore wait
+// does not treat the instance resource name as an unfinished operation.
+func writeDoneOperation(w http.ResponseWriter, project, location, opID string, response any) {
+	restlab.WriteJSON(w, http.StatusOK, map[string]any{
+		"name":     fmt.Sprintf("projects/%s/locations/%s/operations/%s", project, location, opID),
+		"done":     true,
+		"response": response,
+	})
 }
 
 func toInstanceJSON(inst store.FilestoreInstance) map[string]any {

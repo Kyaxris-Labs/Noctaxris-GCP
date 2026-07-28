@@ -10,6 +10,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -24,10 +25,10 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 // Mount registers Eventarc channel routes. Regional triggers are mounted by
 // server.registerLocationTriggers (shared with Cloud Build to avoid ServeMux clash).
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
-	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/channels", s.wrap(principalFrom, s.createChannel))
-	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/channels", s.wrap(principalFrom, s.listChannels))
-	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/channels/{channel}", s.wrap(principalFrom, s.getChannel))
-	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/channels/{channel}", s.wrap(principalFrom, s.deleteChannel))
+	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/channels", restlab.Wrap(principalFrom, s.createChannel))
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/channels", restlab.Wrap(principalFrom, s.listChannels))
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/channels/{channel}", restlab.Wrap(principalFrom, s.getChannel))
+	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/channels/{channel}", restlab.Wrap(principalFrom, s.deleteChannel))
 }
 
 // CreateTriggerHTTP handles Eventarc trigger create (exported for shared regional mux).
@@ -52,11 +53,11 @@ func (s *Service) GetTriggerHTTP(w http.ResponseWriter, r *http.Request, p authn
 	if !ok {
 		return false
 	}
-	if err := s.require(p, "eventarc.triggers.get", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.triggers.get", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return true
 	}
-	writeJSON(w, http.StatusOK, triggerResource(t))
+	restlab.WriteJSON(w, http.StatusOK, triggerResource(t))
 	return true
 }
 
@@ -73,8 +74,8 @@ func (s *Service) DeleteTriggerHTTP(w http.ResponseWriter, r *http.Request, p au
 		return false
 	}
 	_ = t
-	if err := s.require(p, "eventarc.triggers.delete", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.triggers.delete", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return true
 	}
 	ok, err = s.Store.DeleteEventarcTrigger(name)
@@ -101,38 +102,6 @@ func LooksLikeEventarcTrigger(body map[string]any) bool {
 		}
 	}
 	return false
-}
-
-type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
-
-func (s *Service) wrap(principalFrom principalFunc, h handlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		p, ok := principalFrom(r)
-		if !ok {
-			gcperrors.Unauthenticated(w, "")
-			return
-		}
-		h(w, r, p)
-	}
-}
-
-func (s *Service) require(p authn.Principal, permission, projectID string) error {
-	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, "projects/"+projectID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errDenied
-	}
-	return nil
-}
-
-var errDenied = fmt.Errorf("permission denied")
-
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
 }
 
 func triggerResource(t *store.EventarcTrigger) map[string]any {
@@ -163,7 +132,7 @@ func TriggerResourceJSON(t *store.EventarcTrigger) map[string]any {
 
 // MayListTriggers reports whether p may list Eventarc triggers in project.
 func (s *Service) MayListTriggers(p authn.Principal, projectID string) bool {
-	return s.require(p, "eventarc.triggers.list", projectID) == nil
+	return restlab.Require(s.Authz, p, "eventarc.triggers.list", projectID) == nil
 }
 
 func channelResource(c *store.EventarcChannel) map[string]any {
@@ -179,8 +148,8 @@ func channelResource(c *store.EventarcChannel) map[string]any {
 
 func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, location := r.PathValue("project"), r.PathValue("location")
-	if err := s.require(p, "eventarc.triggers.create", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.triggers.create", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	triggerID := r.URL.Query().Get("triggerId")
@@ -265,13 +234,13 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "trigger already exists")
 		return
 	}
-	writeJSON(w, http.StatusOK, triggerResource(t))
+	restlab.WriteJSON(w, http.StatusOK, triggerResource(t))
 }
 
 func (s *Service) getTrigger(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, location, trigger := r.PathValue("project"), r.PathValue("location"), r.PathValue("trigger")
-	if err := s.require(p, "eventarc.triggers.get", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.triggers.get", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	name := "projects/" + project + "/locations/" + location + "/triggers/" + trigger
@@ -284,13 +253,13 @@ func (s *Service) getTrigger(w http.ResponseWriter, r *http.Request, p authn.Pri
 		gcperrors.NotFound(w, "trigger not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, triggerResource(t))
+	restlab.WriteJSON(w, http.StatusOK, triggerResource(t))
 }
 
 func (s *Service) listTriggers(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, location := r.PathValue("project"), r.PathValue("location")
-	if err := s.require(p, "eventarc.triggers.list", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.triggers.list", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	list, err := s.Store.ListEventarcTriggers(project, location)
@@ -302,13 +271,13 @@ func (s *Service) listTriggers(w http.ResponseWriter, r *http.Request, p authn.P
 	for i := range list {
 		out = append(out, triggerResource(&list[i]))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"triggers": out})
+	restlab.WriteJSON(w, http.StatusOK, map[string]any{"triggers": out})
 }
 
 func (s *Service) deleteTrigger(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, location, trigger := r.PathValue("project"), r.PathValue("location"), r.PathValue("trigger")
-	if err := s.require(p, "eventarc.triggers.delete", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.triggers.delete", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	name := "projects/" + project + "/locations/" + location + "/triggers/" + trigger
@@ -325,18 +294,12 @@ func (s *Service) deleteTrigger(w http.ResponseWriter, r *http.Request, p authn.
 	_, _ = w.Write([]byte("{}"))
 }
 
-func writeAuthz(w http.ResponseWriter, err error) {
-	if err == errDenied {
-		gcperrors.PermissionDenied(w, "")
-		return
-	}
-	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-}
+
 
 func (s *Service) createChannel(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, location := r.PathValue("project"), r.PathValue("location")
-	if err := s.require(p, "eventarc.channels.create", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.channels.create", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	channelID := r.URL.Query().Get("channelId")
@@ -366,13 +329,13 @@ func (s *Service) createChannel(w http.ResponseWriter, r *http.Request, p authn.
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "channel already exists")
 		return
 	}
-	writeJSON(w, http.StatusOK, channelResource(c))
+	restlab.WriteJSON(w, http.StatusOK, channelResource(c))
 }
 
 func (s *Service) getChannel(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, location, channel := r.PathValue("project"), r.PathValue("location"), r.PathValue("channel")
-	if err := s.require(p, "eventarc.channels.get", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.channels.get", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	name := "projects/" + project + "/locations/" + location + "/channels/" + channel
@@ -385,13 +348,13 @@ func (s *Service) getChannel(w http.ResponseWriter, r *http.Request, p authn.Pri
 		gcperrors.NotFound(w, "channel not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, channelResource(c))
+	restlab.WriteJSON(w, http.StatusOK, channelResource(c))
 }
 
 func (s *Service) listChannels(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, location := r.PathValue("project"), r.PathValue("location")
-	if err := s.require(p, "eventarc.channels.list", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.channels.list", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	list, err := s.Store.ListEventarcChannels(project, location)
@@ -403,13 +366,13 @@ func (s *Service) listChannels(w http.ResponseWriter, r *http.Request, p authn.P
 	for i := range list {
 		out = append(out, channelResource(&list[i]))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"channels": out})
+	restlab.WriteJSON(w, http.StatusOK, map[string]any{"channels": out})
 }
 
 func (s *Service) deleteChannel(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, location, channel := r.PathValue("project"), r.PathValue("location"), r.PathValue("channel")
-	if err := s.require(p, "eventarc.channels.delete", project); err != nil {
-		writeAuthz(w, err)
+	if err := restlab.Require(s.Authz, p, "eventarc.channels.delete", project); err != nil {
+		restlab.WriteAuthzErr(w, err)
 		return
 	}
 	name := "projects/" + project + "/locations/" + location + "/channels/" + channel
