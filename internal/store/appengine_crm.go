@@ -241,7 +241,8 @@ func (s *Store) CreateFolder(f Folder) (Folder, bool, error) {
 		return Folder{}, false, fmt.Errorf("displayName required")
 	}
 	if f.FolderID == "" {
-		f.FolderID = fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000_000_000)
+		// UUID-based numeric-looking id; time.Now().UnixNano() collides on coarse clocks (Windows).
+		f.FolderID = strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
 	}
 	if f.Name == "" {
 		f.Name = "folders/" + f.FolderID

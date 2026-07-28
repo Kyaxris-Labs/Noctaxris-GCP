@@ -20,6 +20,7 @@
 | Signed URL middleware | Bearer skip limited to `/storage/` and `/upload/storage/` |
 | SQLite | `SetMaxOpenConns(1)` + WAL for Eventarc delivery concurrency |
 | Nested invoke | Soft-fail responses omit raw engine error strings |
+| Dependencies | Bump firestore `v1.24.0`, iam `v1.12.0`, secretmanager `v1.21.0`, genproto (2026-07-27), otelhttp `v0.69.0`, modernc.org/libc `v1.74.4` (go 1.26.5 unchanged; docker/grpc/sqlite already current) |
 
 ### Fixed
 
@@ -27,6 +28,7 @@
 |------|--------|
 | Authz | Nil `Evaluator` fail-closed for non-root |
 | Create handlers | Get-after-create errors return 500 (Filestore, Spanner, Certificate Manager, Cloud Build triggers, Cloud Tasks) |
+| CRM folders | Folder IDs use UUID hex instead of `UnixNano` (avoids collide-on-create on coarse Windows clocks) |
 
 ## [0.5.0] - 2026-07-28
 
