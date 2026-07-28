@@ -72,6 +72,7 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 	s.registerServerless()
 	s.registerAnalytics()
 	s.registerAppsBuild()
+	s.registerLocationTriggers()
 	s.registerComputeData()
 	s.registerSecurity()
 	s.registerStorageAI()
@@ -161,9 +162,13 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Lab GCS V4 signed URLs authenticate via query signature (verified in the GCS handler).
+		// Only storage JSON/media paths may skip Bearer; never open other APIs via X-Goog-*.
 		if store.HasV4Signature(r.URL.Query()) && r.Header.Get("Authorization") == "" {
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
+			path := r.URL.Path
+			if strings.HasPrefix(path, "/storage/") || strings.HasPrefix(path, "/upload/storage/") {
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 		}
 
 		p, err := s.authn.AuthenticateRequest(r)

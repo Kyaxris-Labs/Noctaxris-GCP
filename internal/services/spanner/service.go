@@ -146,7 +146,11 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "instance already exists")
 		return
 	}
-	out, _, _ := s.Store.GetSpannerInstance(name)
+	out, ok, err := s.Store.GetSpannerInstance(name)
+	if err != nil || !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created instance missing")
+		return
+	}
 	writeJSON(w, http.StatusOK, toInstanceJSON(out))
 }
 
@@ -253,7 +257,11 @@ func (s *Service) createDatabase(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "database already exists")
 		return
 	}
-	out, _, _ := s.Store.GetSpannerDatabase(name)
+	out, ok, err := s.Store.GetSpannerDatabase(name)
+	if err != nil || !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created database missing")
+		return
+	}
 	writeJSON(w, http.StatusOK, toDatabaseJSON(out))
 }
 

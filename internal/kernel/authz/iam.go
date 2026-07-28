@@ -33,9 +33,13 @@ type Evaluator struct {
 // Deny by default. Root bypasses all checks.
 // For nested resources under projects/{id}/..., project-level bindings also apply
 // (lab parent inheritance; still fail-closed when neither resource grants).
+// A nil Evaluator receiver fails closed for non-root (no panic).
 func (e *Evaluator) Evaluate(principalEmail string, isRoot bool, permission, resource string) (bool, error) {
 	if isRoot {
 		return true, nil
+	}
+	if e == nil {
+		return false, nil
 	}
 	if principalEmail == "" || permission == "" || resource == "" {
 		return false, nil
@@ -101,6 +105,9 @@ func (e *Evaluator) EvaluateAny(principalEmail string, isRoot bool, permission s
 	if isRoot {
 		return true, nil
 	}
+	if e == nil {
+		return false, nil
+	}
 	for _, resource := range resources {
 		if resource == "" {
 			continue
@@ -164,11 +171,15 @@ func memberIn(members []string, want string) bool {
 }
 
 // roleGrants is a lab-complete role→permission map for seeded IAM roles.
-// roles/owner grants every permission. Other roles grant matching prefixes.
+// roles/owner grants every permission. roles/editor grants mutators except IAM
+// admin / impersonation (aligned with GCP basic roles: no setIamPolicy, no
+// getAccessToken). roles/viewer is read-only metadata (no secret payload access).
 func roleGrants(role, permission string) bool {
 	switch role {
-	case "roles/owner", "roles/editor":
+	case "roles/owner":
 		return true
+	case "roles/editor":
+		return editorGrants(permission)
 	case "roles/viewer":
 		return viewerGrants(permission)
 	case "roles/iam.securityAdmin":
@@ -193,18 +204,40 @@ func roleGrants(role, permission string) bool {
 	}
 }
 
+// editorGrants mirrors GCP roles/editor: broad mutate except IAM policy admin
+// and service-account token / signing impersonation.
+func editorGrants(permission string) bool {
+	if permission == "" {
+		return false
+	}
+	if strings.HasSuffix(permission, ".setIamPolicy") {
+		return false
+	}
+	switch permission {
+	case "iam.serviceAccounts.getAccessToken",
+		"iam.serviceAccounts.actAs",
+		"iam.serviceAccounts.signBlob",
+		"iam.serviceAccounts.signJwt",
+		"iam.serviceAccounts.implicitDelegation",
+		"iam.serviceAccounts.generateAccessToken",
+		"iam.serviceAccounts.generateIdToken":
+		return false
+	default:
+		return true
+	}
+}
+
 // viewerGrants covers get/list (and getIamPolicy) across common lab services.
+// Uses suffix matches only — never strings.Contains(".get"), which would grant
+// iam.serviceAccounts.getAccessToken and similar.
 func viewerGrants(permission string) bool {
 	if permission == "" {
 		return false
 	}
 	if strings.HasSuffix(permission, ".get") ||
 		strings.HasSuffix(permission, ".list") ||
-		strings.HasSuffix(permission, ".getIamPolicy") {
-		return true
-	}
-	// Nested read verbs used by Google APIs (e.g. storage.objects.get, logging.entries.list).
-	if strings.Contains(permission, ".get") || strings.Contains(permission, ".list") {
+		strings.HasSuffix(permission, ".getIamPolicy") ||
+		strings.HasSuffix(permission, ".search") {
 		return true
 	}
 	switch permission {
@@ -232,7 +265,6 @@ func viewerGrants(permission string) bool {
 		"secretmanager.secrets.list",
 		"secretmanager.versions.get",
 		"secretmanager.versions.list",
-		"secretmanager.versions.access",
 		"cloudkms.cryptoKeys.get",
 		"cloudkms.cryptoKeys.list",
 		"cloudkms.keyRings.get",

@@ -187,7 +187,11 @@ func (s *Service) createCertificate(w http.ResponseWriter, r *http.Request, p au
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "certificate already exists")
 		return
 	}
-	out, _, _ := s.Store.GetCertManagerCertificate(name)
+	out, ok, err := s.Store.GetCertManagerCertificate(name)
+	if err != nil || !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created certificate missing")
+		return
+	}
 	writeJSON(w, http.StatusOK, toCertificateJSON(out))
 }
 
@@ -305,7 +309,11 @@ func (s *Service) createCertificateMap(w http.ResponseWriter, r *http.Request, p
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "certificate map already exists")
 		return
 	}
-	out, _, _ := s.Store.GetCertManagerCertificateMap(name)
+	out, ok, err := s.Store.GetCertManagerCertificateMap(name)
+	if err != nil || !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created certificate map missing")
+		return
+	}
 	writeJSON(w, http.StatusOK, toCertificateMapJSON(out))
 }
 

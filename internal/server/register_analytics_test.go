@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +14,7 @@ import (
 
 	"cloud.google.com/go/datastore/apiv1/datastorepb"
 	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -627,25 +627,9 @@ func TestEventarcTriggerAndPubSubDelivery(t *testing.T) {
 	srv, cfg := testServer(t)
 	token := cfg.RootAccessToken
 	project := cfg.ProjectID
+	store.ClearHTTPCatcher()
 
-	received := make(chan []byte, 1)
-	hookLN, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hookLN.Close()
-	go func() {
-		_ = http.Serve(hookLN, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			b, _ := io.ReadAll(r.Body)
-			select {
-			case received <- b:
-			default:
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-	}()
-
-	destURI := "http://" + hookLN.Addr().String() + "/hook"
+	destURI := "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/eventarc-hook"
 	createTrig := map[string]any{
 		"eventFilters": []map[string]string{
 			{"attribute": "type", "value": "google.cloud.pubsub.topic.v1.messagePublished"},
@@ -696,14 +680,17 @@ func TestEventarcTriggerAndPubSubDelivery(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	select {
-	case body := <-received:
-		if !bytes.Contains(body, []byte("hello-event")) && !bytes.Contains(body, []byte("messagePublished")) {
-			t.Fatalf("unexpected delivery body=%s", body)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		caught := store.ListHTTPCatcher()
+		for _, body := range caught {
+			if strings.Contains(body, "hello-event") || strings.Contains(body, "messagePublished") {
+				return
+			}
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for Eventarc delivery")
+		time.Sleep(50 * time.Millisecond)
 	}
+	t.Fatalf("timeout waiting for Eventarc catcher delivery; caught=%v", store.ListHTTPCatcher())
 }
 
 func TestEventarcChannelAndAttributeFilters(t *testing.T) {
@@ -726,7 +713,7 @@ func TestEventarcChannelAndAttributeFilters(t *testing.T) {
 			{"attribute": "custom", "value": "yes"},
 			{"attribute": "map", "values": map[string]string{"env": "lab"}},
 		},
-		"destination": map[string]any{"httpEndpoint": map[string]string{"uri": "http://127.0.0.1:9/noop"}},
+		"destination": map[string]any{"httpEndpoint": map[string]string{"uri": "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/noop"}},
 		"channel":     "projects/" + project + "/locations/us-central1/channels/ch1",
 	}
 	raw, _ := json.Marshal(createTrig)

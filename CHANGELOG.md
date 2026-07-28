@@ -4,9 +4,29 @@
 
 ### Added
 
+| Area | Change |
+|------|--------|
+| HTTP egress | Shared `internal/kernel/httpegress` gate for Pub/Sub push, Eventarc HTTP, Cloud Tasks, Scheduler; lab catcher + loopback `:4588`; opt-in `NOCTAXRIS_GCP_HTTP_EGRESS` + exact allowlist; no redirects |
+| Cloud Build | Regional `.../locations/.../triggers` via shared mux with Eventarc (body-shape dispatch) |
+| CI | Docker image build + SPDX SBOM artifact jobs |
+| Docs | `COMPARISON.md` Noctaxris vs Noctaxris-GCP sibling section |
+
 ### Changed
 
+| Area | Change |
+|------|--------|
+| IAM | `roles/viewer` suffix-only reads (no `Contains(".get")`); no `secretmanager.versions.access`; `roles/editor` denies `setIamPolicy` + SA token/signing |
+| Image allowlist | Exact refs or trailing-`/` prefixes with digest; bare ambiguous prefixes rejected |
+| Signed URL middleware | Bearer skip limited to `/storage/` and `/upload/storage/` |
+| SQLite | `SetMaxOpenConns(1)` + WAL for Eventarc delivery concurrency |
+| Nested invoke | Soft-fail responses omit raw engine error strings |
+
 ### Fixed
+
+| Area | Change |
+|------|--------|
+| Authz | Nil `Evaluator` fail-closed for non-root |
+| Create handlers | Get-after-create errors return 500 (Filestore, Spanner, Certificate Manager, Cloud Build triggers, Cloud Tasks) |
 
 ## [0.5.0] - 2026-07-28
 

@@ -284,6 +284,10 @@ func (h *restHandler) createOrReplaceSubscription(w http.ResponseWriter, r *http
 	if body.PushConfig != nil {
 		push = body.PushConfig.PushEndpoint
 	}
+	if err := validatePushEndpoint(push); err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
 	dlTopic := ""
 	maxAttempts := 0
 	if body.DeadLetterPolicy != nil {
@@ -357,6 +361,10 @@ func (h *restHandler) patchSubscription(w http.ResponseWriter, r *http.Request) 
 	var push *string
 	if body.PushConfig != nil {
 		ep := body.PushConfig.PushEndpoint
+		if err := validatePushEndpoint(ep); err != nil {
+			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
 		push = &ep
 	}
 	var deadLetter *store.PubSubDeadLetterPolicy
@@ -518,6 +526,10 @@ func (h *restHandler) modifyPushConfig(w http.ResponseWriter, r *http.Request) {
 	ep := ""
 	if body.PushConfig != nil {
 		ep = body.PushConfig.PushEndpoint
+	}
+	if err := validatePushEndpoint(ep); err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
 	}
 	updated, err := h.svc.Store.UpdateSubscription(subName(project, subID), nil, &ep, nil, nil, nil, nil)
 	if err != nil {

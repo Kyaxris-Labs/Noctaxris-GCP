@@ -150,7 +150,7 @@ func TestPubSubUpdateModifyPushFields(t *testing.T) {
 	if err != nil || !ok || tgot.Labels["a"] != "2" {
 		t.Fatalf("topic labels = %#v", tgot)
 	}
-	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "http://127.0.0.1:9/push", nil, "", "", 0, false); err != nil || !created {
+	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/push", nil, "", "", 0, false); err != nil || !created {
 		t.Fatalf("sub: %v %v", created, err)
 	}
 	ack := 30

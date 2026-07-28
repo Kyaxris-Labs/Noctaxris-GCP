@@ -14,6 +14,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -39,7 +40,7 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 		s.tickers = map[string]context.CancelFunc{}
 	}
 	if s.client == nil {
-		s.client = &http.Client{Timeout: 5 * time.Second}
+		s.client = httpegress.Client(5 * time.Second)
 	}
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/jobs", s.wrap(principalFrom, s.listJobs))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/jobs", s.wrap(principalFrom, s.createJob))
@@ -126,6 +127,17 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 		return
 	}
 	job := parseJobBody(project, location, jobID, body)
+	if job.HTTPTargetJSON != "" {
+		var ht struct {
+			URI string `json:"uri"`
+		}
+		if err := json.Unmarshal([]byte(job.HTTPTargetJSON), &ht); err == nil && strings.TrimSpace(ht.URI) != "" {
+			if err := httpegress.Validate(ht.URI); err != nil {
+				gcperrors.InvalidArgument(w, err.Error())
+				return
+			}
+		}
+	}
 	created, err := s.Store.CreateSchedulerJob(job)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -459,6 +471,9 @@ func (s *Service) fire(job store.SchedulerJob) {
 			Body       string            `json:"body"`
 		}
 		if err := json.Unmarshal([]byte(job.HTTPTargetJSON), &ht); err == nil && ht.URI != "" {
+			if err := httpegress.Validate(ht.URI); err != nil {
+				return
+			}
 			method := ht.HttpMethod
 			if method == "" {
 				method = http.MethodPost

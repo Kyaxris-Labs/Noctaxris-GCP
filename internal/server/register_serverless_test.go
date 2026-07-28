@@ -115,7 +115,7 @@ func TestSchedulerJobRunViaServer(t *testing.T) {
 	srv, cfg := testServer(t)
 	loc := scheduler.DefaultLocation
 	base := "/v1/projects/" + cfg.ProjectID + "/locations/" + loc + "/jobs"
-	body := `{"schedule":"0 9 * * 1","timeZone":"UTC","httpTarget":{"uri":"http://127.0.0.1:9/nope","httpMethod":"POST"}}`
+	body := `{"schedule":"0 9 * * 1","timeZone":"UTC","httpTarget":{"uri":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/nope","httpMethod":"POST"}}`
 	req := httptest.NewRequest(http.MethodPost, base+"?jobId=daily", bytes.NewReader([]byte(body)))
 	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
 	rec := httptest.NewRecorder()
@@ -154,7 +154,7 @@ func TestCloudTasksQueueTaskRunViaServer(t *testing.T) {
 		t.Fatalf("create queue status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	taskBody := `{"task":{"httpRequest":{"url":"http://127.0.0.1:9/nope","httpMethod":"POST","oidcToken":{"serviceAccountEmail":"sa@x"},"body":"e30="}},"taskId":"t1"}`
+	taskBody := `{"task":{"httpRequest":{"url":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/nope","httpMethod":"POST","oidcToken":{"serviceAccountEmail":"sa@x"},"body":"e30="}},"taskId":"t1"}`
 	req = httptest.NewRequest(http.MethodPost, qBase+"/default/tasks", bytes.NewReader([]byte(taskBody)))
 	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
 	rec = httptest.NewRecorder()
@@ -422,7 +422,7 @@ func TestSchedulerOIDCAndNextRun(t *testing.T) {
 	srv, cfg := testServer(t)
 	loc := scheduler.DefaultLocation
 	base := "/v1/projects/" + cfg.ProjectID + "/locations/" + loc + "/jobs"
-	body := `{"schedule":"0 9 * * 1","timeZone":"UTC","httpTarget":{"uri":"http://127.0.0.1:9/nope","httpMethod":"POST","oidcToken":{"serviceAccountEmail":"sa@x","audience":"https://example.com"}}}`
+	body := `{"schedule":"0 9 * * 1","timeZone":"UTC","httpTarget":{"uri":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/nope","httpMethod":"POST","oidcToken":{"serviceAccountEmail":"sa@x","audience":"https://example.com"}}}`
 	req := httptest.NewRequest(http.MethodPost, base+"?jobId=oidc", bytes.NewReader([]byte(body)))
 	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
 	rec := httptest.NewRecorder()
@@ -480,7 +480,7 @@ func TestCloudTasksRateLimitsRetryAppEngine(t *testing.T) {
 		t.Fatalf("queue missing limits: %#v", q)
 	}
 
-	taskBody := `{"task":{"appEngineHttpRequest":{"httpMethod":"POST","relativeUri":"/task"},"httpRequest":{"url":"http://127.0.0.1:9/nope","httpMethod":"POST"}},"taskId":"ae1"}`
+	taskBody := `{"task":{"appEngineHttpRequest":{"httpMethod":"POST","relativeUri":"/task"},"httpRequest":{"url":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/nope","httpMethod":"POST"}},"taskId":"ae1"}`
 	req = httptest.NewRequest(http.MethodPost, qBase+"/limited/tasks", bytes.NewReader([]byte(taskBody)))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec = httptest.NewRecorder()

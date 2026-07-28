@@ -106,7 +106,7 @@ func TestAnalyticsMonitoringDatastoreEventarc(t *testing.T) {
 	tr, created, err := st.CreateEventarcTrigger(store.EventarcTrigger{
 		ProjectID: "p", Location: "us-central1", TriggerID: "t1",
 		FiltersJSON: `[{"attribute":"type","value":"google.cloud.storage.object.v1.finalized"},{"attribute":"bucket","value":"b"}]`,
-		DestinationJSON: `{"httpEndpoint":{"uri":"http://127.0.0.1:9/nope"}}`,
+		DestinationJSON: `{"httpEndpoint":{"uri":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/nope"}}`,
 	})
 	if err != nil || !created {
 		t.Fatalf("trigger: %v %v", created, err)

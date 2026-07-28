@@ -146,7 +146,11 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "instance already exists")
 		return
 	}
-	out, _, _ := s.Store.GetFilestoreInstance(name)
+	out, ok, err := s.Store.GetFilestoreInstance(name)
+	if err != nil || !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created instance missing")
+		return
+	}
 	writeJSON(w, http.StatusOK, toInstanceJSON(out))
 }
 

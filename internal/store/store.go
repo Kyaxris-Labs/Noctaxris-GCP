@@ -30,11 +30,13 @@ func Open(dataRoot string, master MasterKey) (*Store, error) {
 		return nil, fmt.Errorf("create gcs root: %w", err)
 	}
 	dbPath := filepath.Join(dataRoot, "state.db")
-	dsn := "file:" + filepath.ToSlash(dbPath) + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	dsn := "file:" + filepath.ToSlash(dbPath) + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
+	// Serialize writers across request handlers and Eventarc delivery goroutines.
+	db.SetMaxOpenConns(1)
 	s := &Store{db: db, master: master, dataRoot: dataRoot}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()

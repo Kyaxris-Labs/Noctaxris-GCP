@@ -25,8 +25,10 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 - Non-default engine URLs require `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST`. TLS
   client PEMs are required whenever Docker host is set.
 - Image pulls fail closed: pinned lab bases (`alpine:3.20`, …) only, unless
-  extended with `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` (digest required for registry
-  hosts).
+  extended with `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` (exact refs, or prefixes
+  ending in `/` with digest required for registry hosts).
+- Nested invoke soft-fail responses expose engine mode (`mock` / `nested`) but
+  not raw dial/run error strings to clients.
 - If nested containers fail on Desktop/WSL2, add `compose.engine-privileged.yaml`
   (`privileged: true`). Keep host publish on `127.0.0.1:4588`.
 
@@ -37,6 +39,7 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 - Other tokens are SHA-256 hashed and looked up in `access_tokens` (minted when IAM creates a service account key).
 - Missing or invalid credentials return Google JSON `UNAUTHENTICATED` (HTTP 401).
 - Public paths: `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`.
+  Lab HTTP catcher deliveries are recorded in-process (no public POST required).
 
 ## Example root refusal
 
@@ -50,8 +53,26 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
 - The authenticated root principal bypasses IAM evaluation. This matches lab
   operator convenience in the AWS-shaped sibling product and is intentional.
   Documented here so CTF authors do not treat root as a normal service account.
-- Non-root evaluation uses role bindings (`roles/owner` grants all permissions
-  for lab depth). `testIamPermissions` returns only granted permissions.
+- Non-root evaluation uses role bindings. `roles/owner` grants all permissions.
+  `roles/editor` grants mutators except `*.setIamPolicy` and service-account
+  token/signing impersonation (`getAccessToken`, `actAs`, `signBlob`, …).
+  `roles/viewer` is read-only metadata (suffix `.get` / `.list` / `.getIamPolicy`
+  / `.search` only — never substring `.get`, so `getAccessToken` is denied).
+  Viewer does **not** grant `secretmanager.versions.access` (needs
+  `roles/secretmanager.secretAccessor` or owner). `testIamPermissions` returns
+  only granted permissions.
+
+## Outbound HTTP (SSRF fail-closed)
+
+- Pub/Sub push, Eventarc `httpEndpoint`, Cloud Tasks `httpRequest`, and
+  Scheduler `httpTarget` are deny-by-default.
+- Allowed without opt-in: lab HTTP catcher
+  `http://127.0.0.1:4588/_noctaxris-gcp/http-catcher...` and other loopback
+  `:4588` lab-local URLs (self-invoke theatre).
+- Open-internet delivery requires `NOCTAXRIS_GCP_HTTP_EGRESS=1` plus an exact
+  URL in `NOCTAXRIS_GCP_HTTP_ALLOWLIST`. Allowlisted destinations still reject
+  private/metadata/loopback hosts; clients do not follow redirects.
+- See [configuration.md](configuration.md).
 
 ## Secrets at rest
 

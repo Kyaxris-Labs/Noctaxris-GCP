@@ -9,6 +9,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -20,17 +21,86 @@ type Service struct {
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
 
-// Mount registers Eventarc trigger routes.
+// Mount registers Eventarc channel routes. Regional triggers are mounted by
+// server.registerLocationTriggers (shared with Cloud Build to avoid ServeMux clash).
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
-	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/triggers", s.wrap(principalFrom, s.createTrigger))
-	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/triggers", s.wrap(principalFrom, s.listTriggers))
-	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/triggers/{trigger}", s.wrap(principalFrom, s.getTrigger))
-	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/triggers/{trigger}", s.wrap(principalFrom, s.deleteTrigger))
-
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/channels", s.wrap(principalFrom, s.createChannel))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/channels", s.wrap(principalFrom, s.listChannels))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/channels/{channel}", s.wrap(principalFrom, s.getChannel))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/channels/{channel}", s.wrap(principalFrom, s.deleteChannel))
+}
+
+// CreateTriggerHTTP handles Eventarc trigger create (exported for shared regional mux).
+func (s *Service) CreateTriggerHTTP(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	s.createTrigger(w, r, p)
+}
+
+// ListTriggersHTTP handles Eventarc trigger list.
+func (s *Service) ListTriggersHTTP(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	s.listTriggers(w, r, p)
+}
+
+// GetTriggerHTTP handles Eventarc trigger get. Returns false when not found (no write).
+func (s *Service) GetTriggerHTTP(w http.ResponseWriter, r *http.Request, p authn.Principal) bool {
+	project, location, id := r.PathValue("project"), r.PathValue("location"), r.PathValue("trigger")
+	name := fmt.Sprintf("projects/%s/locations/%s/triggers/%s", project, location, id)
+	t, ok, err := s.Store.GetEventarcTrigger(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return true
+	}
+	if !ok {
+		return false
+	}
+	if err := s.require(p, "eventarc.triggers.get", project); err != nil {
+		writeAuthz(w, err)
+		return true
+	}
+	writeJSON(w, http.StatusOK, triggerResource(t))
+	return true
+}
+
+// DeleteTriggerHTTP handles Eventarc trigger delete. Returns false when not found.
+func (s *Service) DeleteTriggerHTTP(w http.ResponseWriter, r *http.Request, p authn.Principal) bool {
+	project, location, id := r.PathValue("project"), r.PathValue("location"), r.PathValue("trigger")
+	name := fmt.Sprintf("projects/%s/locations/%s/triggers/%s", project, location, id)
+	t, ok, err := s.Store.GetEventarcTrigger(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return true
+	}
+	if !ok {
+		return false
+	}
+	_ = t
+	if err := s.require(p, "eventarc.triggers.delete", project); err != nil {
+		writeAuthz(w, err)
+		return true
+	}
+	ok, err = s.Store.DeleteEventarcTrigger(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return true
+	}
+	if !ok {
+		return false
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("{}"))
+	return true
+}
+
+// LooksLikeEventarcTrigger reports Eventarc-shaped create bodies.
+func LooksLikeEventarcTrigger(body map[string]any) bool {
+	if body == nil {
+		return false
+	}
+	for _, k := range []string{"eventFilters", "destination", "transport", "channel"} {
+		if _, ok := body[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -84,6 +154,16 @@ func triggerResource(t *store.EventarcTrigger) map[string]any {
 		out["channel"] = t.Channel
 	}
 	return out
+}
+
+// TriggerResourceJSON exports trigger JSON for the shared regional list mux.
+func TriggerResourceJSON(t *store.EventarcTrigger) map[string]any {
+	return triggerResource(t)
+}
+
+// MayListTriggers reports whether p may list Eventarc triggers in project.
+func (s *Service) MayListTriggers(p authn.Principal, projectID string) bool {
+	return s.require(p, "eventarc.triggers.list", projectID) == nil
 }
 
 func channelResource(c *store.EventarcChannel) map[string]any {
@@ -160,6 +240,18 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 	if !hasType {
 		gcperrors.InvalidArgument(w, "eventFilters must include type")
 		return
+	}
+	var destProbe struct {
+		HTTPEndpoint *struct {
+			URI string `json:"uri"`
+		} `json:"httpEndpoint"`
+	}
+	_ = json.Unmarshal([]byte(destJSON), &destProbe)
+	if destProbe.HTTPEndpoint != nil && strings.TrimSpace(destProbe.HTTPEndpoint.URI) != "" {
+		if err := httpegress.Validate(destProbe.HTTPEndpoint.URI); err != nil {
+			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
 	}
 	t, created, err := s.Store.CreateEventarcTrigger(store.EventarcTrigger{
 		ProjectID: project, Location: location, TriggerID: triggerID,

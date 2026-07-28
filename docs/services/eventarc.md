@@ -52,7 +52,11 @@ gcloud config set api_endpoint_overrides/eventarc http://127.0.0.1:4588/
 ## Emulator limits
 
 - Triggers stay regional (`.../locations/{loc}/triggers`); project-scoped
-  `/v1/projects/{p}/triggers` is Cloud Build on this shared mux
+  `/v1/projects/{p}/triggers` is Cloud Build on this shared mux. Regional create
+  with Eventarc-shaped bodies (`eventFilters` / `destination` / …) stays Eventarc;
+  Cloud Build-shaped bodies on the same path go to Cloud Build.
+- HTTP destinations require the lab catcher / loopback `:4588` or
+  `NOCTAXRIS_GCP_HTTP_EGRESS=1` + exact allowlist (see security-defaults)
 - Channel provider handshake is not implemented
 - Delivery is best-effort HTTP with one retry (no dead-letter)
 

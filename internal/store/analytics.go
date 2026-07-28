@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/google/uuid"
 )
 
@@ -1763,11 +1765,18 @@ func (s *Store) deliverEventarc(t EventarcTrigger, payload map[string]any) {
 	if uri == "" {
 		return
 	}
+	if err := httpegress.Validate(uri); err != nil {
+		return
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
-	client := &http.Client{Timeout: 3 * time.Second}
+	if u, err := url.Parse(uri); err == nil && httpegress.IsLabCatcher(u, strings.ToLower(u.Scheme)) {
+		RecordHTTPCatcher(string(raw))
+		return
+	}
+	client := httpegress.Client(3 * time.Second)
 	doPost := func() error {
 		req, err := http.NewRequest(http.MethodPost, uri, bytes.NewReader(raw))
 		if err != nil {

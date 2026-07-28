@@ -54,3 +54,15 @@ func TestAllowImagePullExtraAllowlistRequiresDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAllowImagePullRejectsAmbiguousPrefix(t *testing.T) {
+	t.Setenv(compute.EnvImagePullAllowlist, "alpine")
+	if err := compute.AllowImagePull("alpine-evil:latest"); err == nil {
+		t.Fatal("bare prefix without trailing slash must not match")
+	}
+	t.Setenv(compute.EnvImagePullAllowlist, "ghcr.io/kyaxris-labs/tool@sha256:"+strings.Repeat("b", 64))
+	exact := "ghcr.io/kyaxris-labs/tool@sha256:" + strings.Repeat("b", 64)
+	if err := compute.AllowImagePull(exact); err != nil {
+		t.Fatal(err)
+	}
+}

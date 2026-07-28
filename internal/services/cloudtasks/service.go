@@ -12,6 +12,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 )
@@ -32,7 +33,7 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 // Colon methods (:run) are parsed from the task path segment.
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	if s.client == nil {
-		s.client = &http.Client{Timeout: 5 * time.Second}
+		s.client = httpegress.Client(5 * time.Second)
 	}
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/queues", s.wrap(principalFrom, s.listQueues))
 	mux.HandleFunc("POST /v2/projects/{project}/locations/{location}/queues", s.wrap(principalFrom, s.createQueue))
@@ -295,6 +296,17 @@ func (s *Service) createTask(w http.ResponseWriter, r *http.Request, p authn.Pri
 	}
 	httpJSON := string(body.Task.HTTPRequest)
 	appEngineJSON := string(body.Task.AppEngineHTTPRequest)
+	if httpJSON != "" && httpJSON != "null" {
+		var hr struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal([]byte(httpJSON), &hr); err == nil && strings.TrimSpace(hr.URL) != "" {
+			if err := httpegress.Validate(hr.URL); err != nil {
+				gcperrors.InvalidArgument(w, err.Error())
+				return
+			}
+		}
+	}
 	created, err := s.Store.CreateCloudTask(store.CloudTask{
 		Name: name, QueueName: qName, ScheduleTime: sched, CreateTime: now,
 		HTTPRequestJSON: httpJSON, AppEngineHTTPRequestJSON: appEngineJSON,
@@ -307,16 +319,28 @@ func (s *Service) createTask(w http.ResponseWriter, r *http.Request, p authn.Pri
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "task already exists")
 		return
 	}
-	task, _, _ := s.Store.GetCloudTask(name)
+	task, ok, err := s.Store.GetCloudTask(name)
+	if err != nil || !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created task missing")
+		return
+	}
 	if t, err := time.Parse(time.RFC3339Nano, sched); err == nil {
 		if !t.After(time.Now().UTC().Add(2 * time.Second)) {
 			s.dispatchHTTP(task)
-			task, _, _ = s.Store.GetCloudTask(name)
+			task, ok, err = s.Store.GetCloudTask(name)
+			if err != nil || !ok {
+				gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "task missing after dispatch")
+				return
+			}
 		}
 	} else if t, err := time.Parse(time.RFC3339, sched); err == nil {
 		if !t.After(time.Now().UTC().Add(2 * time.Second)) {
 			s.dispatchHTTP(task)
-			task, _, _ = s.Store.GetCloudTask(name)
+			task, ok, err = s.Store.GetCloudTask(name)
+			if err != nil || !ok {
+				gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "task missing after dispatch")
+				return
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, toTaskJSON(task))
@@ -429,6 +453,9 @@ func (s *Service) dispatchHTTP(task store.CloudTask) {
 		Body       string            `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(task.HTTPRequestJSON), &hr); err != nil || hr.URL == "" {
+		return
+	}
+	if err := httpegress.Validate(hr.URL); err != nil {
 		return
 	}
 	method := hr.HttpMethod

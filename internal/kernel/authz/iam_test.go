@@ -147,12 +147,12 @@ func TestViewerGrantsCommonServiceReads(t *testing.T) {
 		"storage.objects.list",
 		"pubsub.topics.list",
 		"secretmanager.secrets.get",
+		"secretmanager.versions.get",
 		"cloudkms.cryptoKeys.get",
 		"logging.logEntries.list",
 		"serviceusage.services.get",
 		"iam.serviceAccounts.list",
 		"resourcemanager.projects.search",
-		"secretmanager.versions.access",
 	}
 	for _, perm := range reads {
 		ok, err := e.Evaluate(email, false, perm, resource)
@@ -163,11 +163,58 @@ func TestViewerGrantsCommonServiceReads(t *testing.T) {
 			t.Fatalf("viewer should grant %s", perm)
 		}
 	}
-	ok, err := e.Evaluate(email, false, "storage.buckets.create", resource)
-	if err != nil {
-		t.Fatal(err)
+	denied := []string{
+		"storage.buckets.create",
+		"secretmanager.versions.access",
+		"iam.serviceAccounts.getAccessToken",
+		"bigquery.tables.getData",
 	}
-	if ok {
-		t.Fatal("viewer must not grant create")
+	for _, perm := range denied {
+		ok, err := e.Evaluate(email, false, perm, resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			t.Fatalf("viewer must not grant %s", perm)
+		}
+	}
+}
+
+func TestEditorDeniesIAMAdminAndImpersonation(t *testing.T) {
+	resource := "projects/noctaxris-gcp-local"
+	email := "editor@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			resource: mustPolicy(t, "roles/editor", "serviceAccount:"+email),
+		},
+	}
+	ok, err := e.Evaluate(email, false, "storage.buckets.create", resource)
+	if err != nil || !ok {
+		t.Fatalf("editor should create buckets: ok=%v err=%v", ok, err)
+	}
+	for _, perm := range []string{
+		"resourcemanager.projects.setIamPolicy",
+		"iam.serviceAccounts.getAccessToken",
+		"iam.serviceAccounts.signBlob",
+	} {
+		ok, err := e.Evaluate(email, false, perm, resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			t.Fatalf("editor must not grant %s", perm)
+		}
+	}
+}
+
+func TestNilEvaluatorFailClosed(t *testing.T) {
+	var e *authz.Evaluator
+	ok, err := e.Evaluate("a@b.c", false, "storage.objects.get", "projects/p")
+	if err != nil || ok {
+		t.Fatalf("nil evaluator must deny non-root: ok=%v err=%v", ok, err)
+	}
+	ok, err = e.Evaluate("a@b.c", true, "storage.objects.get", "projects/p")
+	if err != nil || !ok {
+		t.Fatalf("nil evaluator still allows root: ok=%v err=%v", ok, err)
 	}
 }

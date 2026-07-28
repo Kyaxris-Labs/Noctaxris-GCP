@@ -105,7 +105,7 @@ func (d DockerInvoker) Invoke(ctx context.Context, req InvokeRequest) (InvokeRes
 
 	cli, err := Dial(d.Host, d.TLSCertDir)
 	if err != nil {
-		return softFailMock(ctx, fb, req, "engine dial failed: "+err.Error())
+		return softFailMock(ctx, fb, req, "engine dial failed")
 	}
 	defer cli.Close()
 	if !cli.Enabled() {
@@ -120,7 +120,7 @@ func (d DockerInvoker) Invoke(ctx context.Context, req InvokeRequest) (InvokeRes
 	}
 	out, err := cli.RunLabOneShot(ctx, image)
 	if err != nil {
-		return softFailMock(ctx, fb, req, "engine run failed: "+err.Error())
+		return softFailMock(ctx, fb, req, "engine run failed")
 	}
 
 	body, _ := json.Marshal(map[string]any{

@@ -17,7 +17,9 @@ All settings use the `NOCTAXRIS_GCP_*` prefix.
 | `NOCTAXRIS_GCP_DOCKER_HOST` | empty | Nested DinD engine URL. Empty disables nested compute (default; unit tests need no Docker). Rejects `unix://`, `npipe://`, and `docker.sock`. Must be `tcp://noctaxris-gcp-engine:2376` or an entry in `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST`. |
 | `NOCTAXRIS_GCP_DOCKER_CERT_PATH` | empty | Directory with `ca.pem`, `cert.pem`, and `key.pem` for engine TLS. Required whenever `NOCTAXRIS_GCP_DOCKER_HOST` is set. |
 | `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST` | empty | Comma-separated exact `tcp://` URLs allowed in addition to `tcp://noctaxris-gcp-engine:2376`. |
-| `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` | empty | Comma-separated image ref prefixes. Registry hosts (dot or port in host) require `@sha256:` digests. |
+| `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` | empty | Comma-separated exact image refs, or registry prefixes ending in `/` (digest `@sha256:` required for registry hosts). Bare substring prefixes without a trailing `/` are rejected. |
+| `NOCTAXRIS_GCP_HTTP_EGRESS` | empty (off) | Set to `1` to honor `NOCTAXRIS_GCP_HTTP_ALLOWLIST` for Pub/Sub push, Eventarc HTTP, Cloud Tasks, and Scheduler destinations beyond lab-local URLs. Unset/off: only `http://127.0.0.1:4588/_noctaxris-gcp/http-catcher...` and other loopback `:4588` lab-local URLs (allowlist ignored). |
+| `NOCTAXRIS_GCP_HTTP_ALLOWLIST` | empty | Comma-separated exact HTTP(S) URLs allowed when egress is on. Listed URLs still reject private, loopback, link-local, and metadata hosts; delivery does not follow redirects. Ignored when egress is off. |
 
 EnsureRoot also seeds lab organization `organizations/noctaxris-gcp-org` (folders
 CRUD lite attaches under that parent). See [services/resourcemanager.md](services/resourcemanager.md).
@@ -84,10 +86,11 @@ before starting. Startup refuses that pair on the non-loopback container bind.
 | Other Google clients | `option.WithEndpoint("127.0.0.1:4588")` (or language equivalent) + Bearer |
 | Terraform Google provider | Custom endpoints with versioned path suffixes (see below) |
 
-Cloud Build triggers use classic project-scoped paths
-(`POST/GET/DELETE /v1/projects/{p}/triggers[/{id}]`). Regional
-`.../locations/{loc}/triggers` is owned by Eventarc on the shared mux and is not
-mounted for Cloud Build. See [services/cloud-build.md](services/cloud-build.md).
+Cloud Build and Eventarc share regional
+`.../locations/{loc}/triggers` on the mux: create selects by body shape
+(Eventarc keys vs Cloud Build). Project-scoped `/v1/projects/{p}/triggers` remains
+Cloud Build only. See [services/cloud-build.md](services/cloud-build.md) and
+[services/eventarc.md](services/eventarc.md).
 
 ### Terraform custom endpoints
 

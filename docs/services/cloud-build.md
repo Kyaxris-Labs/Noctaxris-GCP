@@ -27,10 +27,13 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 | `POST`/`GET` | `/v1/projects/{p}/triggers` |
 | `GET`/`DELETE` | `/v1/projects/{p}/triggers/{id}` |
 | `POST` | `/v1/projects/{p}/triggers/{id}:run` |
+| `POST`/`GET`/`DELETE` | `/v1/projects/{p}/locations/{loc}/triggers[/{id}]` (shared mux with Eventarc; body shape selects Cloud Build vs Eventarc on create) |
+| `POST` | `/v1/projects/{p}/locations/{loc}/triggers/{id}:run` |
 
-Triggers use the classic project-scoped Cloud Build paths (`projects.triggers`). Regional
-`.../locations/{loc}/triggers` is not mounted here so it does not collide with Eventarc on
-the shared listener. Colon methods use `splitColonAction`.
+Triggers use classic project-scoped paths and regional `.../locations/.../triggers`.
+Regional create dispatches by body: Eventarc-shaped (`eventFilters` /
+`destination` / `transport` / `channel`) goes to Eventarc; otherwise Cloud Build.
+Colon methods use `splitColonAction`.
 
 `create` / `retry` / `:run` request body yields an Operation:
 
@@ -57,7 +60,7 @@ Checked on `projects/{project}`:
 - `:run` creates a WORKING build theatre only (no SCM checkout, no webhook delivery)
 - No worker pools, approvals, or real SCM webhooks
 - Logs URL is a lab string only
-- Regional `projects.locations.triggers` is omitted (Eventarc owns `.../locations/.../triggers` on this mux)
+- Regional create shares the path with Eventarc (body-shape dispatch); list merges both inventories when authorized
 
 ## Verification / CLI smoke
 

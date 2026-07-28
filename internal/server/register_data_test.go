@@ -484,7 +484,7 @@ func TestPubSubFilterSeekPushConfig(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("sub: %d %s", rec.Code, rec.Body.String())
 	}
-	push := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/subscriptions/filter-sub:modifyPushConfig", strings.NewReader(`{"pushConfig":{"pushEndpoint":"http://127.0.0.1:9/push"}}`))
+	push := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/subscriptions/filter-sub:modifyPushConfig", strings.NewReader(`{"pushConfig":{"pushEndpoint":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/push"}}`))
 	push.Header.Set("Authorization", auth)
 	push.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()

@@ -47,8 +47,8 @@ Per-service deferred depth lives on each page. Shared gaps:
 
 - Seeded organization `organizations/noctaxris-gcp-org`; default project parent is
   that org; folders CRUD lite (no full hierarchy tooling)
-- Cloud Build triggers use project-scoped paths (`projects/.../triggers`); Eventarc
-  owns regional `.../locations/.../triggers` on the shared mux
+- Cloud Build and Eventarc share regional `.../locations/.../triggers` (body-shape
+  dispatch on create; list may merge); project-scoped triggers stay Cloud Build
 - Bearer required on API paths (health/ready/version are public; Identity Toolkit
   `/identitytoolkit.googleapis.com/v1/accounts*` client methods are also public)
 - Root principal bypasses IAM evaluation (lab operator)

@@ -36,7 +36,8 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/builds/{build}", s.wrap(principalFrom, s.getBuildRegional))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/builds/{build}", s.wrap(principalFrom, s.buildPOSTActionRegional))
 
-	// Global triggers only: regional .../locations/{loc}/triggers collides with Eventarc on the shared mux.
+	// Global triggers only on this Mount. Regional .../locations/{loc}/triggers
+	// is shared with Eventarc via server.registerLocationTriggers.
 	mux.HandleFunc("GET /v1/projects/{project}/triggers", s.wrap(principalFrom, s.listTriggers))
 	mux.HandleFunc("POST /v1/projects/{project}/triggers", s.wrap(principalFrom, s.createTrigger))
 	mux.HandleFunc("GET /v1/projects/{project}/triggers/{trigger}", s.wrap(principalFrom, s.getTrigger))
@@ -371,8 +372,88 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "trigger already exists")
 		return
 	}
-	out, _, _ := s.Store.GetCbTrigger(name)
+	out, ok, err := s.Store.GetCbTrigger(name)
+	if err != nil || !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created trigger missing")
+		return
+	}
 	writeJSON(w, http.StatusOK, toTriggerJSON(out))
+}
+
+// CreateTriggerHTTP is used by the shared regional trigger mux.
+func (s *Service) CreateTriggerHTTP(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	s.createTrigger(w, r, p)
+}
+
+// ListTriggersHTTP lists Cloud Build regional triggers.
+func (s *Service) ListTriggersHTTP(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	s.listTriggers(w, r, p)
+}
+
+// GetTriggerHTTP returns true when the trigger was found or an error was written.
+func (s *Service) GetTriggerHTTP(w http.ResponseWriter, r *http.Request, p authn.Principal) bool {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	if location == "" {
+		location = DefaultLocation
+	}
+	id, action := splitColonAction(r.PathValue("trigger"))
+	if action != "" {
+		return false
+	}
+	t, ok, err := s.Store.GetCbTrigger(triggerName(project, location, id))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return true
+	}
+	if !ok {
+		return false
+	}
+	if err := s.require(p, "cloudbuild.triggers.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return true
+	}
+	writeJSON(w, http.StatusOK, toTriggerJSON(t))
+	return true
+}
+
+// DeleteTriggerHTTP deletes a Cloud Build regional trigger when present.
+func (s *Service) DeleteTriggerHTTP(w http.ResponseWriter, r *http.Request, p authn.Principal) bool {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	if location == "" {
+		location = DefaultLocation
+	}
+	id, _ := splitColonAction(r.PathValue("trigger"))
+	name := triggerName(project, location, id)
+	_, ok, err := s.Store.GetCbTrigger(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return true
+	}
+	if !ok {
+		return false
+	}
+	if err := s.require(p, "cloudbuild.triggers.delete", project); err != nil {
+		writeAuthzErr(w, err)
+		return true
+	}
+	ok, err = s.Store.DeleteCbTrigger(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return true
+	}
+	if !ok {
+		return false
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("{}"))
+	return true
+}
+
+// TriggerPOSTActionHTTP runs Cloud Build regional trigger actions (:run).
+func (s *Service) TriggerPOSTActionHTTP(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	s.triggerPOSTAction(w, r, p)
 }
 
 func (s *Service) listTriggers(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -568,6 +649,16 @@ func toTriggerJSON(t store.CbTrigger) map[string]any {
 	cfg["resourceName"] = t.Name
 	cfg["createTime"] = t.CreatedAt
 	return cfg
+}
+
+// TriggerResourceJSON exports Cloud Build trigger JSON for the shared regional list mux.
+func TriggerResourceJSON(t store.CbTrigger) map[string]any {
+	return toTriggerJSON(t)
+}
+
+// MayListTriggers reports whether p may list Cloud Build triggers in project.
+func (s *Service) MayListTriggers(p authn.Principal, projectID string) bool {
+	return s.require(p, "cloudbuild.triggers.list", projectID) == nil
 }
 
 func ensureStepStatus(steps any, status string) any {

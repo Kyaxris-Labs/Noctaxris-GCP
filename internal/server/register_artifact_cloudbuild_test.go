@@ -185,7 +185,7 @@ func TestCloudBuildAndEventarcTriggerPathSplit(t *testing.T) {
 
 	evtBody := []byte(`{
 		"eventFilters":[{"attribute":"type","value":"google.cloud.pubsub.topic.v1.messagePublished"}],
-		"destination":{"httpEndpoint":{"uri":"http://127.0.0.1:9/hook"}},
+		"destination":{"httpEndpoint":{"uri":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/hook"}},
 		"transport":{"pubsub":{"topic":"projects/` + project + `/topics/split-topic"}}
 	}`)
 	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/locations/us-central1/triggers?triggerId=evt-only",
@@ -220,7 +220,7 @@ func TestCloudBuildAndEventarcTriggerPathSplit(t *testing.T) {
 		t.Fatalf("get eventarc trigger status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	// Regional .../locations/.../triggers stays Eventarc (Cloud Build is project-scoped only).
+	// Regional Eventarc body still Eventarc.
 	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/locations/us-central1/triggers?triggerId=evt-regional-2",
 		bytes.NewReader(evtBody))
 	req.Header.Set("Authorization", auth)
@@ -228,7 +228,7 @@ func TestCloudBuildAndEventarcTriggerPathSplit(t *testing.T) {
 	rec = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("regional create still Eventarc status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("regional Eventarc create status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &evt)
 	wantRegional := "projects/" + project + "/locations/us-central1/triggers/evt-regional-2"
@@ -238,8 +238,25 @@ func TestCloudBuildAndEventarcTriggerPathSplit(t *testing.T) {
 	if evt["eventFilters"] == nil {
 		t.Fatalf("expected Eventarc eventFilters, got %#v", evt)
 	}
-	if _, hasCB := evt["resourceName"]; hasCB {
-		t.Fatalf("regional path returned Cloud Build fields: %#v", evt)
+
+	// Regional Cloud Build body is dispatched to Cloud Build (shared mux).
+	cbRegional := []byte(`{"id":"cb-regional","filename":"cloudbuild.yaml"}`)
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/locations/us-central1/triggers?triggerId=cb-regional",
+		bytes.NewReader(cbRegional))
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("regional Cloud Build create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var cbReg map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &cbReg)
+	if _, has := cbReg["resourceName"]; !has {
+		t.Fatalf("expected Cloud Build resourceName, got %#v", cbReg)
+	}
+	if cbReg["eventFilters"] != nil {
+		t.Fatalf("Cloud Build regional must not look like Eventarc: %#v", cbReg)
 	}
 }
 

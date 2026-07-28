@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -103,7 +105,19 @@ func (s *Service) httpClient() *http.Client {
 	if s.HTTPClient != nil {
 		return s.HTTPClient
 	}
-	return &http.Client{Timeout: 5 * time.Second}
+	return httpegress.Client(5 * time.Second)
+}
+
+func validatePushEndpoint(push string) error {
+	push = strings.TrimSpace(push)
+	if push == "" {
+		return nil
+	}
+	return httpegress.Validate(push)
+}
+
+func parsePushURL(endpoint string) (*url.URL, error) {
+	return url.Parse(endpoint)
 }
 
 func (s *Service) CreateTopic(ctx context.Context, topic *pubsubpb.Topic) (*pubsubpb.Topic, error) {
@@ -247,6 +261,9 @@ func (s *Service) deliverPush(copies []store.PubSubMessage) {
 		if err != nil || !ok || sub.PushEndpoint == "" {
 			continue
 		}
+		if err := httpegress.Validate(sub.PushEndpoint); err != nil {
+			continue
+		}
 		attrs := map[string]string{}
 		if m.AttributesJSON != "" && m.AttributesJSON != "{}" {
 			_ = json.Unmarshal([]byte(m.AttributesJSON), &attrs)
@@ -260,12 +277,18 @@ func (s *Service) deliverPush(copies []store.PubSubMessage) {
 			},
 			"subscription": m.Subscription,
 		})
-		req, err := http.NewRequest(http.MethodPost, sub.PushEndpoint, bytes.NewReader(body))
+		u, err := http.NewRequest(http.MethodPost, sub.PushEndpoint, bytes.NewReader(body))
 		if err != nil {
 			continue
 		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := s.httpClient().Do(req)
+		// Lab catcher: acknowledge without outbound HTTP (same-process theatre).
+		if pu, perr := parsePushURL(sub.PushEndpoint); perr == nil && httpegress.IsLabCatcher(pu, strings.ToLower(pu.Scheme)) {
+			store.RecordHTTPCatcher(string(body))
+			_ = s.Store.Acknowledge(m.Subscription, []string{m.AckID})
+			continue
+		}
+		u.Header.Set("Content-Type", "application/json")
+		resp, err := s.httpClient().Do(u)
 		if err != nil {
 			continue
 		}
@@ -289,6 +312,9 @@ func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscrip
 	push := ""
 	if sub.GetPushConfig() != nil {
 		push = sub.GetPushConfig().GetPushEndpoint()
+	}
+	if err := validatePushEndpoint(push); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	dlTopic := ""
 	maxAttempts := 0
@@ -398,6 +424,9 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 			ep := ""
 			if req.GetSubscription().GetPushConfig() != nil {
 				ep = req.GetSubscription().GetPushConfig().GetPushEndpoint()
+			}
+			if err := validatePushEndpoint(ep); err != nil {
+				return nil, status.Error(codes.InvalidArgument, err.Error())
 			}
 			push = &ep
 		case "labels":
