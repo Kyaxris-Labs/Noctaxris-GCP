@@ -25,6 +25,7 @@ type Handler struct {
 // Mount registers CRM routes on mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v3/projects/{project}", h.handleGetProject)
+	mux.HandleFunc("PATCH /v3/projects/{project}", h.handlePatchProject)
 	mux.HandleFunc("POST /v3/projects/{project}", h.handleProjectPost)
 }
 
@@ -72,6 +73,46 @@ func (h *Handler) handleGetProject(w http.ResponseWriter, r *http.Request) {
 		gcperrors.NotFound(w, "Requested entity was not found.")
 		return
 	}
+	writeJSON(w, http.StatusOK, projectJSON(p))
+}
+
+func (h *Handler) handlePatchProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("project")
+	if projectID == "" || strings.Contains(projectID, ":") {
+		gcperrors.InvalidArgument(w, "invalid project name")
+		return
+	}
+	resource := "projects/" + projectID
+	if _, ok := h.require(w, r, "resourcemanager.projects.update", resource); !ok {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		DisplayName string `json:"displayName"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	mask := r.URL.Query().Get("updateMask")
+	if mask != "" && !fieldMaskIncludes(mask, "displayName") {
+		gcperrors.InvalidArgument(w, "updateMask must include displayName")
+		return
+	}
+	p, ok, err := h.Store.UpdateProjectDisplayName(projectID, req.DisplayName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Requested entity was not found.")
+		return
+	}
+	// Lab returns the Project synchronously (GCP returns an LRO Operation).
 	writeJSON(w, http.StatusOK, projectJSON(p))
 }
 
@@ -183,6 +224,15 @@ func splitColonAction(segment string) (id, action string) {
 		return segment[:i], segment[i+1:]
 	}
 	return segment, ""
+}
+
+func fieldMaskIncludes(mask, field string) bool {
+	for _, part := range strings.Split(mask, ",") {
+		if strings.TrimSpace(part) == field {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

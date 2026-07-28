@@ -102,7 +102,7 @@ func (s *Store) ListFirestoreDocs(projectID, parentDocuments, collectionID strin
 	}
 	defer rows.Close()
 
-	wantSegments := strings.Count(prefix, "/") + 1 + 2 // + collection + docId
+	wantSegments := strings.Count(prefix, "/") + 2 // collection + document under prefix
 	out := make([]FirestoreDoc, 0, pageSize)
 	for rows.Next() {
 		var d FirestoreDoc
@@ -164,4 +164,55 @@ func (s *Store) BatchGetFirestoreDocs(paths []string) ([]FirestoreDoc, error) {
 		}
 	}
 	return out, nil
+}
+
+// PutFirestoreTransaction registers a lab transaction token (no isolation).
+func (s *Store) PutFirestoreTransaction(token, database, projectID string) error {
+	if token == "" || database == "" || projectID == "" {
+		return fmt.Errorf("firestore transaction requires token, database, and project")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(
+		`INSERT INTO firestore_transactions (token, database, project_id, created_at) VALUES (?, ?, ?, ?)`,
+		token, database, projectID, now,
+	)
+	if err != nil {
+		return fmt.Errorf("put firestore transaction: %w", err)
+	}
+	return nil
+}
+
+// ConsumeFirestoreTransaction deletes and validates a token for database. ok is false when missing/mismatch.
+func (s *Store) ConsumeFirestoreTransaction(token, database string) (bool, error) {
+	if token == "" {
+		return false, nil
+	}
+	res, err := s.db.Exec(
+		`DELETE FROM firestore_transactions WHERE token = ? AND database = ?`,
+		token, database,
+	)
+	if err != nil {
+		return false, fmt.Errorf("consume firestore transaction: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// DeleteFirestoreTransaction removes a token regardless of database. ok is false when missing.
+func (s *Store) DeleteFirestoreTransaction(token string) (bool, error) {
+	if token == "" {
+		return false, nil
+	}
+	res, err := s.db.Exec(`DELETE FROM firestore_transactions WHERE token = ?`, token)
+	if err != nil {
+		return false, fmt.Errorf("delete firestore transaction: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

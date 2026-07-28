@@ -14,6 +14,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
+	"github.com/google/uuid"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -239,6 +240,7 @@ func (s *Service) CreateDocument(ctx context.Context, req *firestorepb.CreateDoc
 }
 
 // UpdateDocument implements Firestore.UpdateDocument.
+// When update_mask is set, only masked top-level fields are merged; otherwise fields replace the document.
 func (s *Service) UpdateDocument(ctx context.Context, req *firestorepb.UpdateDocumentRequest) (*firestorepb.Document, error) {
 	doc := req.GetDocument()
 	if doc == nil || doc.GetName() == "" {
@@ -258,7 +260,7 @@ func (s *Service) UpdateDocument(ctx context.Context, req *firestorepb.UpdateDoc
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "Document '%s' not found", doc.GetName())
 	}
-	fieldsJSON, err := fieldsToJSON(doc.GetFields())
+	fieldsJSON, err := applyFieldMaskJSON(existing.FieldsJSON, doc.GetFields(), req.GetUpdateMask())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "fields: %v", err)
 	}
@@ -401,17 +403,19 @@ func (s *Service) applyWrite(projectID string, w *firestorepb.Write) (*firestore
 		if err != nil {
 			return wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
 		}
-		fieldsJSON, err := fieldsToJSON(doc.GetFields())
-		if err != nil {
-			return wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
-		}
 		existing, ok, err := s.Store.GetFirestoreDoc(doc.GetName())
 		if err != nil {
 			return wr, &rpcstatus.Status{Code: int32(codes.Internal), Message: err.Error()}
 		}
+		existingJSON := "{}"
 		createTime := now.AsTime().UTC().Format(time.RFC3339Nano)
 		if ok {
+			existingJSON = existing.FieldsJSON
 			createTime = existing.CreateTime
+		}
+		fieldsJSON, err := applyFieldMaskJSON(existingJSON, doc.GetFields(), w.GetUpdateMask())
+		if err != nil {
+			return wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
 		}
 		d := store.FirestoreDoc{
 			Path: doc.GetName(), ProjectID: projectID, CollectionID: coll, DocumentID: docID,
@@ -438,7 +442,8 @@ func (s *Service) applyWrite(projectID string, w *firestorepb.Write) (*firestore
 	}
 }
 
-// Commit applies writes without transaction semantics (lab).
+// Commit applies writes. Transaction bytes from BeginTransaction are accepted and cleared,
+// but there is no isolation or conflict detection (lab single-shot token).
 func (s *Service) Commit(ctx context.Context, req *firestorepb.CommitRequest) (*firestorepb.CommitResponse, error) {
 	if req.GetDatabase() == "" {
 		return nil, status.Error(codes.InvalidArgument, "database is required")
@@ -451,7 +456,13 @@ func (s *Service) Commit(ctx context.Context, req *firestorepb.CommitRequest) (*
 		return nil, err
 	}
 	if len(req.GetTransaction()) > 0 {
-		return nil, status.Error(codes.Unimplemented, "transactions are not implemented in this lab emulator")
+		ok, err := s.Store.ConsumeFirestoreTransaction(string(req.GetTransaction()), req.GetDatabase())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "%v", err)
+		}
+		if !ok {
+			return nil, status.Error(codes.InvalidArgument, "transaction not found or already used")
+		}
 	}
 	results := make([]*firestorepb.WriteResult, 0, len(req.GetWrites()))
 	for _, w := range req.GetWrites() {
@@ -464,7 +475,7 @@ func (s *Service) Commit(ctx context.Context, req *firestorepb.CommitRequest) (*
 	return &firestorepb.CommitResponse{WriteResults: results, CommitTime: timestamppb.Now()}, nil
 }
 
-// RunQuery implements a lab subset: collection equality FieldFilter.
+// RunQuery implements a lab subset: EQUAL, IN, and ARRAY_CONTAINS field filters.
 func (s *Service) RunQuery(req *firestorepb.RunQueryRequest, stream firestorepb.Firestore_RunQueryServer) error {
 	parent := req.GetParent()
 	if parent == "" {
@@ -482,15 +493,18 @@ func (s *Service) RunQuery(req *firestorepb.RunQueryRequest, stream firestorepb.
 		return status.Error(codes.InvalidArgument, "structured_query.from is required")
 	}
 	coll := sq.GetFrom()[0].GetCollectionId()
-	fieldName, want, okFilter := extractEqualityFilter(sq.GetWhere())
+	filter, hasFilter, err := extractSimpleFilter(sq.GetWhere())
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
 	docs, err := s.Store.ListFirestoreDocs(projectID, parent, coll, 1000)
 	if err != nil {
 		return status.Errorf(codes.Internal, "%v", err)
 	}
 	readTime := timestamppb.Now()
 	for _, d := range docs {
-		if okFilter {
-			match, err := fieldEquals(d.FieldsJSON, fieldName, want)
+		if hasFilter {
+			match, err := matchSimpleFilter(d.FieldsJSON, filter)
 			if err != nil {
 				return status.Errorf(codes.Internal, "%v", err)
 			}
@@ -509,46 +523,179 @@ func (s *Service) RunQuery(req *firestorepb.RunQueryRequest, stream firestorepb.
 	return nil
 }
 
-func extractEqualityFilter(filter *firestorepb.StructuredQuery_Filter) (field string, want *firestorepb.Value, ok bool) {
+type simpleFilter struct {
+	field string
+	op    firestorepb.StructuredQuery_FieldFilter_Operator
+	want  *firestorepb.Value
+}
+
+func extractSimpleFilter(filter *firestorepb.StructuredQuery_Filter) (simpleFilter, bool, error) {
 	if filter == nil {
-		return "", nil, false
+		return simpleFilter{}, false, nil
 	}
 	ff := filter.GetFieldFilter()
 	if ff == nil {
-		return "", nil, false
+		return simpleFilter{}, false, fmt.Errorf("only FieldFilter is supported in this lab")
 	}
-	if ff.GetOp() != firestorepb.StructuredQuery_FieldFilter_EQUAL {
-		return "", nil, false
+	op := ff.GetOp()
+	switch op {
+	case firestorepb.StructuredQuery_FieldFilter_EQUAL,
+		firestorepb.StructuredQuery_FieldFilter_IN,
+		firestorepb.StructuredQuery_FieldFilter_ARRAY_CONTAINS:
+		return simpleFilter{field: ff.GetField().GetFieldPath(), op: op, want: ff.GetValue()}, true, nil
+	default:
+		return simpleFilter{}, false, fmt.Errorf("unsupported field filter op %v", op)
 	}
-	return ff.GetField().GetFieldPath(), ff.GetValue(), true
 }
 
-func fieldEquals(fieldsJSON, field string, want *firestorepb.Value) (bool, error) {
+func matchSimpleFilter(fieldsJSON string, f simpleFilter) (bool, error) {
 	fields, err := fieldsFromJSON(fieldsJSON)
 	if err != nil {
 		return false, err
 	}
-	got, ok := fields[field]
+	got, ok := fields[f.field]
 	if !ok {
 		return false, nil
 	}
-	gb, err := protojson.Marshal(got)
+	switch f.op {
+	case firestorepb.StructuredQuery_FieldFilter_EQUAL:
+		return valuesEqual(got, f.want)
+	case firestorepb.StructuredQuery_FieldFilter_IN:
+		arr := f.want.GetArrayValue()
+		if arr == nil {
+			return false, fmt.Errorf("IN filter value must be an array")
+		}
+		for _, cand := range arr.GetValues() {
+			eq, err := valuesEqual(got, cand)
+			if err != nil {
+				return false, err
+			}
+			if eq {
+				return true, nil
+			}
+		}
+		return false, nil
+	case firestorepb.StructuredQuery_FieldFilter_ARRAY_CONTAINS:
+		arr := got.GetArrayValue()
+		if arr == nil {
+			return false, nil
+		}
+		for _, el := range arr.GetValues() {
+			eq, err := valuesEqual(el, f.want)
+			if err != nil {
+				return false, err
+			}
+			if eq {
+				return true, nil
+			}
+		}
+		return false, nil
+	default:
+		return false, fmt.Errorf("unsupported filter op")
+	}
+}
+
+func valuesEqual(a, b *firestorepb.Value) (bool, error) {
+	if a == nil || b == nil {
+		return a == b, nil
+	}
+	gb, err := protojson.Marshal(a)
 	if err != nil {
 		return false, err
 	}
-	wb, err := protojson.Marshal(want)
+	wb, err := protojson.Marshal(b)
 	if err != nil {
 		return false, err
 	}
 	return string(gb) == string(wb), nil
 }
 
-// BeginTransaction is not implemented in Wave 1.
-func (s *Service) BeginTransaction(context.Context, *firestorepb.BeginTransactionRequest) (*firestorepb.BeginTransactionResponse, error) {
-	return nil, gcperrors.GRPC(gcperrors.StatusUnimplemented, "BeginTransaction is not implemented in this lab emulator")
+func applyFieldMaskJSON(existingJSON string, incoming map[string]*firestorepb.Value, mask *firestorepb.DocumentMask) (string, error) {
+	if mask == nil {
+		return fieldsToJSON(incoming)
+	}
+	paths := mask.GetFieldPaths()
+	existing, err := fieldsFromJSON(existingJSON)
+	if err != nil {
+		return "", err
+	}
+	if len(paths) == 0 {
+		return fieldsToJSON(existing)
+	}
+	merged := make(map[string]*firestorepb.Value, len(existing)+len(paths))
+	for k, v := range existing {
+		merged[k] = v
+	}
+	for _, path := range paths {
+		top := topLevelField(path)
+		if top == "" {
+			continue
+		}
+		if v, ok := incoming[top]; ok {
+			merged[top] = v
+		} else {
+			delete(merged, top)
+		}
+	}
+	return fieldsToJSON(merged)
 }
 
-// Listen is not implemented in Wave 1.
+func topLevelField(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if i := strings.IndexByte(path, '.'); i >= 0 {
+		return path[:i]
+	}
+	return path
+}
+
+// BeginTransaction returns a lab UUID token. No isolation is provided; Commit accepts the token once.
+func (s *Service) BeginTransaction(ctx context.Context, req *firestorepb.BeginTransactionRequest) (*firestorepb.BeginTransactionResponse, error) {
+	if req.GetDatabase() == "" {
+		return nil, status.Error(codes.InvalidArgument, "database is required")
+	}
+	projectID, err := projectFromName(req.GetDatabase())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if _, err := s.require(ctx, "datastore.entities.update", projectID); err != nil {
+		return nil, err
+	}
+	token := uuid.NewString()
+	if err := s.Store.PutFirestoreTransaction(token, req.GetDatabase(), projectID); err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return &firestorepb.BeginTransactionResponse{Transaction: []byte(token)}, nil
+}
+
+// Rollback clears a lab transaction token.
+func (s *Service) Rollback(ctx context.Context, req *firestorepb.RollbackRequest) (*emptypb.Empty, error) {
+	if req.GetDatabase() == "" {
+		return nil, status.Error(codes.InvalidArgument, "database is required")
+	}
+	if len(req.GetTransaction()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "transaction is required")
+	}
+	projectID, err := projectFromName(req.GetDatabase())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if _, err := s.require(ctx, "datastore.entities.update", projectID); err != nil {
+		return nil, err
+	}
+	ok, err := s.Store.DeleteFirestoreTransaction(string(req.GetTransaction()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	if !ok {
+		return nil, status.Error(codes.InvalidArgument, "transaction not found")
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// Listen is not implemented.
 func (s *Service) Listen(firestorepb.Firestore_ListenServer) error {
 	return gcperrors.GRPC(gcperrors.StatusUnimplemented, "Listen is not implemented in this lab emulator")
 }

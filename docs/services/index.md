@@ -1,19 +1,28 @@
 # Services
 
-Implemented Wave 1 surface on `127.0.0.1:4588`. Status **lab** means CLI/SDK-usable
+Implemented lab surface on `127.0.0.1:4588`. Status **lab** means CLI/SDK-usable
 with honest emulator limits on each page.
 
-| Service | Status | Doc |
-|---------|--------|-----|
-| Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) |
-| IAM | lab | [iam.md](iam.md) |
-| Service Usage | lab | [serviceusage.md](serviceusage.md) |
-| Cloud Storage | lab | [gcs.md](gcs.md) |
-| Pub/Sub | lab | [pubsub.md](pubsub.md) |
-| Secret Manager | lab | [secret-manager.md](secret-manager.md) |
-| Firestore | lab | [firestore.md](firestore.md) |
-| Cloud KMS | lab | [kms.md](kms.md) |
-| Cloud Logging | lab | [logging.md](logging.md) |
+| Service | Status | Doc | Protocol |
+|---------|--------|-----|----------|
+| Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects + project IAM |
+| IAM | lab | [iam.md](iam.md) | REST v1 service accounts and keys |
+| Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable |
+| Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 (`STORAGE_EMULATOR_HOST`) |
+| Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST `/v1/.../topics\|subscriptions` (`PUBSUB_EMULATOR_HOST`) |
+| Secret Manager | lab | [secret-manager.md](secret-manager.md) | REST + gRPC SecretManagerService |
+| Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1 (`FIRESTORE_EMULATOR_HOST`) |
+| Cloud KMS | lab | [kms.md](kms.md) | REST v1 symmetric encrypt/decrypt |
+| Cloud Logging | lab | [logging.md](logging.md) | REST v2 entries write/list, logs list/delete |
+| Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services + mock `:invoke` |
+| Cloud Functions | lab | [cloud-functions.md](cloud-functions.md) | REST Functions v2 control plane + `:invoke` stub |
+| Cloud Scheduler | lab | [cloud-scheduler.md](cloud-scheduler.md) | REST v1 jobs + best-effort HTTP/PubSub fire |
+| Cloud Tasks | lab | [cloud-tasks.md](cloud-tasks.md) | REST v2 queues/tasks + best-effort HTTP dispatch |
+| BigQuery | lab | [bigquery.md](bigquery.md) | REST v2 datasets/tables, insertAll, limited query |
+| Firebase Auth | lab | [firebase-auth.md](firebase-auth.md) | Identity Toolkit REST (`FIREBASE_AUTH_EMULATOR_HOST`) |
+| Cloud Monitoring | lab | [monitoring.md](monitoring.md) | REST v3 metric descriptors + time series |
+| Cloud Datastore | lab | [datastore.md](datastore.md) | gRPC Datastore v1 (`DATASTORE_EMULATOR_HOST`) |
+| Eventarc | lab | [eventarc.md](eventarc.md) | REST v1 triggers; Pub/Sub and GCS delivery |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 
@@ -22,7 +31,8 @@ Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 Per-service deferred depth lives on each page. Shared gaps:
 
 - Single seeded project; no orgs/folders
-- Bearer required on API paths (health/ready/version are public)
+- Bearer required on API paths (health/ready/version are public; Identity Toolkit
+  `/identitytoolkit.googleapis.com/v1/accounts*` client methods are also public)
 - Root principal bypasses IAM evaluation (lab operator)
 - No host `docker.sock`; Compose publishes loopback only
 
@@ -55,9 +65,18 @@ gcloud config set api_endpoint_overrides/secretmanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/firestore http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/cloudkms http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/logging http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/run http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/cloudfunctions http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/cloudscheduler http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/cloudtasks http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/bigquery http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/monitoring http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/eventarc http://127.0.0.1:4588/
 ```
 
-See also [configuration.md](../configuration.md).
+Firebase Auth and Datastore prefer emulator host env vars
+(`FIREBASE_AUTH_EMULATOR_HOST`, `DATASTORE_EMULATOR_HOST`) rather than gcloud
+endpoint overrides. See [configuration.md](../configuration.md).
 
 ## Verification
 

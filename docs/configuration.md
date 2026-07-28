@@ -39,6 +39,11 @@ before starting. Startup refuses that pair on the non-loopback container bind.
 | Cloud Storage SDK | `STORAGE_EMULATOR_HOST=127.0.0.1:4588` |
 | Pub/Sub SDK | `PUBSUB_EMULATOR_HOST=127.0.0.1:4588` |
 | Firestore SDK | `FIRESTORE_EMULATOR_HOST=127.0.0.1:4588` (when the client honors it) |
+| Datastore SDK | `DATASTORE_EMULATOR_HOST=127.0.0.1:4588` |
+| Firebase Auth | `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:4588` |
+| Secret Manager / KMS / Logging | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
+| Cloud Run / Functions / Scheduler / Tasks | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
+| BigQuery / Monitoring / Eventarc | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
 | Other Google clients | `option.WithEndpoint("127.0.0.1:4588")` (or language equivalent) + Bearer |
 | Terraform Google provider | `storage_custom_endpoint`, `pubsub_custom_endpoint`, `secret_manager_custom_endpoint` (see `tests/terraform/`) |
 
@@ -47,11 +52,26 @@ before starting. Startup refuses that pair on the non-loopback container bind.
 ```bash
 export CLOUDSDK_AUTH_ACCESS_TOKEN="$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN"
 gcloud config set api_endpoint_overrides/cloudresourcemanager http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/iam http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/serviceusage http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/storage http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/pubsub http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/secretmanager http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/firestore http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/cloudkms http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/logging http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/run http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/cloudfunctions http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/cloudscheduler http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/cloudtasks http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/bigquery http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/monitoring http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/eventarc http://127.0.0.1:4588/
 gcloud projects describe noctaxris-gcp-local --format=json
 ```
 
-Full service list: [services/index.md](services/index.md).
+Full service list (including Firebase Auth and Datastore emulator hosts):
+[services/index.md](services/index.md).
 
 ### Soft-skip integration smoke
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
@@ -46,6 +47,12 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
+	if err := s.ensureDataColumns(); err != nil {
+		return err
+	}
+	if err := s.migrateExpandAnalytics(); err != nil {
+		return err
+	}
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(1) FROM schema_version`).Scan(&n)
 	if err != nil {
@@ -54,6 +61,34 @@ func (s *Store) migrate() error {
 	if n == 0 {
 		if _, err := s.db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, schemaVersion); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensureDataColumns() error {
+	alters := []string{
+		`ALTER TABLE buckets ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE buckets ADD COLUMN metageneration INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE buckets ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE objects ADD COLUMN cache_control TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN content_disposition TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN content_encoding TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN content_language TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN metageneration INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE pubsub_topics ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE pubsub_subscriptions ADD COLUMN push_endpoint TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pubsub_subscriptions ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE secrets ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE secrets ADD COLUMN annotations_json TEXT NOT NULL DEFAULT '{}'`,
+	}
+	for _, stmt := range alters {
+		if _, err := s.db.Exec(stmt); err != nil {
+			// SQLite duplicate-column errors are expected on fresh schemas.
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return fmt.Errorf("migrate column: %w", err)
+			}
 		}
 	}
 	return nil
@@ -147,6 +182,15 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 		"firestore.googleapis.com",
 		"cloudkms.googleapis.com",
 		"logging.googleapis.com",
+		"run.googleapis.com",
+		"cloudfunctions.googleapis.com",
+		"cloudscheduler.googleapis.com",
+		"cloudtasks.googleapis.com",
+		"bigquery.googleapis.com",
+		"identitytoolkit.googleapis.com",
+		"monitoring.googleapis.com",
+		"datastore.googleapis.com",
+		"eventarc.googleapis.com",
 	}
 	for _, svc := range wave1 {
 		if _, err := tx.Exec(

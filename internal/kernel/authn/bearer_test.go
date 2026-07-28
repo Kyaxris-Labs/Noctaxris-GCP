@@ -74,7 +74,13 @@ func TestIsPublicPath(t *testing.T) {
 	if !authn.IsPublicPath("/_noctaxris-gcp/health") {
 		t.Fatal("health should be public")
 	}
+	if !authn.IsPublicPath("/identitytoolkit.googleapis.com/v1/accounts:signUp") {
+		t.Fatal("Identity Toolkit client paths should be public")
+	}
 	if authn.IsPublicPath("/v1/projects") {
 		t.Fatal("API path should require auth")
+	}
+	if authn.IsPublicPath("/identitytoolkit.googleapis.com/v1/projects/p/accounts") {
+		t.Fatal("admin Identity Toolkit paths should require auth")
 	}
 }

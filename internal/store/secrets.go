@@ -16,9 +16,11 @@ const (
 
 // Secret is Secret Manager secret metadata.
 type Secret struct {
-	Name      string
-	ProjectID string
-	CreatedAt string
+	Name        string
+	ProjectID   string
+	Labels      map[string]string
+	Annotations map[string]string
+	CreatedAt   string
 }
 
 // SecretVersion is a sealed secret version row.
@@ -33,15 +35,26 @@ type SecretVersion struct {
 
 // CreateSecret inserts a secret. created=false means already exists.
 func (s *Store) CreateSecret(name, projectID string) (*Secret, bool, error) {
+	return s.CreateSecretWithMeta(name, projectID, nil, nil)
+}
+
+// CreateSecretWithMeta inserts a secret with optional labels/annotations.
+func (s *Store) CreateSecretWithMeta(name, projectID string, labels, annotations map[string]string) (*Secret, bool, error) {
 	name = strings.TrimSpace(name)
 	projectID = strings.TrimSpace(projectID)
 	if name == "" || projectID == "" {
 		return nil, false, fmt.Errorf("secret name and project required")
 	}
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO secrets (name, project_id, created_at) VALUES (?, ?, ?)`,
-		name, projectID, now,
+		`INSERT OR IGNORE INTO secrets (name, project_id, labels_json, annotations_json, created_at) VALUES (?, ?, ?, ?, ?)`,
+		name, projectID, encodeStringMap(labels), encodeStringMap(annotations), now,
 	)
 	if err != nil {
 		return nil, false, err
@@ -53,28 +66,63 @@ func (s *Store) CreateSecret(name, projectID string) (*Secret, bool, error) {
 	if n == 0 {
 		return nil, false, nil
 	}
-	return &Secret{Name: name, ProjectID: projectID, CreatedAt: now}, true, nil
+	return &Secret{Name: name, ProjectID: projectID, Labels: labels, Annotations: annotations, CreatedAt: now}, true, nil
 }
 
 // GetSecret loads secret metadata.
 func (s *Store) GetSecret(name string) (*Secret, bool, error) {
 	var sec Secret
+	var labelsJSON, annotationsJSON string
 	err := s.db.QueryRow(
-		`SELECT name, project_id, created_at FROM secrets WHERE name = ?`, name,
-	).Scan(&sec.Name, &sec.ProjectID, &sec.CreatedAt)
+		`SELECT name, project_id, COALESCE(labels_json, '{}'), COALESCE(annotations_json, '{}'), created_at FROM secrets WHERE name = ?`, name,
+	).Scan(&sec.Name, &sec.ProjectID, &labelsJSON, &annotationsJSON, &sec.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
+	sec.Labels = decodeStringMap(labelsJSON)
+	sec.Annotations = decodeStringMap(annotationsJSON)
 	return &sec, true, nil
+}
+
+// PatchSecret updates labels and/or annotations. Nil pointers leave fields unchanged.
+func (s *Store) PatchSecret(name string, labels, annotations *map[string]string) (*Secret, error) {
+	sec, ok, err := s.GetSecret(name)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("secret not found")
+	}
+	if labels != nil {
+		sec.Labels = *labels
+		if sec.Labels == nil {
+			sec.Labels = map[string]string{}
+		}
+	}
+	if annotations != nil {
+		sec.Annotations = *annotations
+		if sec.Annotations == nil {
+			sec.Annotations = map[string]string{}
+		}
+	}
+	_, err = s.db.Exec(
+		`UPDATE secrets SET labels_json = ?, annotations_json = ? WHERE name = ?`,
+		encodeStringMap(sec.Labels), encodeStringMap(sec.Annotations), name,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return sec, nil
 }
 
 // ListSecrets lists secrets for a project id.
 func (s *Store) ListSecrets(projectID string) ([]Secret, error) {
 	rows, err := s.db.Query(
-		`SELECT name, project_id, created_at FROM secrets WHERE project_id = ? ORDER BY name`,
+		`SELECT name, project_id, COALESCE(labels_json, '{}'), COALESCE(annotations_json, '{}'), created_at
+		 FROM secrets WHERE project_id = ? ORDER BY name`,
 		projectID,
 	)
 	if err != nil {
@@ -84,9 +132,12 @@ func (s *Store) ListSecrets(projectID string) ([]Secret, error) {
 	var out []Secret
 	for rows.Next() {
 		var sec Secret
-		if err := rows.Scan(&sec.Name, &sec.ProjectID, &sec.CreatedAt); err != nil {
+		var labelsJSON, annotationsJSON string
+		if err := rows.Scan(&sec.Name, &sec.ProjectID, &labelsJSON, &annotationsJSON, &sec.CreatedAt); err != nil {
 			return nil, err
 		}
+		sec.Labels = decodeStringMap(labelsJSON)
+		sec.Annotations = decodeStringMap(annotationsJSON)
 		out = append(out, sec)
 	}
 	return out, rows.Err()

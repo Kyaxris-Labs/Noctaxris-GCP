@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/iam/apiv1/iampb"
 	secretmanagerpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -43,6 +44,7 @@ func (s *Service) RegisterREST(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/projects/{project}/secrets", s.httpCreateSecret)
 	mux.HandleFunc("GET /v1/projects/{project}/secrets", s.httpListSecrets)
 	mux.HandleFunc("GET /v1/projects/{project}/secrets/{secret}", s.httpGetSecret)
+	mux.HandleFunc("PATCH /v1/projects/{project}/secrets/{secret}", s.httpPatchSecret)
 	mux.HandleFunc("DELETE /v1/projects/{project}/secrets/{secret}", s.httpDeleteSecret)
 	// Colon custom methods live inside path values (Go ServeMux forbids `{id}:action`).
 	mux.HandleFunc("POST /v1/projects/{project}/secrets/{secret}", s.httpSecretPost)
@@ -74,6 +76,25 @@ func (s *Service) requireHTTP(w http.ResponseWriter, r *http.Request, permission
 	return true
 }
 
+// requireSecretHTTP evaluates permission on the secret resource or the project.
+func (s *Service) requireSecretHTTP(w http.ResponseWriter, r *http.Request, permission, secretName, project string) bool {
+	p, ok := s.HTTPPrincipal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return false
+	}
+	allowed, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, permission, secretName, projectResource(project))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	}
+	if !allowed {
+		gcperrors.PermissionDenied(w, "")
+		return false
+	}
+	return true
+}
+
 func (s *Service) requireGRPC(ctx context.Context, permission, resource string) error {
 	if s.GRPCPrincipal == nil {
 		return status.Error(codes.Unauthenticated, "gRPC auth resolver not configured")
@@ -83,6 +104,24 @@ func (s *Service) requireGRPC(ctx context.Context, permission, resource string) 
 		return status.Error(codes.Unauthenticated, "unauthenticated")
 	}
 	allowed, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, resource)
+	if err != nil {
+		return status.Errorf(codes.Internal, "%v", err)
+	}
+	if !allowed {
+		return status.Error(codes.PermissionDenied, "permission denied")
+	}
+	return nil
+}
+
+func (s *Service) requireSecretGRPC(ctx context.Context, permission, secretName, project string) error {
+	if s.GRPCPrincipal == nil {
+		return status.Error(codes.Unauthenticated, "gRPC auth resolver not configured")
+	}
+	p, err := s.GRPCPrincipal(ctx)
+	if err != nil {
+		return status.Error(codes.Unauthenticated, "unauthenticated")
+	}
+	allowed, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, permission, secretName, projectResource(project))
 	if err != nil {
 		return status.Errorf(codes.Internal, "%v", err)
 	}
@@ -151,7 +190,7 @@ func (s *Service) httpGetSecret(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("project")
 	secretID, _ := splitColonAction(r.PathValue("secret"))
 	name := secretResourceName(project, secretID)
-	if !s.requireHTTP(w, r, "secretmanager.secrets.get", projectResource(project)) {
+	if !s.requireSecretHTTP(w, r, "secretmanager.secrets.get", name, project) {
 		return
 	}
 	sec, ok, err := s.Store.GetSecret(name)
@@ -166,11 +205,38 @@ func (s *Service) httpGetSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, secretJSON(sec))
 }
 
+func (s *Service) httpPatchSecret(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	secretID, _ := splitColonAction(r.PathValue("secret"))
+	name := secretResourceName(project, secretID)
+	if !s.requireSecretHTTP(w, r, "secretmanager.secrets.update", name, project) {
+		return
+	}
+	var body struct {
+		Labels      *map[string]string `json:"labels"`
+		Annotations *map[string]string `json:"annotations"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid secret patch body")
+		return
+	}
+	sec, err := s.Store.PatchSecret(name, body.Labels, body.Annotations)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			gcperrors.NotFound(w, "secret not found")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, secretJSON(sec))
+}
+
 func (s *Service) httpDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("project")
 	secretID, _ := splitColonAction(r.PathValue("secret"))
 	name := secretResourceName(project, secretID)
-	if !s.requireHTTP(w, r, "secretmanager.secrets.delete", projectResource(project)) {
+	if !s.requireSecretHTTP(w, r, "secretmanager.secrets.delete", name, project) {
 		return
 	}
 	ok, err := s.Store.DeleteSecret(name)
@@ -191,9 +257,110 @@ func (s *Service) httpSecretPost(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "addVersion":
 		s.httpAddVersion(w, r)
+	case "getIamPolicy":
+		s.httpGetIamPolicy(w, r)
+	case "setIamPolicy":
+		s.httpSetIamPolicy(w, r)
+	case "testIamPermissions":
+		s.httpTestIamPermissions(w, r)
 	default:
 		gcperrors.InvalidArgument(w, "unsupported secrets custom method")
 	}
+}
+
+func (s *Service) httpGetIamPolicy(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	secretID, _ := splitColonAction(r.PathValue("secret"))
+	name := secretResourceName(project, secretID)
+	if !s.requireSecretHTTP(w, r, "secretmanager.secrets.getIamPolicy", name, project) {
+		return
+	}
+	if _, ok, err := s.Store.GetSecret(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "secret not found")
+		return
+	}
+	raw, found, err := s.Store.GetIAMPolicyJSON(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, authz.Policy{Etag: "ACAB", Bindings: []authz.Binding{}})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (s *Service) httpSetIamPolicy(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	secretID, _ := splitColonAction(r.PathValue("secret"))
+	name := secretResourceName(project, secretID)
+	if !s.requireSecretHTTP(w, r, "secretmanager.secrets.setIamPolicy", name, project) {
+		return
+	}
+	if _, ok, err := s.Store.GetSecret(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "secret not found")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		Policy authz.Policy `json:"policy"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid setIamPolicy body")
+		return
+	}
+	if err := s.Store.PutIAMPolicyJSON(name, req.Policy); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, req.Policy)
+}
+
+func (s *Service) httpTestIamPermissions(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.HTTPPrincipal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return
+	}
+	project := r.PathValue("project")
+	secretID, _ := splitColonAction(r.PathValue("secret"))
+	name := secretResourceName(project, secretID)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		Permissions []string `json:"permissions"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			gcperrors.InvalidArgument(w, "invalid testIamPermissions body")
+			return
+		}
+	}
+	granted, err := s.Authz.TestIamPermissionsAny(p.Email, p.IsRoot, []string{name, projectResource(project)}, req.Permissions)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if granted == nil {
+		granted = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"permissions": granted})
 }
 
 func (s *Service) httpVersionGet(w http.ResponseWriter, r *http.Request) {
@@ -226,7 +393,7 @@ func (s *Service) httpAddVersion(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("project")
 	secretID, _ := splitColonAction(r.PathValue("secret"))
 	name := secretResourceName(project, secretID)
-	if !s.requireHTTP(w, r, "secretmanager.versions.add", projectResource(project)) {
+	if !s.requireSecretHTTP(w, r, "secretmanager.versions.add", name, project) {
 		return
 	}
 	var body struct {
@@ -265,7 +432,7 @@ func (s *Service) httpAccessVersion(w http.ResponseWriter, r *http.Request) {
 	secretID, _ := splitColonAction(r.PathValue("secret"))
 	name := secretResourceName(project, secretID)
 	version, _ := splitColonAction(r.PathValue("version"))
-	if !s.requireHTTP(w, r, "secretmanager.versions.access", projectResource(project)) {
+	if !s.requireSecretHTTP(w, r, "secretmanager.versions.access", name, project) {
 		return
 	}
 	plain, v, err := s.Store.AccessSecretVersion(name, version)
@@ -307,7 +474,7 @@ func (s *Service) httpSetVersionState(w http.ResponseWriter, r *http.Request, st
 	secretID, _ := splitColonAction(r.PathValue("secret"))
 	name := secretResourceName(project, secretID)
 	version, _ := splitColonAction(r.PathValue("version"))
-	if !s.requireHTTP(w, r, permission, projectResource(project)) {
+	if !s.requireSecretHTTP(w, r, permission, name, project) {
 		return
 	}
 	v, err := s.Store.SetSecretVersionState(name, version, state)
@@ -330,7 +497,7 @@ func (s *Service) httpListVersions(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("project")
 	secretID, _ := splitColonAction(r.PathValue("secret"))
 	name := secretResourceName(project, secretID)
-	if !s.requireHTTP(w, r, "secretmanager.versions.list", projectResource(project)) {
+	if !s.requireSecretHTTP(w, r, "secretmanager.versions.list", name, project) {
 		return
 	}
 	list, err := s.Store.ListSecretVersions(name)
@@ -350,7 +517,7 @@ func (s *Service) httpGetVersion(w http.ResponseWriter, r *http.Request) {
 	secretID, _ := splitColonAction(r.PathValue("secret"))
 	name := secretResourceName(project, secretID)
 	version, _ := splitColonAction(r.PathValue("version"))
-	if !s.requireHTTP(w, r, "secretmanager.versions.get", projectResource(project)) {
+	if !s.requireSecretHTTP(w, r, "secretmanager.versions.get", name, project) {
 		return
 	}
 	v, ok, err := s.Store.GetSecretVersion(name, version)
@@ -366,9 +533,19 @@ func (s *Service) httpGetVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func secretJSON(sec *store.Secret) map[string]any {
+	labels := sec.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	annotations := sec.Annotations
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
 	return map[string]any{
-		"name":       sec.Name,
-		"createTime": sec.CreatedAt,
+		"name":        sec.Name,
+		"createTime":  sec.CreatedAt,
+		"labels":      labels,
+		"annotations": annotations,
 	}
 }
 
@@ -409,7 +586,7 @@ func (s *Service) CreateSecret(ctx context.Context, req *secretmanagerpb.CreateS
 
 func (s *Service) GetSecret(ctx context.Context, req *secretmanagerpb.GetSecretRequest) (*secretmanagerpb.Secret, error) {
 	project := projectFromSecretName(req.GetName())
-	if err := s.requireGRPC(ctx, "secretmanager.secrets.get", projectResource(project)); err != nil {
+	if err := s.requireSecretGRPC(ctx, "secretmanager.secrets.get", req.GetName(), project); err != nil {
 		return nil, err
 	}
 	sec, ok, err := s.Store.GetSecret(req.GetName())
@@ -418,6 +595,43 @@ func (s *Service) GetSecret(ctx context.Context, req *secretmanagerpb.GetSecretR
 	}
 	if !ok {
 		return nil, status.Error(codes.NotFound, "secret not found")
+	}
+	return secretPB(sec), nil
+}
+
+func (s *Service) UpdateSecret(ctx context.Context, req *secretmanagerpb.UpdateSecretRequest) (*secretmanagerpb.Secret, error) {
+	name := req.GetSecret().GetName()
+	project := projectFromSecretName(name)
+	if err := s.requireSecretGRPC(ctx, "secretmanager.secrets.update", name, project); err != nil {
+		return nil, err
+	}
+	paths := req.GetUpdateMask().GetPaths()
+	if len(paths) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "update_mask required")
+	}
+	var labels, annotations *map[string]string
+	for _, p := range paths {
+		switch p {
+		case "labels":
+			l := req.GetSecret().GetLabels()
+			if l == nil {
+				l = map[string]string{}
+			}
+			labels = &l
+		case "annotations":
+			a := req.GetSecret().GetAnnotations()
+			if a == nil {
+				a = map[string]string{}
+			}
+			annotations = &a
+		}
+	}
+	sec, err := s.Store.PatchSecret(name, labels, annotations)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, status.Error(codes.NotFound, "secret not found")
+		}
+		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 	return secretPB(sec), nil
 }
@@ -443,7 +657,7 @@ func (s *Service) ListSecrets(ctx context.Context, req *secretmanagerpb.ListSecr
 
 func (s *Service) DeleteSecret(ctx context.Context, req *secretmanagerpb.DeleteSecretRequest) (*emptypb.Empty, error) {
 	project := projectFromSecretName(req.GetName())
-	if err := s.requireGRPC(ctx, "secretmanager.secrets.delete", projectResource(project)); err != nil {
+	if err := s.requireSecretGRPC(ctx, "secretmanager.secrets.delete", req.GetName(), project); err != nil {
 		return nil, err
 	}
 	ok, err := s.Store.DeleteSecret(req.GetName())
@@ -458,7 +672,7 @@ func (s *Service) DeleteSecret(ctx context.Context, req *secretmanagerpb.DeleteS
 
 func (s *Service) AddSecretVersion(ctx context.Context, req *secretmanagerpb.AddSecretVersionRequest) (*secretmanagerpb.SecretVersion, error) {
 	project := projectFromSecretName(req.GetParent())
-	if err := s.requireGRPC(ctx, "secretmanager.versions.add", projectResource(project)); err != nil {
+	if err := s.requireSecretGRPC(ctx, "secretmanager.versions.add", req.GetParent(), project); err != nil {
 		return nil, err
 	}
 	payload := req.GetPayload().GetData()
@@ -478,7 +692,7 @@ func (s *Service) AccessSecretVersion(ctx context.Context, req *secretmanagerpb.
 		return nil, status.Error(codes.InvalidArgument, "invalid version name")
 	}
 	project := projectFromSecretName(secretName)
-	if err := s.requireGRPC(ctx, "secretmanager.versions.access", projectResource(project)); err != nil {
+	if err := s.requireSecretGRPC(ctx, "secretmanager.versions.access", secretName, project); err != nil {
 		return nil, err
 	}
 	plain, v, err := s.Store.AccessSecretVersion(secretName, versionID)
@@ -516,7 +730,7 @@ func (s *Service) grpcSetState(ctx context.Context, name, state, permission stri
 		return nil, status.Error(codes.InvalidArgument, "invalid version name")
 	}
 	project := projectFromSecretName(secretName)
-	if err := s.requireGRPC(ctx, permission, projectResource(project)); err != nil {
+	if err := s.requireSecretGRPC(ctx, permission, secretName, project); err != nil {
 		return nil, err
 	}
 	v, err := s.Store.SetSecretVersionState(secretName, versionID, state)
@@ -529,6 +743,69 @@ func (s *Service) grpcSetState(ctx context.Context, name, state, permission stri
 	return versionPB(v), nil
 }
 
+func (s *Service) GetIamPolicy(ctx context.Context, req *iampb.GetIamPolicyRequest) (*iampb.Policy, error) {
+	project := projectFromSecretName(req.GetResource())
+	if err := s.requireSecretGRPC(ctx, "secretmanager.secrets.getIamPolicy", req.GetResource(), project); err != nil {
+		return nil, err
+	}
+	raw, ok, err := s.Store.GetIAMPolicyJSON(req.GetResource())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	if !ok {
+		return &iampb.Policy{Etag: []byte("ACAB")}, nil
+	}
+	return authzToIAMPolicy(raw)
+}
+
+func (s *Service) SetIamPolicy(ctx context.Context, req *iampb.SetIamPolicyRequest) (*iampb.Policy, error) {
+	project := projectFromSecretName(req.GetResource())
+	if err := s.requireSecretGRPC(ctx, "secretmanager.secrets.setIamPolicy", req.GetResource(), project); err != nil {
+		return nil, err
+	}
+	pol := iamPolicyToAuthz(req.GetPolicy())
+	if err := s.Store.PutIAMPolicyJSON(req.GetResource(), pol); err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return req.GetPolicy(), nil
+}
+
+func (s *Service) TestIamPermissions(ctx context.Context, req *iampb.TestIamPermissionsRequest) (*iampb.TestIamPermissionsResponse, error) {
+	if s.GRPCPrincipal == nil {
+		return nil, status.Error(codes.Unauthenticated, "gRPC auth resolver not configured")
+	}
+	p, err := s.GRPCPrincipal(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, "unauthenticated")
+	}
+	project := projectFromSecretName(req.GetResource())
+	granted, err := s.Authz.TestIamPermissionsAny(p.Email, p.IsRoot, []string{req.GetResource(), projectResource(project)}, req.GetPermissions())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return &iampb.TestIamPermissionsResponse{Permissions: granted}, nil
+}
+
+func authzToIAMPolicy(raw []byte) (*iampb.Policy, error) {
+	var pol authz.Policy
+	if err := json.Unmarshal(raw, &pol); err != nil {
+		return nil, status.Errorf(codes.Internal, "parse policy: %v", err)
+	}
+	out := &iampb.Policy{Etag: []byte(pol.Etag)}
+	for _, b := range pol.Bindings {
+		out.Bindings = append(out.Bindings, &iampb.Binding{Role: b.Role, Members: b.Members})
+	}
+	return out, nil
+}
+
+func iamPolicyToAuthz(p *iampb.Policy) authz.Policy {
+	out := authz.Policy{Etag: string(p.GetEtag())}
+	for _, b := range p.GetBindings() {
+		out.Bindings = append(out.Bindings, authz.Binding{Role: b.GetRole(), Members: b.GetMembers()})
+	}
+	return out
+}
+
 func projectFromSecretName(name string) string {
 	parts := strings.Split(name, "/")
 	if len(parts) >= 2 && parts[0] == "projects" {
@@ -538,7 +815,11 @@ func projectFromSecretName(name string) string {
 }
 
 func secretPB(sec *store.Secret) *secretmanagerpb.Secret {
-	out := &secretmanagerpb.Secret{Name: sec.Name}
+	out := &secretmanagerpb.Secret{
+		Name:        sec.Name,
+		Labels:      sec.Labels,
+		Annotations: sec.Annotations,
+	}
 	if t, err := parseTime(sec.CreatedAt); err == nil {
 		out.CreateTime = timestamppb.New(t)
 	}

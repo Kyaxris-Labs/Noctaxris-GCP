@@ -88,6 +88,10 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, p authn.Princ
 		s.listCryptoKeys(w, r, p, project, location, parts[1])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "keyRings" && parts[2] == "cryptoKeys":
 		s.getCryptoKey(w, r, p, project, location, parts[1], parts[3])
+	case r.Method == http.MethodGet && len(parts) == 5 && parts[0] == "keyRings" && parts[2] == "cryptoKeys" && parts[4] == "cryptoKeyVersions":
+		s.listKeyVersions(w, r, p, project, location, parts[1], parts[3])
+	case r.Method == http.MethodGet && len(parts) == 6 && parts[0] == "keyRings" && parts[2] == "cryptoKeys" && parts[4] == "cryptoKeyVersions":
+		s.getKeyVersion(w, r, p, project, location, parts[1], parts[3], parts[5])
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "keyRings" && parts[2] == "cryptoKeys":
 		key, action := splitAction(parts[3])
 		switch action {
@@ -107,6 +111,8 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, p authn.Princ
 			s.decrypt(w, r, p, project, location, parts[1], parts[3], ver)
 		case "destroy":
 			s.destroyVersion(w, r, p, project, location, parts[1], parts[3], ver)
+		case "restore":
+			s.restoreVersion(w, r, p, project, location, parts[1], parts[3], ver)
 		default:
 			gcperrors.NotFound(w, "unknown KMS method")
 		}
@@ -269,10 +275,18 @@ func (s *Service) getCryptoKey(w http.ResponseWriter, _ *http.Request, p authn.P
 		gcperrors.NotFound(w, "CryptoKey not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name": k.Name, "purpose": k.Purpose, "createTime": k.CreatedAt,
-		"primary": map[string]any{"name": name + "/cryptoKeyVersions/1"},
-	})
+	primary, pok, err := s.Store.PrimaryKMSKeyVersion(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	out := map[string]any{"name": k.Name, "purpose": k.Purpose, "createTime": k.CreatedAt}
+	if pok {
+		out["primary"] = map[string]any{
+			"name": primary.Name, "state": primary.State, "createTime": primary.CreatedAt,
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Service) listCryptoKeys(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing string) {
@@ -401,6 +415,75 @@ func (s *Service) destroyVersion(w http.ResponseWriter, _ *http.Request, p authn
 	verName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s/cryptoKeyVersions/%s",
 		project, location, keyRing, cryptoKey, version)
 	v, ok, err := s.Store.DestroyKMSKeyVersion(verName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKeyVersion not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": v.Name, "state": v.State, "createTime": v.CreatedAt,
+	})
+}
+
+func (s *Service) restoreVersion(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
+	if err := s.require(p, "cloudkms.cryptoKeyVersions.restore", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	verName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s/cryptoKeyVersions/%s",
+		project, location, keyRing, cryptoKey, version)
+	v, ok, err := s.Store.RestoreKMSKeyVersion(verName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKeyVersion not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": v.Name, "state": v.State, "createTime": v.CreatedAt,
+	})
+}
+
+func (s *Service) listKeyVersions(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing, cryptoKey string) {
+	if err := s.require(p, "cloudkms.cryptoKeyVersions.list", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	if _, ok, err := s.Store.GetKMSCryptoKey(keyName); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "CryptoKey not found")
+		return
+	}
+	list, err := s.Store.ListKMSKeyVersions(keyName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	items := make([]map[string]any, 0, len(list))
+	for _, v := range list {
+		items = append(items, map[string]any{
+			"name": v.Name, "state": v.State, "createTime": v.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cryptoKeyVersions": items})
+}
+
+func (s *Service) getKeyVersion(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
+	if err := s.require(p, "cloudkms.cryptoKeyVersions.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	verName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s/cryptoKeyVersions/%s",
+		project, location, keyRing, cryptoKey, version)
+	v, ok, err := s.Store.GetKMSKeyVersion(verName)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return

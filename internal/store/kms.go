@@ -232,3 +232,42 @@ func (s *Store) DestroyKMSKeyVersion(name string) (KMSKeyVersion, bool, error) {
 	v.State = KMSStateDestroyed
 	return v, true, nil
 }
+
+// RestoreKMSKeyVersion marks a DESTROYED version ENABLED again (lab; Cloud KMS restore is narrower).
+func (s *Store) RestoreKMSKeyVersion(name string) (KMSKeyVersion, bool, error) {
+	v, ok, err := s.GetKMSKeyVersion(name)
+	if err != nil || !ok {
+		return KMSKeyVersion{}, ok, err
+	}
+	if v.State == KMSStateEnabled {
+		return v, true, nil
+	}
+	_, err = s.db.Exec(`UPDATE kms_key_versions SET state = ? WHERE name = ?`, KMSStateEnabled, name)
+	if err != nil {
+		return KMSKeyVersion{}, false, fmt.Errorf("restore kms key version: %w", err)
+	}
+	v.State = KMSStateEnabled
+	return v, true, nil
+}
+
+// ListKMSKeyVersions lists versions under a crypto key.
+func (s *Store) ListKMSKeyVersions(cryptoKey string) ([]KMSKeyVersion, error) {
+	rows, err := s.db.Query(
+		`SELECT name, crypto_key, version_id, state, key_material_ciphertext, created_at
+		 FROM kms_key_versions WHERE crypto_key = ? ORDER BY CAST(version_id AS INTEGER), version_id`,
+		cryptoKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list kms key versions: %w", err)
+	}
+	defer rows.Close()
+	var out []KMSKeyVersion
+	for rows.Next() {
+		var v KMSKeyVersion
+		if err := rows.Scan(&v.Name, &v.CryptoKey, &v.VersionID, &v.State, &v.KeyMaterialCiphertext, &v.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}

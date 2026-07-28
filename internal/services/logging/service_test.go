@@ -96,3 +96,87 @@ func TestWriteAndListEntries(t *testing.T) {
 		t.Fatalf("text filter entries = %#v", resp.Entries)
 	}
 }
+
+func TestListDeleteLogsAndSeverityTimestampFilter(t *testing.T) {
+	mux := setupLogging(t)
+	writeBody := `{
+  "logName": "projects/noctaxris-gcp-local/logs/app",
+  "entries": [
+    {"textPayload": "early", "severity": "INFO", "timestamp": "2026-01-01T10:00:00Z", "insertId": "e1"},
+    {"textPayload": "late", "severity": "ERROR", "timestamp": "2026-01-01T12:00:00Z", "insertId": "e2"}
+  ]
+}`
+	req := httptest.NewRequest(http.MethodPost, "/v2/entries:write", bytes.NewReader([]byte(writeBody)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("write status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	other := `{"logName":"projects/noctaxris-gcp-local/logs/other","entries":[{"textPayload":"x","insertId":"o1"}]}`
+	req = httptest.NewRequest(http.MethodPost, "/v2/entries:write", bytes.NewReader([]byte(other)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("write other status=%d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v2/projects/noctaxris-gcp-local/logs", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list logs status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var logsResp struct {
+		LogNames []string `json:"logNames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &logsResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(logsResp.LogNames) != 2 {
+		t.Fatalf("logNames=%#v", logsResp.LogNames)
+	}
+
+	listBody := `{
+  "resourceNames": ["projects/noctaxris-gcp-local"],
+  "filter": "severity=ERROR timestamp>=\"2026-01-01T11:00:00Z\"",
+  "pageSize": 50
+}`
+	req = httptest.NewRequest(http.MethodPost, "/v2/entries:list", bytes.NewReader([]byte(listBody)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("filter list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Entries []map[string]any `json:"entries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Entries) != 1 || resp.Entries[0]["textPayload"] != "late" {
+		t.Fatalf("filtered entries=%#v", resp.Entries)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/v2/projects/noctaxris-gcp-local/logs/app", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete log status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	listBody = `{
+  "resourceNames": ["projects/noctaxris-gcp-local"],
+  "filter": "logName=\"projects/noctaxris-gcp-local/logs/app\"",
+  "pageSize": 50
+}`
+	req = httptest.NewRequest(http.MethodPost, "/v2/entries:list", bytes.NewReader([]byte(listBody)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Entries) != 0 {
+		t.Fatalf("expected empty after delete, got %#v", resp.Entries)
+	}
+}

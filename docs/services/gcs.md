@@ -10,8 +10,11 @@ Noctaxris-GCP (`127.0.0.1:4588` by default).
 
 | Area | Methods |
 |------|---------|
-| Buckets | `POST /storage/v1/b?project=`, `GET /storage/v1/b/{bucket}`, `GET /storage/v1/b?project=`, `DELETE /storage/v1/b/{bucket}` |
-| Objects | `GET` / `DELETE /storage/v1/b/{bucket}/o/{object}`, `GET /storage/v1/b/{bucket}/o` |
+| Buckets | `POST /storage/v1/b?project=`, `GET /storage/v1/b/{bucket}`, `GET /storage/v1/b?project=`, `PATCH /storage/v1/b/{bucket}`, `DELETE /storage/v1/b/{bucket}` |
+| Bucket IAM | `GET` / `PUT /storage/v1/b/{bucket}/iam`, `GET .../iam/testPermissions` |
+| Objects | `GET` / `PATCH` / `DELETE /storage/v1/b/{bucket}/o/{object}`, `GET /storage/v1/b/{bucket}/o` |
+| Compose | `POST .../o/{dest}/compose` (max 32 sources) |
+| Copy | `POST .../o/{src}/copyTo/b/{dstBucket}/o/{dstObject}` |
 | Upload | `POST /upload/storage/v1/b/{bucket}/o` (`uploadType=media`, `uploadType=multipart`) |
 | Download | `GET .../o/{object}?alt=media` |
 | Versioning | Each write creates a new generation; list/get default to latest |
@@ -20,16 +23,18 @@ Object bytes live under `$NOCTAXRIS_GCP_DATA_ROOT/gcs/{bucket}/...`. Metadata is
 
 ### Authz
 
-Wave 1 evaluates `storage.buckets.*` and `storage.objects.*` on the project
-resource `projects/{projectId}` (not per-bucket IAM policies).
+`storage.*` is evaluated against the bucket IAM resource `buckets/{name}` **or** the
+project resource `projects/{projectId}` when the bucket is known (OR). Bucket IAM
+documents are stored under `buckets/{name}` via get/set IAM.
 
 ## Emulator limits
 
-- No ACL / IAM policy documents on buckets or objects
-- No resumable uploads, compose, rewrite, or notifications
+- No object ACLs or object-level IAM documents
+- No resumable uploads or signed URL RSA signing
 - Soft delete, retention, and lifecycle are not enforced
 - Multipart upload supports metadata JSON + media parts only
 - Max upload body size in this lab: 64 MiB per request
+- Compose is same-bucket only; max 32 sources
 
 ## Pointing clients
 
@@ -69,10 +74,14 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: text/plain" \
 
 curl -sS -H "Authorization: Bearer $TOKEN" \
   "$EP/storage/v1/b/lab-bucket/o/hello.txt?alt=media"
+
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  "$EP/storage/v1/b/lab-bucket/iam"
 ```
 
 ## Deferred depth
 
-- Bucket/object IAM policies and uniform bucket-level access
-- Resumable uploads and signed URLs
-- Notifications, HMAC keys, and Autoclass
+- Signed URL RSA (V2/V4) generation and verification
+- Resumable uploads, rewrite, and notifications
+- HMAC keys, Autoclass, soft delete / retention enforcement
+- Object-level IAM and uniform bucket-level access edge cases

@@ -63,6 +63,9 @@ type ListLogEntriesFilter struct {
 	ProjectID          string
 	ExactLogName       string
 	TextPayloadContain string
+	Severity           string
+	TimestampGTE       string
+	TimestampLT        string
 	PageSize           int
 	// Offset is a simple numeric page token (lab).
 	Offset int
@@ -92,6 +95,18 @@ func (s *Store) ListLogEntries(f ListLogEntriesFilter) ([]LogEntry, error) {
 		q += ` AND payload_json LIKE ?`
 		args = append(args, "%"+escapeLike(f.TextPayloadContain)+"%")
 	}
+	if f.Severity != "" {
+		q += ` AND UPPER(severity) = UPPER(?)`
+		args = append(args, f.Severity)
+	}
+	if f.TimestampGTE != "" {
+		q += ` AND timestamp >= ?`
+		args = append(args, f.TimestampGTE)
+	}
+	if f.TimestampLT != "" {
+		q += ` AND timestamp < ?`
+		args = append(args, f.TimestampLT)
+	}
 	q += ` ORDER BY timestamp ASC, insert_id ASC LIMIT ? OFFSET ?`
 	args = append(args, pageSize, f.Offset)
 
@@ -108,6 +123,49 @@ func (s *Store) ListLogEntries(f ListLogEntriesFilter) ([]LogEntry, error) {
 			return nil, err
 		}
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// DeleteLogEntries deletes all entries for a full log name. Returns rows deleted.
+func (s *Store) DeleteLogEntries(projectID, logName string) (int64, error) {
+	if projectID == "" || logName == "" {
+		return 0, fmt.Errorf("project id and log name required")
+	}
+	res, err := s.db.Exec(
+		`DELETE FROM log_entries WHERE project_id = ? AND log_name = ?`,
+		projectID, logName,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete log entries: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// ListLogNames returns distinct log names under a project.
+func (s *Store) ListLogNames(projectID string) ([]string, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("project id required")
+	}
+	rows, err := s.db.Query(
+		`SELECT DISTINCT log_name FROM log_entries WHERE project_id = ? ORDER BY log_name`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list log names: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
 	}
 	return out, rows.Err()
 }

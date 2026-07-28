@@ -13,28 +13,30 @@ There is no official Go `*_EMULATOR_HOST` for Secret Manager; point clients with
 
 | Area | Surface |
 |------|---------|
-| Secrets | Create / Get / List / Delete (REST + gRPC) |
+| Secrets | Create / Get / List / Delete / Patch (Update) (REST + gRPC) |
 | Versions | AddVersion; Access including `latest`; List / Get |
 | State | Enable / Disable / Destroy (destroyed Access refused) |
+| Per-secret IAM | getIamPolicy / setIamPolicy / testIamPermissions (REST + gRPC) |
 
 REST paths (project-scoped):
 
 - `POST /v1/projects/{project}/secrets?secretId=`
-- `GET|DELETE /v1/projects/{project}/secrets/{secret}`
+- `GET|PATCH|DELETE /v1/projects/{project}/secrets/{secret}`
 - `POST /v1/projects/{project}/secrets/{secret}:addVersion`
+- `POST .../secrets/{secret}:getIamPolicy|:setIamPolicy|:testIamPermissions`
 - `GET /v1/projects/{project}/secrets/{secret}/versions/{version}:access`
 - `POST .../versions/{version}:enable|disable|destroy`
 
 ### Authz
 
-`secretmanager.secrets.*` and `secretmanager.versions.*` are evaluated on
-`projects/{projectId}`.
+`secretmanager.*` is evaluated on the secret resource
+`projects/{project}/secrets/{id}` **or** the project
+`projects/{projectId}` (OR).
 
 ## Emulator limits
 
 - No replication / regional secrets / CMEK customer keys (lab seal only)
 - No rotation schedules or Pub/Sub notifications
-- No IAM policies on individual secrets
 - Destroy clears ciphertext and refuses Access
 
 ## Pointing clients
@@ -69,6 +71,10 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{}' \
   "$EP/v1/projects/$PROJECT/secrets?secretId=lab-secret"
 
+curl -sS -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"labels":{"env":"lab"}}' \
+  "$EP/v1/projects/$PROJECT/secrets/lab-secret"
+
 # payload.data is base64("hello")
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"payload":{"data":"aGVsbG8="}}' \
@@ -80,6 +86,6 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 
 ## Deferred depth
 
-- Per-secret IAM and CMEK
-- Automatic rotation
-- Regional secret resources under `projects/*/locations/*`
+- CMEK / regional secret resources under `projects/*/locations/*`
+- Automatic rotation and Pub/Sub rotation notifications
+- Customer-managed replication policies

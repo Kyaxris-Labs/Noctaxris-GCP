@@ -69,3 +69,76 @@ func TestReadyAndGetProjectSmoke(t *testing.T) {
 		t.Fatalf("projectId=%v want %s body=%s", parsed["projectId"], project, body)
 	}
 }
+
+func TestListBucketsSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := strings.TrimSpace(os.Getenv("NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN"))
+	if token == "" {
+		t.Skip("NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN unset; soft-skip authenticated smoke")
+	}
+	project := strings.TrimSpace(os.Getenv("NOCTAXRIS_GCP_PROJECT"))
+	if project == "" {
+		project = "noctaxris-gcp-local"
+	}
+
+	req, err := http.NewRequest(http.MethodGet, ep+"/storage/v1/b?project="+project, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("list buckets: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list buckets status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode buckets: %v body=%s", err, body)
+	}
+	if kind, _ := parsed["kind"].(string); kind != "storage#buckets" {
+		t.Fatalf("kind=%v want storage#buckets body=%s", parsed["kind"], body)
+	}
+}
+
+func TestListCloudRunServicesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := strings.TrimSpace(os.Getenv("NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN"))
+	if token == "" {
+		t.Skip("NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN unset; soft-skip authenticated smoke")
+	}
+	project := strings.TrimSpace(os.Getenv("NOCTAXRIS_GCP_PROJECT"))
+	if project == "" {
+		project = "noctaxris-gcp-local"
+	}
+
+	path := ep + "/v2/projects/" + project + "/locations/us-central1/services"
+	req, err := http.NewRequest(http.MethodGet, path, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("list run services: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list run services status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode run services: %v body=%s", err, body)
+	}
+	if _, ok := parsed["services"]; !ok {
+		t.Fatalf("missing services field body=%s", body)
+	}
+}

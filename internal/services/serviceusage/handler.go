@@ -2,6 +2,8 @@ package serviceusage
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -26,6 +28,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/projects/{project}/services", h.listServices)
 	mux.HandleFunc("GET /v1/projects/{project}/services/{service}", h.getService)
 	mux.HandleFunc("POST /v1/projects/{project}/services/{service}", h.serviceAction)
+	// batchEnable: POST /v1/projects/{project}/services:batchEnable — colon inside {servicesCol}.
+	mux.HandleFunc("POST /v1/projects/{project}/{servicesCol}", h.servicesCollectionPost)
 }
 
 func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {
@@ -59,7 +63,12 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 	if !h.require(w, r, "serviceusage.services.list", resource) {
 		return
 	}
-	list, err := h.Store.ListServiceUsage(projectID)
+	stateFilter, err := parseStateFilter(r.URL.Query().Get("filter"))
+	if err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	list, err := h.Store.ListServiceUsage(projectID, stateFilter)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -133,6 +142,76 @@ func (h *Handler) serviceAction(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 }
+
+func (h *Handler) servicesCollectionPost(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("project")
+	col, action := splitColonAction(r.PathValue("servicesCol"))
+	if col != "services" || action == "" {
+		gcperrors.InvalidArgument(w, "expected services:batchEnable")
+		return
+	}
+	if action != "batchEnable" {
+		gcperrors.InvalidArgument(w, "unknown services collection method")
+		return
+	}
+	resource := "projects/" + projectID
+	if !h.require(w, r, "serviceusage.services.enable", resource) {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		ServiceIDs []string `json:"serviceIds"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	if err := h.Store.BatchEnableServiceUsage(projectID, req.ServiceIDs); err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	services := make([]map[string]any, 0, len(req.ServiceIDs))
+	for _, id := range req.ServiceIDs {
+		id = strings.TrimSpace(id)
+		services = append(services, map[string]any{
+			"name":   "projects/" + projectID + "/services/" + id,
+			"parent": "projects/" + projectID,
+			"state":  "ENABLED",
+			"config": map[string]any{"name": id},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": "operations/batchEnable-" + projectID,
+		"done": true,
+		"response": map[string]any{
+			"@type":    "type.googleapis.com/google.api.serviceusage.v1.BatchEnableServicesResponse",
+			"services": services,
+		},
+	})
+}
+
+func parseStateFilter(filter string) (string, error) {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return "", nil
+	}
+	// Allowed: state:ENABLED | state:DISABLED (case-insensitive value).
+	lower := strings.ToLower(filter)
+	switch lower {
+	case "state:enabled":
+		return "ENABLED", nil
+	case "state:disabled":
+		return "DISABLED", nil
+	default:
+		return "", errInvalidFilter
+	}
+}
+
+var errInvalidFilter = errors.New("filter must be state:ENABLED or state:DISABLED")
 
 func serviceJSON(u store.ServiceUsage) map[string]any {
 	return map[string]any{

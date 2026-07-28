@@ -73,6 +73,47 @@ func TestEvaluateDenyByDefaultMissingPolicy(t *testing.T) {
 	}
 }
 
+func TestEvaluateParentProjectInheritance(t *testing.T) {
+	project := "projects/noctaxris-gcp-local"
+	sa := project + "/serviceAccounts/app@noctaxris-gcp-local.iam.gserviceaccount.com"
+	email := "owner@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			project: mustPolicy(t, "roles/owner", "serviceAccount:"+email),
+		},
+	}
+	ok, err := e.Evaluate(email, false, "iam.serviceAccounts.get", sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("project owner binding should grant nested SA permission")
+	}
+}
+
+func TestEvaluateAnyBucketOrProject(t *testing.T) {
+	email := "sa@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			"buckets/lab": mustPolicy(t, "roles/storage.objectViewer", "serviceAccount:"+email),
+		},
+	}
+	ok, err := e.EvaluateAny(email, false, "storage.objects.get", "buckets/lab", "projects/noctaxris-gcp-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("bucket policy should allow via EvaluateAny")
+	}
+	ok, err = e.EvaluateAny(email, false, "storage.objects.get", "buckets/other", "projects/noctaxris-gcp-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("missing policies must deny")
+	}
+}
+
 func TestTestIamPermissions(t *testing.T) {
 	resource := "projects/noctaxris-gcp-local"
 	email := "viewer@noctaxris-gcp-local.iam.gserviceaccount.com"

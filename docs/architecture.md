@@ -53,13 +53,15 @@ flowchart TB
 
 ## Service registration
 
-`server.New` wires three registration helpers after health routes:
+`server.New` wires registration helpers after health routes:
 
 | Helper | Surface |
 |--------|---------|
 | `registerIdentity` | Cloud Resource Manager, IAM Admin, Service Usage (REST); creates gRPC server + Bearer interceptors |
 | `registerData` | Cloud Storage (REST), Pub/Sub (gRPC), Secret Manager (REST + gRPC) |
 | `registerDocsCrypto` | Firestore (gRPC), Cloud KMS (REST), Cloud Logging (REST) |
+| `registerExpandCompute` | Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks (REST) |
+| `registerExpandAnalytics` | BigQuery (REST), Firebase Auth / Identity Toolkit (REST), Cloud Monitoring (REST), Datastore (gRPC), Eventarc (REST) |
 
 ## Request path
 

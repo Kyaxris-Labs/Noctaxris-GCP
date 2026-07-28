@@ -26,9 +26,13 @@ type Service struct {
 type principalFunc func(*http.Request) (authn.Principal, bool)
 
 // Mount registers Logging REST routes.
+// Colon custom methods (entries:write / entries:list) are literal path segments because
+// ServeMux wildcards cannot embed ':' inside a pattern segment.
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v2/entries:write", s.wrap(principalFrom, s.writeEntries))
 	mux.HandleFunc("POST /v2/entries:list", s.wrap(principalFrom, s.listEntries))
+	mux.HandleFunc("GET /v2/projects/{project}/logs", s.wrap(principalFrom, s.listLogs))
+	mux.HandleFunc("DELETE /v2/projects/{project}/logs/{log}", s.wrap(principalFrom, s.deleteLog))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -83,10 +87,15 @@ type listReq struct {
 }
 
 var (
-	reLogNameExact = regexp.MustCompile(`(?i)^logName\s*=\s*"([^"]+)"$`)
-	reTextContains = regexp.MustCompile(`(?i)^textPayload\s*:\s*"([^"]+)"$`)
-	reLogNameEq    = regexp.MustCompile(`(?i)logName\s*=\s*"([^"]+)"`)
-	reTextColon    = regexp.MustCompile(`(?i)textPayload\s*:\s*"([^"]+)"`)
+	reLogNameExact   = regexp.MustCompile(`(?i)^logName\s*=\s*"([^"]+)"$`)
+	reTextContains   = regexp.MustCompile(`(?i)^textPayload\s*:\s*"([^"]+)"$`)
+	reLogNameEq      = regexp.MustCompile(`(?i)logName\s*=\s*"([^"]+)"`)
+	reTextColon      = regexp.MustCompile(`(?i)textPayload\s*:\s*"([^"]+)"`)
+	reSeverityExact  = regexp.MustCompile(`(?i)severity\s*=\s*"?([A-Za-z]+)"?`)
+	reTimestampGTE   = regexp.MustCompile(`(?i)timestamp\s*>=\s*"([^"]+)"`)
+	reTimestampGT    = regexp.MustCompile(`(?i)timestamp\s*>\s*"([^"]+)"`)
+	reTimestampLT    = regexp.MustCompile(`(?i)timestamp\s*<\s*"([^"]+)"`)
+	reTimestampLTE   = regexp.MustCompile(`(?i)timestamp\s*<=\s*"([^"]+)"`)
 )
 
 func (s *Service) writeEntries(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -217,9 +226,10 @@ func (s *Service) listEntries(w http.ResponseWriter, r *http.Request, p authn.Pr
 		}
 		offset = n
 	}
-	exactLog, textContains := parseFilter(req.Filter)
+	exactLog, textContains, severity, tsGTE, tsLT := parseFilter(req.Filter)
 	entries, err := s.Store.ListLogEntries(store.ListLogEntriesFilter{
 		ProjectID: projectID, ExactLogName: exactLog, TextPayloadContain: textContains,
+		Severity: severity, TimestampGTE: tsGTE, TimestampLT: tsLT,
 		PageSize: pageSize, Offset: offset,
 	})
 	if err != nil {
@@ -259,16 +269,66 @@ func (s *Service) listEntries(w http.ResponseWriter, r *http.Request, p authn.Pr
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func parseFilter(filter string) (exactLogName, textContains string) {
+func (s *Service) deleteLog(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	logID := r.PathValue("log")
+	if project == "" || logID == "" {
+		gcperrors.InvalidArgument(w, "project and log are required")
+		return
+	}
+	if err := s.require(p, "logging.logs.delete", project); err != nil {
+		if err == errDenied {
+			gcperrors.PermissionDenied(w, "")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	logName := "projects/" + project + "/logs/" + logID
+	if _, err := s.Store.DeleteLogEntries(project, logName); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Service) listLogs(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if project == "" {
+		gcperrors.InvalidArgument(w, "project is required")
+		return
+	}
+	if err := s.require(p, "logging.logs.list", project); err != nil {
+		if err == errDenied {
+			gcperrors.PermissionDenied(w, "")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	names, err := s.Store.ListLogNames(project)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if names == nil {
+		names = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"logNames": names})
+}
+
+func parseFilter(filter string) (exactLogName, textContains, severity, timestampGTE, timestampLT string) {
 	filter = strings.TrimSpace(filter)
 	if filter == "" {
-		return "", ""
+		return "", "", "", "", ""
 	}
 	if m := reLogNameExact.FindStringSubmatch(filter); len(m) == 2 {
-		return m[1], ""
+		return m[1], "", "", "", ""
 	}
 	if m := reTextContains.FindStringSubmatch(filter); len(m) == 2 {
-		return "", m[1]
+		return "", m[1], "", "", ""
 	}
 	if m := reLogNameEq.FindStringSubmatch(filter); len(m) == 2 {
 		exactLogName = m[1]
@@ -276,7 +336,21 @@ func parseFilter(filter string) (exactLogName, textContains string) {
 	if m := reTextColon.FindStringSubmatch(filter); len(m) == 2 {
 		textContains = m[1]
 	}
-	return exactLogName, textContains
+	if m := reSeverityExact.FindStringSubmatch(filter); len(m) == 2 {
+		severity = strings.ToUpper(m[1])
+	}
+	if m := reTimestampGTE.FindStringSubmatch(filter); len(m) == 2 {
+		timestampGTE = m[1]
+	} else if m := reTimestampGT.FindStringSubmatch(filter); len(m) == 2 {
+		timestampGTE = m[1]
+	}
+	if m := reTimestampLT.FindStringSubmatch(filter); len(m) == 2 {
+		timestampLT = m[1]
+	} else if m := reTimestampLTE.FindStringSubmatch(filter); len(m) == 2 {
+		// Lab lite: <= uses the same exclusive upper bound as < (equal timestamps excluded).
+		timestampLT = m[1]
+	}
+	return exactLogName, textContains, severity, timestampGTE, timestampLT
 }
 
 func projectFromLogName(logName string) (string, error) {

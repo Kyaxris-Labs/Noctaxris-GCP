@@ -57,7 +57,10 @@ CREATE TABLE IF NOT EXISTS buckets (
   project_id TEXT NOT NULL,
   location TEXT NOT NULL DEFAULT 'US',
   storage_class TEXT NOT NULL DEFAULT 'STANDARD',
-  created_at TEXT NOT NULL
+  labels_json TEXT NOT NULL DEFAULT '{}',
+  metageneration INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS objects (
@@ -69,6 +72,12 @@ CREATE TABLE IF NOT EXISTS objects (
   blob_path TEXT NOT NULL,
   md5_hash TEXT NOT NULL DEFAULT '',
   crc32c TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  cache_control TEXT NOT NULL DEFAULT '',
+  content_disposition TEXT NOT NULL DEFAULT '',
+  content_encoding TEXT NOT NULL DEFAULT '',
+  content_language TEXT NOT NULL DEFAULT '',
+  metageneration INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (bucket, name, generation)
@@ -77,6 +86,7 @@ CREATE TABLE IF NOT EXISTS objects (
 CREATE TABLE IF NOT EXISTS pubsub_topics (
   name TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
+  labels_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );
 
@@ -85,17 +95,19 @@ CREATE TABLE IF NOT EXISTS pubsub_subscriptions (
   topic TEXT NOT NULL,
   project_id TEXT NOT NULL,
   ack_deadline_seconds INTEGER NOT NULL DEFAULT 10,
+  push_endpoint TEXT NOT NULL DEFAULT '',
+  labels_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS pubsub_messages (
-  id TEXT PRIMARY KEY,
+  id TEXT NOT NULL,
   subscription TEXT NOT NULL,
   topic TEXT NOT NULL,
   data BLOB NOT NULL,
   attributes_json TEXT NOT NULL DEFAULT '{}',
   publish_time TEXT NOT NULL,
-  ack_id TEXT NOT NULL UNIQUE,
+  ack_id TEXT PRIMARY KEY,
   ack_deadline TEXT,
   delivered INTEGER NOT NULL DEFAULT 0
 );
@@ -103,6 +115,8 @@ CREATE TABLE IF NOT EXISTS pubsub_messages (
 CREATE TABLE IF NOT EXISTS secrets (
   name TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
+  labels_json TEXT NOT NULL DEFAULT '{}',
+  annotations_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );
 
@@ -123,6 +137,13 @@ CREATE TABLE IF NOT EXISTS firestore_docs (
   fields_json TEXT NOT NULL,
   create_time TEXT NOT NULL,
   update_time TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS firestore_transactions (
+  token TEXT PRIMARY KEY,
+  database TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS kms_keyrings (
@@ -157,6 +178,76 @@ CREATE TABLE IF NOT EXISTS log_entries (
   timestamp TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   resource_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS run_services (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  location TEXT NOT NULL,
+  service_id TEXT NOT NULL,
+  uid TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 1,
+  template_json TEXT NOT NULL DEFAULT '{}',
+  uri TEXT NOT NULL DEFAULT '',
+  latest_revision TEXT NOT NULL DEFAULT '',
+  lab_response_body TEXT NOT NULL DEFAULT '',
+  last_invoke_json TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_revisions (
+  name TEXT PRIMARY KEY,
+  service_name TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  template_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cloud_functions (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  location TEXT NOT NULL,
+  function_id TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'ACTIVE',
+  config_json TEXT NOT NULL DEFAULT '{}',
+  uri TEXT NOT NULL DEFAULT '',
+  lab_response_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_jobs (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  location TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  schedule TEXT NOT NULL DEFAULT '',
+  time_zone TEXT NOT NULL DEFAULT 'UTC',
+  state TEXT NOT NULL DEFAULT 'ENABLED',
+  http_target_json TEXT NOT NULL DEFAULT '',
+  pubsub_target_json TEXT NOT NULL DEFAULT '',
+  last_attempt_time TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cloud_tasks_queues (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  location TEXT NOT NULL,
+  queue_id TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'RUNNING',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cloud_tasks (
+  name TEXT PRIMARY KEY,
+  queue_name TEXT NOT NULL,
+  schedule_time TEXT NOT NULL,
+  create_time TEXT NOT NULL,
+  http_request_json TEXT NOT NULL DEFAULT '',
+  dispatch_count INTEGER NOT NULL DEFAULT 0
 );
 `
 

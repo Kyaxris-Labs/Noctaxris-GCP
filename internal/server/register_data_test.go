@@ -57,6 +57,201 @@ func TestGCSCreateUploadDownload(t *testing.T) {
 	}
 }
 
+func TestGCSComposeCopyPatchAndIAM(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+
+	req := httptest.NewRequest(http.MethodPost, "/storage/v1/b?project="+project, strings.NewReader(`{"name":"lab-gcs-2"}`))
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create bucket: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, name := range []string{"p1", "p2"} {
+		up := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/lab-gcs-2/o?uploadType=media&name="+name, strings.NewReader(name))
+		up.Header.Set("Authorization", auth)
+		up.Header.Set("Content-Type", "text/plain")
+		rec = httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, up)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("upload %s: %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	composeBody := `{"sourceObjects":[{"name":"p1"},{"name":"p2"}],"destination":{"contentType":"text/plain"}}`
+	comp := httptest.NewRequest(http.MethodPost, "/storage/v1/b/lab-gcs-2/o/out/compose", strings.NewReader(composeBody))
+	comp.Header.Set("Authorization", auth)
+	comp.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, comp)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compose: %d %s", rec.Code, rec.Body.String())
+	}
+	copyReq := httptest.NewRequest(http.MethodPost, "/storage/v1/b/lab-gcs-2/o/out/copyTo/b/lab-gcs-2/o/out-copy", nil)
+	copyReq.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, copyReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("copy: %d %s", rec.Code, rec.Body.String())
+	}
+	patchObj := httptest.NewRequest(http.MethodPatch, "/storage/v1/b/lab-gcs-2/o/out-copy", strings.NewReader(`{"metadata":{"k":"v"}}`))
+	patchObj.Header.Set("Authorization", auth)
+	patchObj.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, patchObj)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch object: %d %s", rec.Code, rec.Body.String())
+	}
+	patchB := httptest.NewRequest(http.MethodPatch, "/storage/v1/b/lab-gcs-2", strings.NewReader(`{"labels":{"env":"lab"}}`))
+	patchB.Header.Set("Authorization", auth)
+	patchB.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, patchB)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch bucket: %d %s", rec.Code, rec.Body.String())
+	}
+	setIAM := httptest.NewRequest(http.MethodPut, "/storage/v1/b/lab-gcs-2/iam", strings.NewReader(`{"etag":"ACAB","bindings":[{"role":"roles/storage.admin","members":["allAuthenticatedUsers"]}]}`))
+	setIAM.Header.Set("Authorization", auth)
+	setIAM.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, setIAM)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set iam: %d %s", rec.Code, rec.Body.String())
+	}
+	getIAM := httptest.NewRequest(http.MethodGet, "/storage/v1/b/lab-gcs-2/iam", nil)
+	getIAM.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, getIAM)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get iam: %d %s", rec.Code, rec.Body.String())
+	}
+	testIAM := httptest.NewRequest(http.MethodGet, "/storage/v1/b/lab-gcs-2/iam/testPermissions?permissions=storage.objects.get", nil)
+	testIAM.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, testIAM)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("test iam: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPubSubRESTPublishPull(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+
+	putTopic := httptest.NewRequest(http.MethodPut, "/v1/projects/"+project+"/topics/rest-topic", strings.NewReader(`{}`))
+	putTopic.Header.Set("Authorization", auth)
+	putTopic.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, putTopic)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create topic: %d %s", rec.Code, rec.Body.String())
+	}
+	subBody := `{"topic":"projects/` + project + `/topics/rest-topic","ackDeadlineSeconds":10}`
+	putSub := httptest.NewRequest(http.MethodPut, "/v1/projects/"+project+"/subscriptions/rest-sub", strings.NewReader(subBody))
+	putSub.Header.Set("Authorization", auth)
+	putSub.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, putSub)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create sub: %d %s", rec.Code, rec.Body.String())
+	}
+	pubBody := `{"messages":[{"data":"` + base64.StdEncoding.EncodeToString([]byte("hello-rest")) + `"}]}`
+	pub := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/topics/rest-topic:publish", strings.NewReader(pubBody))
+	pub.Header.Set("Authorization", auth)
+	pub.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, pub)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish: %d %s", rec.Code, rec.Body.String())
+	}
+	pull := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/subscriptions/rest-sub:pull", strings.NewReader(`{"maxMessages":10}`))
+	pull.Header.Set("Authorization", auth)
+	pull.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, pull)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pull: %d %s", rec.Code, rec.Body.String())
+	}
+	var pullResp struct {
+		ReceivedMessages []struct {
+			AckID string `json:"ackId"`
+		} `json:"receivedMessages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pullResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(pullResp.ReceivedMessages) != 1 {
+		t.Fatalf("pull = %s", rec.Body.String())
+	}
+	ackBody, _ := json.Marshal(map[string]any{"ackIds": []string{pullResp.ReceivedMessages[0].AckID}})
+	ack := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/subscriptions/rest-sub:acknowledge", bytes.NewReader(ackBody))
+	ack.Header.Set("Authorization", auth)
+	ack.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, ack)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ack: %d %s", rec.Code, rec.Body.String())
+	}
+	mod := httptest.NewRequest(http.MethodPatch, "/v1/projects/"+project+"/subscriptions/rest-sub", strings.NewReader(`{"ackDeadlineSeconds":20}`))
+	mod.Header.Set("Authorization", auth)
+	mod.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, mod)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch sub: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSecretPatchAndIAM(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/secrets?secretId=iam-secret", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	patch := httptest.NewRequest(http.MethodPatch, "/v1/projects/"+project+"/secrets/iam-secret", strings.NewReader(`{"labels":{"env":"lab"}}`))
+	patch.Header.Set("Authorization", auth)
+	patch.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, patch)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch: %d %s", rec.Code, rec.Body.String())
+	}
+	setIAM := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/secrets/iam-secret:setIamPolicy", strings.NewReader(`{"policy":{"etag":"ACAB","bindings":[{"role":"roles/secretmanager.admin","members":["allAuthenticatedUsers"]}]}}`))
+	setIAM.Header.Set("Authorization", auth)
+	setIAM.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, setIAM)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setIamPolicy: %d %s", rec.Code, rec.Body.String())
+	}
+	getIAM := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/secrets/iam-secret:getIamPolicy", strings.NewReader(`{}`))
+	getIAM.Header.Set("Authorization", auth)
+	getIAM.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, getIAM)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("getIamPolicy: %d %s", rec.Code, rec.Body.String())
+	}
+	testIAM := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/secrets/iam-secret:testIamPermissions", strings.NewReader(`{"permissions":["secretmanager.secrets.get"]}`))
+	testIAM.Header.Set("Authorization", auth)
+	testIAM.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, testIAM)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("testIamPermissions: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestSecretAddVersionAccess(t *testing.T) {
 	srv, cfg := testServer(t)
 	auth := "Bearer " + cfg.RootAccessToken

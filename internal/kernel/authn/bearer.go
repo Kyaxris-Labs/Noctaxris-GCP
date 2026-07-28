@@ -84,6 +84,10 @@ func IsPublicPath(path string) bool {
 	case "/_noctaxris-gcp/health", "/_noctaxris-gcp/ready", "/_noctaxris-gcp/version":
 		return true
 	default:
+		// Identity Toolkit client auth methods (Firebase Auth emulator shape).
+		if strings.HasPrefix(path, "/identitytoolkit.googleapis.com/v1/accounts") {
+			return true
+		}
 		return false
 	}
 }

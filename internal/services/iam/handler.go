@@ -35,7 +35,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/projects/{project}/serviceAccounts", h.listServiceAccounts)
 	mux.HandleFunc("POST /v1/projects/{project}/serviceAccounts", h.createServiceAccount)
 	mux.HandleFunc("GET /v1/projects/{project}/serviceAccounts/{account}", h.getServiceAccount)
+	mux.HandleFunc("PATCH /v1/projects/{project}/serviceAccounts/{account}", h.patchServiceAccount)
 	mux.HandleFunc("DELETE /v1/projects/{project}/serviceAccounts/{account}", h.deleteServiceAccount)
+	mux.HandleFunc("POST /v1/projects/{project}/serviceAccounts/{account}", h.serviceAccountPost)
 	mux.HandleFunc("GET /v1/projects/{project}/serviceAccounts/{account}/keys", h.listKeys)
 	mux.HandleFunc("POST /v1/projects/{project}/serviceAccounts/{account}/keys", h.createKey)
 	mux.HandleFunc("GET /v1/projects/{project}/serviceAccounts/{account}/keys/{key}", h.getKey)
@@ -149,6 +151,10 @@ func (h *Handler) listServiceAccounts(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getServiceAccount(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("project")
 	account := decodeAccount(r.PathValue("account"))
+	if strings.Contains(account, ":") {
+		gcperrors.InvalidArgument(w, "use POST for service account custom methods")
+		return
+	}
 	resource := "projects/" + projectID
 	if _, ok := h.require(w, r, "iam.serviceAccounts.get", resource); !ok {
 		return
@@ -163,6 +169,201 @@ func (h *Handler) getServiceAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, saJSON(sa))
+}
+
+func (h *Handler) patchServiceAccount(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("project")
+	account := decodeAccount(r.PathValue("account"))
+	if strings.Contains(account, ":") {
+		gcperrors.InvalidArgument(w, "invalid service account name")
+		return
+	}
+	resource := "projects/" + projectID
+	if _, ok := h.require(w, r, "iam.serviceAccounts.update", resource); !ok {
+		return
+	}
+	sa, ok, err := h.Store.GetServiceAccountInProject(projectID, account)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Service account does not exist.")
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		ServiceAccount struct {
+			DisplayName string `json:"displayName"`
+		} `json:"serviceAccount"`
+		DisplayName string `json:"displayName"`
+		UpdateMask  string `json:"updateMask"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	mask := req.UpdateMask
+	if mask == "" {
+		mask = r.URL.Query().Get("updateMask")
+	}
+	displayName := req.ServiceAccount.DisplayName
+	if displayName == "" {
+		displayName = req.DisplayName
+	}
+	if mask != "" && !fieldMaskIncludes(mask, "displayName") && !fieldMaskIncludes(mask, "serviceAccount.displayName") {
+		gcperrors.InvalidArgument(w, "updateMask must include displayName")
+		return
+	}
+	updated, ok, err := h.Store.UpdateServiceAccountDisplayName(sa.Email, displayName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Service account does not exist.")
+		return
+	}
+	writeJSON(w, http.StatusOK, saJSON(updated))
+}
+
+func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("project")
+	raw := decodeAccount(r.PathValue("account"))
+	account, action := splitColonAction(raw)
+	if account == "" || action == "" {
+		gcperrors.InvalidArgument(w, "expected serviceAccounts/{account}:enable|disable|getIamPolicy|setIamPolicy|testIamPermissions")
+		return
+	}
+	projectResource := "projects/" + projectID
+	sa, ok, err := h.Store.GetServiceAccountInProject(projectID, account)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Service account does not exist.")
+		return
+	}
+	saResource := fmt.Sprintf("projects/%s/serviceAccounts/%s", projectID, sa.Email)
+
+	switch action {
+	case "enable":
+		if _, ok := h.require(w, r, "iam.serviceAccounts.enable", projectResource); !ok {
+			return
+		}
+		_, ok, err := h.Store.SetServiceAccountDisabled(sa.Email, false)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !ok {
+			gcperrors.NotFound(w, "Service account does not exist.")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	case "disable":
+		if _, ok := h.require(w, r, "iam.serviceAccounts.disable", projectResource); !ok {
+			return
+		}
+		_, ok, err := h.Store.SetServiceAccountDisabled(sa.Email, true)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !ok {
+			gcperrors.NotFound(w, "Service account does not exist.")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	case "getIamPolicy":
+		h.getIamPolicy(w, r, projectResource, saResource)
+	case "setIamPolicy":
+		h.setIamPolicy(w, r, projectResource, saResource)
+	case "testIamPermissions":
+		h.testIamPermissions(w, r, saResource)
+	default:
+		gcperrors.InvalidArgument(w, "unknown method on service account")
+	}
+}
+
+func (h *Handler) getIamPolicy(w http.ResponseWriter, r *http.Request, projectResource, saResource string) {
+	if _, ok := h.require(w, r, "iam.serviceAccounts.getIamPolicy", projectResource); !ok {
+		return
+	}
+	raw, ok, err := h.Store.GetIAMPolicyJSON(saResource)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, authz.Policy{Etag: "ACAB"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (h *Handler) setIamPolicy(w http.ResponseWriter, r *http.Request, projectResource, saResource string) {
+	if _, ok := h.require(w, r, "iam.serviceAccounts.setIamPolicy", projectResource); !ok {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		Policy authz.Policy `json:"policy"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	if err := h.Store.PutIAMPolicyJSON(saResource, req.Policy); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, req.Policy)
+}
+
+func (h *Handler) testIamPermissions(w http.ResponseWriter, r *http.Request, saResource string) {
+	p, ok := h.principal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		Permissions []string `json:"permissions"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			gcperrors.InvalidArgument(w, "invalid JSON body")
+			return
+		}
+	}
+	granted, err := h.Authz.TestIamPermissions(p.Email, p.IsRoot, saResource, req.Permissions)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if granted == nil {
+		granted = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"permissions": granted})
 }
 
 func (h *Handler) deleteServiceAccount(w http.ResponseWriter, r *http.Request) {
@@ -401,6 +602,22 @@ func decodeAccount(v string) string {
 		return u
 	}
 	return v
+}
+
+func splitColonAction(segment string) (id, action string) {
+	if i := strings.IndexByte(segment, ':'); i >= 0 {
+		return segment[:i], segment[i+1:]
+	}
+	return segment, ""
+}
+
+func fieldMaskIncludes(mask, field string) bool {
+	for _, part := range strings.Split(mask, ",") {
+		if strings.TrimSpace(part) == field {
+			return true
+		}
+	}
+	return false
 }
 
 func validAccountID(id string) bool {

@@ -115,7 +115,7 @@ func TestIdentityServiceAccountAndKey(t *testing.T) {
 
 func TestIdentityServiceUsage(t *testing.T) {
 	st := openIdentityStore(t)
-	list, err := st.ListServiceUsage("noctaxris-gcp-local")
+	list, err := st.ListServiceUsage("noctaxris-gcp-local", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,5 +128,49 @@ func TestIdentityServiceUsage(t *testing.T) {
 	u, ok, err := st.GetServiceUsage("noctaxris-gcp-local", "storage.googleapis.com")
 	if err != nil || !ok || u.State != "DISABLED" {
 		t.Fatalf("usage = %#v ok=%v err=%v", u, ok, err)
+	}
+	enabled, err := st.ListServiceUsage("noctaxris-gcp-local", "ENABLED")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range enabled {
+		if row.State != "ENABLED" {
+			t.Fatalf("filter ENABLED got %#v", row)
+		}
+		if row.ServiceName == "storage.googleapis.com" {
+			t.Fatal("disabled service should not appear in ENABLED filter")
+		}
+	}
+	if err := st.BatchEnableServiceUsage("noctaxris-gcp-local", []string{"storage.googleapis.com", "bigquery.googleapis.com"}); err != nil {
+		t.Fatal(err)
+	}
+	u, ok, err = st.GetServiceUsage("noctaxris-gcp-local", "storage.googleapis.com")
+	if err != nil || !ok || u.State != "ENABLED" {
+		t.Fatalf("batch enable storage = %#v ok=%v err=%v", u, ok, err)
+	}
+}
+
+func TestIdentityServiceAccountDisableAndPatch(t *testing.T) {
+	st := openIdentityStore(t)
+	email := "ops@noctaxris-gcp-local.iam.gserviceaccount.com"
+	if err := st.CreateServiceAccount(store.ServiceAccount{
+		ProjectID:   "noctaxris-gcp-local",
+		Email:       email,
+		UniqueID:    "2001",
+		DisplayName: "Ops",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sa, ok, err := st.SetServiceAccountDisabled(email, true)
+	if err != nil || !ok || !sa.Disabled {
+		t.Fatalf("disable = %#v ok=%v err=%v", sa, ok, err)
+	}
+	sa, ok, err = st.UpdateServiceAccountDisplayName(email, "Ops Renamed")
+	if err != nil || !ok || sa.DisplayName != "Ops Renamed" {
+		t.Fatalf("patch = %#v ok=%v err=%v", sa, ok, err)
+	}
+	p, ok, err := st.UpdateProjectDisplayName("noctaxris-gcp-local", "Lab Project")
+	if err != nil || !ok || p.DisplayName != "Lab Project" {
+		t.Fatalf("project patch = %#v ok=%v err=%v", p, ok, err)
 	}
 }

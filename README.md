@@ -70,10 +70,13 @@ Default host publish is `127.0.0.1:4588` only. Default project id is `noctaxris-
 
 | Area | Services |
 |------|----------|
-| Identity and projects | Cloud Resource Manager, IAM, Service Usage |
-| Data | Cloud Storage, Pub/Sub, Firestore |
-| Secrets and crypto | Secret Manager, Cloud KMS |
-| Observability | Cloud Logging |
+| Identity | Cloud Resource Manager, IAM, Service Usage |
+| Crypto | Secret Manager, Cloud KMS |
+| Data | Cloud Storage, Pub/Sub, Firestore, Datastore |
+| Audit/logs | Cloud Logging |
+| Compute/glue | Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks |
+| Analytics/events | BigQuery, Firebase Auth, Eventarc, Cloud Monitoring |
+| Observability | Cloud Monitoring |
 
 Per-service lab actions, emulator limits, and smoke notes: [docs/services/](docs/services/index.md).
 

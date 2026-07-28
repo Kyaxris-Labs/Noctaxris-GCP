@@ -32,29 +32,24 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /storage/v1/b", h.createBucket)
 	mux.HandleFunc("GET /storage/v1/b", h.listBuckets)
 	mux.HandleFunc("GET /storage/v1/b/{bucket}", h.getBucket)
+	mux.HandleFunc("PATCH /storage/v1/b/{bucket}", h.patchBucket)
 	mux.HandleFunc("DELETE /storage/v1/b/{bucket}", h.deleteBucket)
+	mux.HandleFunc("GET /storage/v1/b/{bucket}/iam", h.getBucketIAM)
+	mux.HandleFunc("PUT /storage/v1/b/{bucket}/iam", h.setBucketIAM)
+	mux.HandleFunc("GET /storage/v1/b/{bucket}/iam/testPermissions", h.testBucketIAM)
 	mux.HandleFunc("GET /storage/v1/b/{bucket}/o", h.listObjects)
 	mux.HandleFunc("GET /storage/v1/b/{bucket}/o/{object...}", h.getOrDownloadObject)
+	mux.HandleFunc("PATCH /storage/v1/b/{bucket}/o/{object...}", h.patchObject)
 	mux.HandleFunc("DELETE /storage/v1/b/{bucket}/o/{object...}", h.deleteObject)
+	mux.HandleFunc("POST /storage/v1/b/{bucket}/o/{object...}", h.postObjectAction)
 	mux.HandleFunc("POST /upload/storage/v1/b/{bucket}/o", h.uploadObject)
 }
 
-func (h *Handler) require(w http.ResponseWriter, r *http.Request, permission, resource string) (authn.Principal, bool) {
-	p, ok := h.Principal(r)
-	if !ok {
-		gcperrors.Unauthenticated(w, "")
-		return authn.Principal{}, false
+func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {
+	if h.Principal != nil {
+		return h.Principal(r)
 	}
-	allowed, err := h.Authz.Evaluate(p.Email, p.IsRoot, permission, resource)
-	if err != nil {
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return authn.Principal{}, false
-	}
-	if !allowed {
-		gcperrors.PermissionDenied(w, "")
-		return authn.Principal{}, false
-	}
-	return p, true
+	return authn.Principal{}, false
 }
 
 func projectResource(project string) string {
@@ -71,19 +66,46 @@ func (h *Handler) authProject(known string) string {
 	return "unknown"
 }
 
+// requireStorage evaluates permission against bucket IAM and/or project IAM.
+func (h *Handler) requireStorage(w http.ResponseWriter, r *http.Request, permission, bucketName, projectID string) (authn.Principal, bool) {
+	p, ok := h.principal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return authn.Principal{}, false
+	}
+	var resources []string
+	if bucketName != "" {
+		resources = append(resources, store.BucketIAMResource(bucketName))
+	}
+	if projectID != "" {
+		resources = append(resources, projectResource(projectID))
+	}
+	allowed, err := h.Authz.EvaluateAny(p.Email, p.IsRoot, permission, resources...)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return authn.Principal{}, false
+	}
+	if !allowed {
+		gcperrors.PermissionDenied(w, "")
+		return authn.Principal{}, false
+	}
+	return p, true
+}
+
 func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	if project == "" {
 		gcperrors.InvalidArgument(w, "project query parameter is required")
 		return
 	}
-	if _, ok := h.require(w, r, "storage.buckets.create", projectResource(project)); !ok {
+	if _, ok := h.requireStorage(w, r, "storage.buckets.create", "", project); !ok {
 		return
 	}
 	var body struct {
-		Name         string `json:"name"`
-		Location     string `json:"location"`
-		StorageClass string `json:"storageClass"`
+		Name         string            `json:"name"`
+		Location     string            `json:"location"`
+		StorageClass string            `json:"storageClass"`
+		Labels       map[string]string `json:"labels"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid bucket body")
@@ -102,6 +124,13 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "bucket already exists")
 		return
 	}
+	if len(body.Labels) > 0 {
+		b, err = h.Store.PatchBucket(body.Name, nil, nil, &body.Labels)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, bucketJSON(b))
 }
 
@@ -111,7 +140,7 @@ func (h *Handler) listBuckets(w http.ResponseWriter, r *http.Request) {
 		gcperrors.InvalidArgument(w, "project query parameter is required")
 		return
 	}
-	if _, ok := h.require(w, r, "storage.buckets.list", projectResource(project)); !ok {
+	if _, ok := h.requireStorage(w, r, "storage.buckets.list", "", project); !ok {
 		return
 	}
 	list, err := h.Store.ListBuckets(project)
@@ -134,16 +163,50 @@ func (h *Handler) getBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		if _, aok := h.require(w, r, "storage.buckets.get", projectResource(h.authProject(""))); !aok {
+		if _, aok := h.requireStorage(w, r, "storage.buckets.get", name, h.authProject("")); !aok {
 			return
 		}
 		gcperrors.NotFound(w, "bucket not found")
 		return
 	}
-	if _, aok := h.require(w, r, "storage.buckets.get", projectResource(b.ProjectID)); !aok {
+	if _, aok := h.requireStorage(w, r, "storage.buckets.get", b.Name, b.ProjectID); !aok {
 		return
 	}
 	writeJSON(w, http.StatusOK, bucketJSON(b))
+}
+
+func (h *Handler) patchBucket(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("bucket")
+	b, ok, err := h.Store.GetBucket(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.buckets.update", name, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.buckets.update", b.Name, b.ProjectID); !aok {
+		return
+	}
+	var body struct {
+		Location     *string            `json:"location"`
+		StorageClass *string            `json:"storageClass"`
+		Labels       *map[string]string `json:"labels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid bucket patch body")
+		return
+	}
+	updated, err := h.Store.PatchBucket(name, body.Location, body.StorageClass, body.Labels)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, bucketJSON(updated))
 }
 
 func (h *Handler) deleteBucket(w http.ResponseWriter, r *http.Request) {
@@ -154,13 +217,13 @@ func (h *Handler) deleteBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		if _, aok := h.require(w, r, "storage.buckets.delete", projectResource(h.authProject(""))); !aok {
+		if _, aok := h.requireStorage(w, r, "storage.buckets.delete", name, h.authProject("")); !aok {
 			return
 		}
 		gcperrors.NotFound(w, "bucket not found")
 		return
 	}
-	if _, aok := h.require(w, r, "storage.buckets.delete", projectResource(b.ProjectID)); !aok {
+	if _, aok := h.requireStorage(w, r, "storage.buckets.delete", b.Name, b.ProjectID); !aok {
 		return
 	}
 	found, err := h.Store.DeleteBucket(name)
@@ -179,6 +242,106 @@ func (h *Handler) deleteBucket(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) getBucketIAM(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("bucket")
+	b, ok, err := h.Store.GetBucket(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	project := h.authProject("")
+	if ok {
+		project = b.ProjectID
+	}
+	if _, aok := h.requireStorage(w, r, "storage.buckets.getIamPolicy", name, project); !aok {
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	raw, found, err := h.Store.GetIAMPolicyJSON(store.BucketIAMResource(name))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, authz.Policy{Etag: "ACAB", Bindings: []authz.Binding{}})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (h *Handler) setBucketIAM(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("bucket")
+	b, ok, err := h.Store.GetBucket(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	project := h.authProject("")
+	if ok {
+		project = b.ProjectID
+	}
+	if _, aok := h.requireStorage(w, r, "storage.buckets.setIamPolicy", name, project); !aok {
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var policy authz.Policy
+	if err := json.Unmarshal(body, &policy); err != nil {
+		// GCS setIamPolicy may wrap as {"bindings":...} directly (policy document).
+		gcperrors.InvalidArgument(w, "invalid IAM policy body")
+		return
+	}
+	if err := h.Store.PutIAMPolicyJSON(store.BucketIAMResource(name), policy); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, policy)
+}
+
+func (h *Handler) testBucketIAM(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.principal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return
+	}
+	name := r.PathValue("bucket")
+	b, found, err := h.Store.GetBucket(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	project := h.authProject("")
+	if found {
+		project = b.ProjectID
+	}
+	perms := r.URL.Query()["permissions"]
+	if len(perms) == 1 && strings.Contains(perms[0], ",") {
+		perms = strings.Split(perms[0], ",")
+	}
+	resources := []string{store.BucketIAMResource(name), projectResource(project)}
+	granted, err := h.Authz.TestIamPermissionsAny(p.Email, p.IsRoot, resources, perms)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if granted == nil {
+		granted = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"kind": "storage#testIamPermissionsResponse", "permissions": granted})
+}
+
 func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
 	b, ok, err := h.Store.GetBucket(bucket)
@@ -187,13 +350,13 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		if _, aok := h.require(w, r, "storage.objects.list", projectResource(h.authProject(""))); !aok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.list", bucket, h.authProject("")); !aok {
 			return
 		}
 		gcperrors.NotFound(w, "bucket not found")
 		return
 	}
-	if _, aok := h.require(w, r, "storage.objects.list", projectResource(b.ProjectID)); !aok {
+	if _, aok := h.requireStorage(w, r, "storage.objects.list", b.Name, b.ProjectID); !aok {
 		return
 	}
 	prefix := r.URL.Query().Get("prefix")
@@ -218,13 +381,13 @@ func (h *Handler) getOrDownloadObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		if _, aok := h.require(w, r, "storage.objects.get", projectResource(h.authProject(""))); !aok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.get", bucket, h.authProject("")); !aok {
 			return
 		}
 		gcperrors.NotFound(w, "bucket not found")
 		return
 	}
-	if _, aok := h.require(w, r, "storage.objects.get", projectResource(b.ProjectID)); !aok {
+	if _, aok := h.requireStorage(w, r, "storage.objects.get", b.Name, b.ProjectID); !aok {
 		return
 	}
 	var gen int64
@@ -259,6 +422,64 @@ func (h *Handler) getOrDownloadObject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, objectJSON(obj))
 }
 
+func (h *Handler) patchObject(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	object := r.PathValue("object")
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.update", bucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.update", b.Name, b.ProjectID); !aok {
+		return
+	}
+	var body struct {
+		ContentType        string            `json:"contentType"`
+		Metadata           map[string]string `json:"metadata"`
+		CacheControl       string            `json:"cacheControl"`
+		ContentDisposition string            `json:"contentDisposition"`
+		ContentEncoding    string            `json:"contentEncoding"`
+		ContentLanguage    string            `json:"contentLanguage"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid object patch body")
+		return
+	}
+	var gen int64
+	if g := r.URL.Query().Get("generation"); g != "" {
+		gen, err = strconv.ParseInt(g, 10, 64)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "invalid generation")
+			return
+		}
+	}
+	patch := &store.ObjectMeta{
+		ContentType:        body.ContentType,
+		Metadata:           body.Metadata,
+		CacheControl:       body.CacheControl,
+		ContentDisposition: body.ContentDisposition,
+		ContentEncoding:    body.ContentEncoding,
+		ContentLanguage:    body.ContentLanguage,
+	}
+	obj, err := h.Store.PatchObjectMetadata(bucket, object, gen, patch)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			gcperrors.NotFound(w, "object not found")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, objectJSON(obj))
+}
+
 func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
 	object := r.PathValue("object")
@@ -268,13 +489,13 @@ func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		if _, aok := h.require(w, r, "storage.objects.delete", projectResource(h.authProject(""))); !aok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.delete", bucket, h.authProject("")); !aok {
 			return
 		}
 		gcperrors.NotFound(w, "bucket not found")
 		return
 	}
-	if _, aok := h.require(w, r, "storage.objects.delete", projectResource(b.ProjectID)); !aok {
+	if _, aok := h.requireStorage(w, r, "storage.objects.delete", b.Name, b.ProjectID); !aok {
 		return
 	}
 	var gen int64
@@ -297,6 +518,129 @@ func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) postObjectAction(w http.ResponseWriter, r *http.Request) {
+	objectPath := r.PathValue("object")
+	if strings.HasSuffix(objectPath, "/compose") {
+		h.composeObject(w, r, strings.TrimSuffix(objectPath, "/compose"))
+		return
+	}
+	if i := strings.Index(objectPath, "/copyTo/b/"); i >= 0 {
+		srcObject := objectPath[:i]
+		rest := objectPath[i+len("/copyTo/b/"):]
+		dstBucket, dstObject, ok := strings.Cut(rest, "/o/")
+		if !ok || dstBucket == "" || dstObject == "" {
+			gcperrors.InvalidArgument(w, "invalid copyTo path")
+			return
+		}
+		h.copyObject(w, r, srcObject, dstBucket, dstObject)
+		return
+	}
+	gcperrors.InvalidArgument(w, "unsupported object POST action")
+}
+
+func (h *Handler) composeObject(w http.ResponseWriter, r *http.Request, dest string) {
+	bucket := r.PathValue("bucket")
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.create", bucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.create", b.Name, b.ProjectID); !aok {
+		return
+	}
+	var body struct {
+		SourceObjects []struct {
+			Name string `json:"name"`
+		} `json:"sourceObjects"`
+		Destination struct {
+			ContentType string `json:"contentType"`
+		} `json:"destination"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid compose body")
+		return
+	}
+	sources := make([]string, 0, len(body.SourceObjects))
+	for _, s := range body.SourceObjects {
+		if s.Name != "" {
+			sources = append(sources, s.Name)
+		}
+	}
+	obj, err := h.Store.ComposeObject(bucket, dest, sources, body.Destination.ContentType)
+	if err != nil {
+		if strings.Contains(err.Error(), "at most 32") {
+			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
+		if strings.Contains(err.Error(), "not found") {
+			gcperrors.NotFound(w, err.Error())
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, objectJSON(obj))
+}
+
+func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, srcObject, dstBucket, dstObject string) {
+	srcBucket := r.PathValue("bucket")
+	sb, ok, err := h.Store.GetBucket(srcBucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.get", srcBucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "source bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.get", sb.Name, sb.ProjectID); !aok {
+		return
+	}
+	db, ok, err := h.Store.GetBucket(dstBucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.create", dstBucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "destination bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.create", db.Name, db.ProjectID); !aok {
+		return
+	}
+	var gen int64
+	if g := r.URL.Query().Get("sourceGeneration"); g != "" {
+		gen, err = strconv.ParseInt(g, 10, 64)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "invalid sourceGeneration")
+			return
+		}
+	}
+	obj, err := h.Store.CopyObject(srcBucket, srcObject, gen, dstBucket, dstObject)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			gcperrors.NotFound(w, err.Error())
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, objectJSON(obj))
+}
+
 func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
 	b, ok, err := h.Store.GetBucket(bucket)
@@ -305,13 +649,13 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		if _, aok := h.require(w, r, "storage.objects.create", projectResource(h.authProject(""))); !aok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.create", bucket, h.authProject("")); !aok {
 			return
 		}
 		gcperrors.NotFound(w, "bucket not found")
 		return
 	}
-	if _, aok := h.require(w, r, "storage.objects.create", projectResource(b.ProjectID)); !aok {
+	if _, aok := h.requireStorage(w, r, "storage.objects.create", b.Name, b.ProjectID); !aok {
 		return
 	}
 	uploadType := r.URL.Query().Get("uploadType")
@@ -401,33 +745,62 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 }
 
 func bucketJSON(b *store.Bucket) map[string]any {
+	labels := b.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	updated := b.UpdatedAt
+	if updated == "" {
+		updated = b.CreatedAt
+	}
 	return map[string]any{
-		"kind":         "storage#bucket",
-		"id":           b.Name,
-		"name":         b.Name,
-		"location":     b.Location,
-		"storageClass": b.StorageClass,
-		"timeCreated":  b.CreatedAt,
-		"updated":      b.CreatedAt,
-		"selfLink":     "/storage/v1/b/" + b.Name,
+		"kind":           "storage#bucket",
+		"id":             b.Name,
+		"name":           b.Name,
+		"location":       b.Location,
+		"storageClass":   b.StorageClass,
+		"labels":         labels,
+		"metageneration": strconv.FormatInt(b.Metageneration, 10),
+		"timeCreated":    b.CreatedAt,
+		"updated":        updated,
+		"selfLink":       "/storage/v1/b/" + b.Name,
 	}
 }
 
 func objectJSON(o *store.ObjectMeta) map[string]any {
-	return map[string]any{
-		"kind":         "storage#object",
-		"id":           o.Bucket + "/" + o.Name + "/" + strconv.FormatInt(o.Generation, 10),
-		"name":         o.Name,
-		"bucket":       o.Bucket,
-		"generation":   strconv.FormatInt(o.Generation, 10),
-		"size":         strconv.FormatInt(o.Size, 10),
-		"contentType":  o.ContentType,
-		"md5Hash":      o.MD5Hash,
-		"crc32c":       o.CRC32C,
-		"timeCreated":  o.CreatedAt,
-		"updated":      o.UpdatedAt,
-		"storageClass": "STANDARD",
+	meta := o.Metadata
+	if meta == nil {
+		meta = map[string]string{}
 	}
+	out := map[string]any{
+		"kind":           "storage#object",
+		"id":             o.Bucket + "/" + o.Name + "/" + strconv.FormatInt(o.Generation, 10),
+		"name":           o.Name,
+		"bucket":         o.Bucket,
+		"generation":     strconv.FormatInt(o.Generation, 10),
+		"metageneration": strconv.FormatInt(o.Metageneration, 10),
+		"size":           strconv.FormatInt(o.Size, 10),
+		"contentType":    o.ContentType,
+		"md5Hash":        o.MD5Hash,
+		"crc32c":         o.CRC32C,
+		"metadata":       meta,
+		"timeCreated":    o.CreatedAt,
+		"updated":        o.UpdatedAt,
+		"storageClass":   "STANDARD",
+	}
+	if o.CacheControl != "" {
+		out["cacheControl"] = o.CacheControl
+	}
+	if o.ContentDisposition != "" {
+		out["contentDisposition"] = o.ContentDisposition
+	}
+	if o.ContentEncoding != "" {
+		out["contentEncoding"] = o.ContentEncoding
+	}
+	if o.ContentLanguage != "" {
+		out["contentLanguage"] = o.ContentLanguage
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

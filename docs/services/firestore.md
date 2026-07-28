@@ -4,7 +4,7 @@ Lab-complete Firestore v1 gRPC on the shared Noctaxris-GCP port (`127.0.0.1:4588
 
 ## Status
 
-**lab** — document CRUD, list, batch get, batch write, commit (non-transactional), and simple equality `RunQuery`.
+**lab** — document CRUD with field masks, list, batch get, batch write, commit with lab transaction tokens, and simple `RunQuery` filters (`EQUAL`, `IN`, `ARRAY_CONTAINS`).
 
 ## Wire protocol
 
@@ -25,19 +25,20 @@ projects/{project}/databases/(default)/documents/{collection}/{docId}
 |-----|----------------|
 | `GetDocument` | Load by name |
 | `CreateDocument` | Create; auto id when `document_id` empty |
-| `UpdateDocument` | Replace fields |
+| `UpdateDocument` | Replace fields, or merge top-level paths from `update_mask` |
 | `DeleteDocument` | Delete by name |
 | `ListDocuments` | Immediate child docs in a collection |
 | `BatchGetDocuments` | Server stream; missing names reported |
-| `BatchWrite` | Non-transactional update/delete writes |
-| `Commit` | Same as batch write; rejects transaction bytes |
-| `RunQuery` | `StructuredQuery` with one `EQUAL` field filter (or no filter) |
+| `BatchWrite` | Non-transactional update/delete writes; honors `update_mask` |
+| `Commit` | Applies writes; accepts BeginTransaction UUID token (consumed once); no isolation |
+| `BeginTransaction` | Returns a lab UUID token for the database |
+| `Rollback` | Clears a lab transaction token |
+| `RunQuery` | `StructuredQuery` with `EQUAL`, `IN`, or `ARRAY_CONTAINS` (or no filter) |
 
 ## Not implemented
 
 | RPC | Response |
 |-----|----------|
-| `BeginTransaction` / `Rollback` | `UNIMPLEMENTED` |
 | `Listen` / bidirectional `Write` | `UNIMPLEMENTED` |
 | Aggregations, partitions, pipelines | `UNIMPLEMENTED` (embedded default) |
 
@@ -70,9 +71,9 @@ Bearer token required (root or registered access token). Cleartext h2c on the sh
 ## Deferred depth
 
 - Multi-database ids beyond `(default)`
-- Transactions and snapshot listeners
-- Composite indexes, `IN` / array-contains filters, collection groups
-- Field masks / transform writes (`serverTimestamp`, increments)
+- Real transaction isolation, conflict detection, and snapshot listeners (`Listen`)
+- Composite indexes, collection groups, nested field-path masks
+- Transform writes (`serverTimestamp`, increments)
 
 ## Verification / CLI smoke
 

@@ -1,8 +1,12 @@
 package pubsub
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -27,9 +31,10 @@ type Service struct {
 	pubsubpb.UnimplementedPublisherServer
 	pubsubpb.UnimplementedSubscriberServer
 
-	Store     *store.Store
-	Authz     *authz.Evaluator
-	Principal PrincipalResolver
+	Store      *store.Store
+	Authz      *authz.Evaluator
+	Principal  PrincipalResolver
+	HTTPClient *http.Client
 }
 
 // Register attaches Publisher and Subscriber services to gs.
@@ -94,6 +99,13 @@ func projectResource(projectID string) string {
 	return "projects/" + projectID
 }
 
+func (s *Service) httpClient() *http.Client {
+	if s.HTTPClient != nil {
+		return s.HTTPClient
+	}
+	return &http.Client{Timeout: 5 * time.Second}
+}
+
 func (s *Service) CreateTopic(ctx context.Context, topic *pubsubpb.Topic) (*pubsubpb.Topic, error) {
 	projectID := projectFromResource(topic.GetName())
 	if projectID == "" {
@@ -102,7 +114,7 @@ func (s *Service) CreateTopic(ctx context.Context, topic *pubsubpb.Topic) (*pubs
 	if err := s.require(ctx, "pubsub.topics.create", projectResource(projectID)); err != nil {
 		return nil, err
 	}
-	t, created, err := s.Store.CreateTopic(topic.GetName(), projectID)
+	t, created, err := s.Store.CreateTopicWithLabels(topic.GetName(), projectID, topic.GetLabels())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
@@ -167,6 +179,43 @@ func (s *Service) DeleteTopic(ctx context.Context, req *pubsubpb.DeleteTopicRequ
 	return &emptypb.Empty{}, nil
 }
 
+func (s *Service) UpdateTopic(ctx context.Context, req *pubsubpb.UpdateTopicRequest) (*pubsubpb.Topic, error) {
+	name := req.GetTopic().GetName()
+	projectID := projectFromResource(name)
+	if projectID == "" {
+		return nil, gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid topic name")
+	}
+	if err := s.require(ctx, "pubsub.topics.update", projectResource(projectID)); err != nil {
+		return nil, err
+	}
+	paths := req.GetUpdateMask().GetPaths()
+	if len(paths) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "update_mask required")
+	}
+	t, ok, err := s.Store.GetTopic(name)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	if !ok {
+		return nil, status.Error(codes.NotFound, "topic not found")
+	}
+	labels := t.Labels
+	for _, p := range paths {
+		switch p {
+		case "labels":
+			labels = req.GetTopic().GetLabels()
+			if labels == nil {
+				labels = map[string]string{}
+			}
+		}
+	}
+	updated, err := s.Store.UpdateTopicLabels(name, labels)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return topicPB(updated), nil
+}
+
 func (s *Service) Publish(ctx context.Context, req *pubsubpb.PublishRequest) (*pubsubpb.PublishResponse, error) {
 	projectID := projectFromResource(req.GetTopic())
 	if projectID == "" {
@@ -182,13 +231,50 @@ func (s *Service) Publish(ctx context.Context, req *pubsubpb.PublishRequest) (*p
 	}
 	resp := &pubsubpb.PublishResponse{}
 	for _, m := range req.GetMessages() {
-		id, err := s.Store.Publish(req.GetTopic(), m.GetData(), m.GetAttributes())
+		id, copies, err := s.Store.PublishFanout(req.GetTopic(), m.GetData(), m.GetAttributes())
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "%v", err)
 		}
+		s.deliverPush(copies)
 		resp.MessageIds = append(resp.MessageIds, id)
 	}
 	return resp, nil
+}
+
+func (s *Service) deliverPush(copies []store.PubSubMessage) {
+	for _, m := range copies {
+		sub, ok, err := s.Store.GetSubscription(m.Subscription)
+		if err != nil || !ok || sub.PushEndpoint == "" {
+			continue
+		}
+		attrs := map[string]string{}
+		if m.AttributesJSON != "" && m.AttributesJSON != "{}" {
+			_ = json.Unmarshal([]byte(m.AttributesJSON), &attrs)
+		}
+		body, _ := json.Marshal(map[string]any{
+			"message": map[string]any{
+				"data":        base64.StdEncoding.EncodeToString(m.Data),
+				"messageId":   m.ID,
+				"attributes":  attrs,
+				"publishTime": m.PublishTime,
+			},
+			"subscription": m.Subscription,
+		})
+		req, err := http.NewRequest(http.MethodPost, sub.PushEndpoint, bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := s.httpClient().Do(req)
+		if err != nil {
+			continue
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			_ = s.Store.Acknowledge(m.Subscription, []string{m.AckID})
+		}
+	}
 }
 
 func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscription) (*pubsubpb.Subscription, error) {
@@ -200,7 +286,11 @@ func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscrip
 		return nil, err
 	}
 	ack := int(sub.GetAckDeadlineSeconds())
-	created, ok, err := s.Store.CreateSubscription(sub.GetName(), sub.GetTopic(), projectID, ack)
+	push := ""
+	if sub.GetPushConfig() != nil {
+		push = sub.GetPushConfig().GetPushEndpoint()
+	}
+	created, ok, err := s.Store.CreateSubscriptionFull(sub.GetName(), sub.GetTopic(), projectID, ack, push, sub.GetLabels())
 	if err != nil {
 		if strings.Contains(err.Error(), "topic not found") {
 			return nil, status.Error(codes.NotFound, "topic not found")
@@ -268,6 +358,51 @@ func (s *Service) DeleteSubscription(ctx context.Context, req *pubsubpb.DeleteSu
 	return &emptypb.Empty{}, nil
 }
 
+func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSubscriptionRequest) (*pubsubpb.Subscription, error) {
+	name := req.GetSubscription().GetName()
+	projectID := projectFromResource(name)
+	if projectID == "" {
+		return nil, gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid subscription name")
+	}
+	if err := s.require(ctx, "pubsub.subscriptions.update", projectResource(projectID)); err != nil {
+		return nil, err
+	}
+	paths := req.GetUpdateMask().GetPaths()
+	if len(paths) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "update_mask required")
+	}
+	var ack *int
+	var push *string
+	var labels *map[string]string
+	for _, p := range paths {
+		switch p {
+		case "ack_deadline_seconds":
+			v := int(req.GetSubscription().GetAckDeadlineSeconds())
+			ack = &v
+		case "push_config", "push_config.push_endpoint":
+			ep := ""
+			if req.GetSubscription().GetPushConfig() != nil {
+				ep = req.GetSubscription().GetPushConfig().GetPushEndpoint()
+			}
+			push = &ep
+		case "labels":
+			l := req.GetSubscription().GetLabels()
+			if l == nil {
+				l = map[string]string{}
+			}
+			labels = &l
+		}
+	}
+	updated, err := s.Store.UpdateSubscription(name, ack, push, labels)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, status.Error(codes.NotFound, "subscription not found")
+		}
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return subscriptionPB(updated), nil
+}
+
 func (s *Service) Pull(ctx context.Context, req *pubsubpb.PullRequest) (*pubsubpb.PullResponse, error) {
 	projectID := projectFromResource(req.GetSubscription())
 	if projectID == "" {
@@ -283,26 +418,7 @@ func (s *Service) Pull(ctx context.Context, req *pubsubpb.PullRequest) (*pubsubp
 		}
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
-	out := &pubsubpb.PullResponse{}
-	for i := range msgs {
-		attrs := map[string]string{}
-		if msgs[i].AttributesJSON != "" && msgs[i].AttributesJSON != "{}" {
-			_ = json.Unmarshal([]byte(msgs[i].AttributesJSON), &attrs)
-		}
-		pm := &pubsubpb.PubsubMessage{
-			Data:       msgs[i].Data,
-			Attributes: attrs,
-			MessageId:  msgs[i].ID,
-		}
-		if ts, err := parseRFCTime(msgs[i].PublishTime); err == nil {
-			pm.PublishTime = timestamppb.New(ts)
-		}
-		out.ReceivedMessages = append(out.ReceivedMessages, &pubsubpb.ReceivedMessage{
-			AckId:   msgs[i].AckID,
-			Message: pm,
-		})
-	}
-	return out, nil
+	return pullResponse(msgs), nil
 }
 
 func (s *Service) Acknowledge(ctx context.Context, req *pubsubpb.AcknowledgeRequest) (*emptypb.Empty, error) {
@@ -319,21 +435,101 @@ func (s *Service) Acknowledge(ctx context.Context, req *pubsubpb.AcknowledgeRequ
 	return &emptypb.Empty{}, nil
 }
 
-// StreamingPull is not implemented in Wave 1.
+func (s *Service) ModifyAckDeadline(ctx context.Context, req *pubsubpb.ModifyAckDeadlineRequest) (*emptypb.Empty, error) {
+	projectID := projectFromResource(req.GetSubscription())
+	if projectID == "" {
+		return nil, gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid subscription name")
+	}
+	if err := s.require(ctx, "pubsub.subscriptions.consume", projectResource(projectID)); err != nil {
+		return nil, err
+	}
+	if err := s.Store.ModifyAckDeadline(req.GetSubscription(), req.GetAckIds(), int(req.GetAckDeadlineSeconds())); err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// StreamingPull delivers the current backlog once, then ends the stream (lab-minimal).
 func (s *Service) StreamingPull(stream pubsubpb.Subscriber_StreamingPullServer) error {
-	return status.Error(codes.Unimplemented, "StreamingPull is not implemented in this lab")
+	req, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	subName := req.GetSubscription()
+	projectID := projectFromResource(subName)
+	if projectID == "" {
+		return gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid subscription name")
+	}
+	if err := s.require(stream.Context(), "pubsub.subscriptions.consume", projectResource(projectID)); err != nil {
+		return err
+	}
+	max := int(req.GetMaxOutstandingMessages())
+	if max <= 0 {
+		max = 100
+	}
+	msgs, err := s.Store.Pull(subName, max)
+	if err != nil {
+		if strings.Contains(err.Error(), "subscription not found") {
+			return status.Error(codes.NotFound, "subscription not found")
+		}
+		return status.Errorf(codes.Internal, "%v", err)
+	}
+	if len(msgs) > 0 {
+		if err := stream.Send(streamingPullResponse(msgs)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pullResponse(msgs []store.PubSubMessage) *pubsubpb.PullResponse {
+	out := &pubsubpb.PullResponse{}
+	out.ReceivedMessages = receivedMessages(msgs)
+	return out
+}
+
+func streamingPullResponse(msgs []store.PubSubMessage) *pubsubpb.StreamingPullResponse {
+	return &pubsubpb.StreamingPullResponse{ReceivedMessages: receivedMessages(msgs)}
+}
+
+func receivedMessages(msgs []store.PubSubMessage) []*pubsubpb.ReceivedMessage {
+	out := make([]*pubsubpb.ReceivedMessage, 0, len(msgs))
+	for i := range msgs {
+		attrs := map[string]string{}
+		if msgs[i].AttributesJSON != "" && msgs[i].AttributesJSON != "{}" {
+			_ = json.Unmarshal([]byte(msgs[i].AttributesJSON), &attrs)
+		}
+		pm := &pubsubpb.PubsubMessage{
+			Data:       msgs[i].Data,
+			Attributes: attrs,
+			MessageId:  msgs[i].ID,
+		}
+		if ts, err := parseRFCTime(msgs[i].PublishTime); err == nil {
+			pm.PublishTime = timestamppb.New(ts)
+		}
+		out = append(out, &pubsubpb.ReceivedMessage{
+			AckId:   msgs[i].AckID,
+			Message: pm,
+		})
+	}
+	return out
 }
 
 func topicPB(t *store.PubSubTopic) *pubsubpb.Topic {
-	return &pubsubpb.Topic{Name: t.Name}
+	return &pubsubpb.Topic{Name: t.Name, Labels: t.Labels}
 }
 
 func subscriptionPB(sub *store.PubSubSubscription) *pubsubpb.Subscription {
-	return &pubsubpb.Subscription{
+	out := &pubsubpb.Subscription{
 		Name:               sub.Name,
 		Topic:              sub.Topic,
 		AckDeadlineSeconds: int32(sub.AckDeadlineSeconds),
+		Labels:             sub.Labels,
 	}
+	if sub.PushEndpoint != "" {
+		out.PushConfig = &pubsubpb.PushConfig{PushEndpoint: sub.PushEndpoint}
+	}
+	return out
 }
 
 func parseRFCTime(s string) (time.Time, error) {

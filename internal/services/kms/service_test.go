@@ -113,4 +113,74 @@ func TestEncryptDecryptAndDestroyRefuses(t *testing.T) {
 	if errObj["status"] != "FAILED_PRECONDITION" {
 		t.Fatalf("error = %#v", errObj)
 	}
+
+	getURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/lab-ring/cryptoKeys/lab-key"
+	req = httptest.NewRequest(http.MethodGet, getURL, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get key status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var keyResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &keyResp); err != nil {
+		t.Fatal(err)
+	}
+	primary, _ := keyResp["primary"].(map[string]any)
+	if primary["state"] != "DESTROYED" {
+		t.Fatalf("primary after destroy = %#v", primary)
+	}
+
+	listVerURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/lab-ring/cryptoKeys/lab-key/cryptoKeyVersions"
+	req = httptest.NewRequest(http.MethodGet, listVerURL, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list versions status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var listResp struct {
+		CryptoKeyVersions []map[string]any `json:"cryptoKeyVersions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.CryptoKeyVersions) != 1 || listResp.CryptoKeyVersions[0]["state"] != "DESTROYED" {
+		t.Fatalf("versions = %#v", listResp.CryptoKeyVersions)
+	}
+
+	restoreURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/lab-ring/cryptoKeys/lab-key/cryptoKeyVersions/1:restore"
+	req = httptest.NewRequest(http.MethodPost, restoreURL, bytes.NewReader([]byte("{}")))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restore status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var restoreResp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &restoreResp)
+	if restoreResp["state"] != "ENABLED" {
+		t.Fatalf("restore = %#v", restoreResp)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, getURL, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &keyResp)
+	primary, _ = keyResp["primary"].(map[string]any)
+	if primary["state"] != "ENABLED" {
+		t.Fatalf("primary after restore = %#v", primary)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, encURL, bytes.NewReader([]byte(`{"plaintext":"`+plain+`"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("encrypt after restore status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	getVerURL := listVerURL + "/1"
+	req = httptest.NewRequest(http.MethodGet, getVerURL, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get version status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }

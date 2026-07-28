@@ -39,6 +39,7 @@ func (s *Server) registerData() {
 		Principal: grpcPrincipal,
 	}
 	ps.Register(s.grpc)
+	ps.RegisterREST(s.mux, httpPrincipal)
 
 	sm := &secretmanager.Service{
 		Store:         s.store,

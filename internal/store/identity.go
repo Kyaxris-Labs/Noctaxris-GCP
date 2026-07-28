@@ -63,6 +63,22 @@ func (s *Store) GetProject(id string) (Project, bool, error) {
 	return p, true, nil
 }
 
+// UpdateProjectDisplayName sets the project display name.
+func (s *Store) UpdateProjectDisplayName(id, displayName string) (Project, bool, error) {
+	res, err := s.db.Exec(`UPDATE projects SET display_name = ? WHERE id = ?`, displayName, id)
+	if err != nil {
+		return Project{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Project{}, false, err
+	}
+	if n == 0 {
+		return Project{}, false, nil
+	}
+	return s.GetProject(id)
+}
+
 // PutIAMPolicyJSON stores (or replaces) the IAM policy for resource.
 func (s *Store) PutIAMPolicyJSON(resource string, policy authz.Policy) error {
 	if resource == "" {
@@ -168,6 +184,42 @@ func (s *Store) ListServiceAccounts(projectID string) ([]ServiceAccount, error) 
 		out = append(out, sa)
 	}
 	return out, rows.Err()
+}
+
+// SetServiceAccountDisabled enables or disables a service account by email.
+func (s *Store) SetServiceAccountDisabled(email string, disabled bool) (ServiceAccount, bool, error) {
+	flag := 0
+	if disabled {
+		flag = 1
+	}
+	res, err := s.db.Exec(`UPDATE service_accounts SET disabled = ? WHERE email = ?`, flag, email)
+	if err != nil {
+		return ServiceAccount{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return ServiceAccount{}, false, err
+	}
+	if n == 0 {
+		return ServiceAccount{}, false, nil
+	}
+	return s.GetServiceAccount(email)
+}
+
+// UpdateServiceAccountDisplayName patches the display name of a service account.
+func (s *Store) UpdateServiceAccountDisplayName(email, displayName string) (ServiceAccount, bool, error) {
+	res, err := s.db.Exec(`UPDATE service_accounts SET display_name = ? WHERE email = ?`, displayName, email)
+	if err != nil {
+		return ServiceAccount{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return ServiceAccount{}, false, err
+	}
+	if n == 0 {
+		return ServiceAccount{}, false, nil
+	}
+	return s.GetServiceAccount(email)
 }
 
 // DeleteServiceAccount removes a service account and its keys.
@@ -276,12 +328,28 @@ func (s *Store) DeleteServiceAccountKey(name string) (bool, error) {
 	return n > 0, nil
 }
 
-// ListServiceUsage returns all service usage rows for a project.
-func (s *Store) ListServiceUsage(projectID string) ([]ServiceUsage, error) {
-	rows, err := s.db.Query(
-		`SELECT project_id, service_name, state FROM service_usage WHERE project_id = ? ORDER BY service_name`,
-		projectID,
+// ListServiceUsage returns service usage rows for a project.
+// When stateFilter is non-empty (ENABLED or DISABLED), only matching rows are returned.
+func (s *Store) ListServiceUsage(projectID string, stateFilter string) ([]ServiceUsage, error) {
+	stateFilter = strings.ToUpper(strings.TrimSpace(stateFilter))
+	var (
+		rows *sql.Rows
+		err  error
 	)
+	if stateFilter == "" {
+		rows, err = s.db.Query(
+			`SELECT project_id, service_name, state FROM service_usage WHERE project_id = ? ORDER BY service_name`,
+			projectID,
+		)
+	} else {
+		if stateFilter != "ENABLED" && stateFilter != "DISABLED" {
+			return nil, fmt.Errorf("state filter must be ENABLED or DISABLED")
+		}
+		rows, err = s.db.Query(
+			`SELECT project_id, service_name, state FROM service_usage WHERE project_id = ? AND state = ? ORDER BY service_name`,
+			projectID, stateFilter,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +363,35 @@ func (s *Store) ListServiceUsage(projectID string) ([]ServiceUsage, error) {
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// BatchEnableServiceUsage enables multiple services atomically (all or nothing).
+func (s *Store) BatchEnableServiceUsage(projectID string, serviceNames []string) error {
+	if len(serviceNames) == 0 {
+		return fmt.Errorf("serviceIds required")
+	}
+	if len(serviceNames) > 20 {
+		return fmt.Errorf("at most 20 services per batchEnable")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, name := range serviceNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return fmt.Errorf("empty service id")
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO service_usage (project_id, service_name, state) VALUES (?, ?, 'ENABLED')
+			 ON CONFLICT(project_id, service_name) DO UPDATE SET state = 'ENABLED'`,
+			projectID, name,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // GetServiceUsage loads one service usage row.
