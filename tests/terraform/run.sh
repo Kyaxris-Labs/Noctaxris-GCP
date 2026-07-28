@@ -4,7 +4,7 @@
 # or /_noctaxris-gcp/ready fails.
 #
 # Default: all stacks under stacks/. Override with STACK=lab-storage or
-# STACKS="lab-storage lab-run".
+# STACKS="lab-storage lab-run lab-dns lab-compute".
 set -euo pipefail
 
 TF_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,7 +38,7 @@ elif [[ -n "${STACKS:-}" ]]; then
   # shellcheck disable=SC2206
   STACKS=($STACKS)
 else
-  STACKS=(lab-storage lab-run)
+  STACKS=(lab-storage lab-run lab-dns lab-compute)
 fi
 
 PROJECT="${NOCTAXRIS_GCP_PROJECT:-noctaxris-gcp-local}"

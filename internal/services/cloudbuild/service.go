@@ -29,15 +29,18 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v1/projects/{project}/builds", s.wrap(principalFrom, s.createBuildGlobal))
 	mux.HandleFunc("GET /v1/projects/{project}/builds", s.wrap(principalFrom, s.listBuildsGlobal))
 	mux.HandleFunc("GET /v1/projects/{project}/builds/{build}", s.wrap(principalFrom, s.getBuildGlobal))
+	mux.HandleFunc("POST /v1/projects/{project}/builds/{build}", s.wrap(principalFrom, s.buildPOSTActionGlobal))
 
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/builds", s.wrap(principalFrom, s.createBuildRegional))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/builds", s.wrap(principalFrom, s.listBuildsRegional))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/builds/{build}", s.wrap(principalFrom, s.getBuildRegional))
+	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/builds/{build}", s.wrap(principalFrom, s.buildPOSTActionRegional))
 
 	// Global triggers only: regional .../locations/{loc}/triggers collides with Eventarc on the shared mux.
 	mux.HandleFunc("GET /v1/projects/{project}/triggers", s.wrap(principalFrom, s.listTriggers))
 	mux.HandleFunc("POST /v1/projects/{project}/triggers", s.wrap(principalFrom, s.createTrigger))
 	mux.HandleFunc("GET /v1/projects/{project}/triggers/{trigger}", s.wrap(principalFrom, s.getTrigger))
+	mux.HandleFunc("POST /v1/projects/{project}/triggers/{trigger}", s.wrap(principalFrom, s.triggerPOSTAction))
 	mux.HandleFunc("DELETE /v1/projects/{project}/triggers/{trigger}", s.wrap(principalFrom, s.deleteTrigger))
 }
 
@@ -217,6 +220,113 @@ func (s *Service) getBuild(w http.ResponseWriter, _ *http.Request, p authn.Princ
 	writeJSON(w, http.StatusOK, toBuildJSON(adv))
 }
 
+func (s *Service) buildPOSTActionGlobal(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	s.buildPOSTAction(w, r, p, r.PathValue("project"), "global", r.PathValue("build"))
+}
+
+func (s *Service) buildPOSTActionRegional(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	s.buildPOSTAction(w, r, p, r.PathValue("project"), r.PathValue("location"), r.PathValue("build"))
+}
+
+func (s *Service) buildPOSTAction(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, buildSeg string) {
+	id, action := splitColonAction(buildSeg)
+	switch action {
+	case "cancel":
+		s.cancelBuild(w, r, p, project, location, id)
+	case "retry":
+		s.retryBuild(w, r, p, project, location, id)
+	default:
+		gcperrors.NotFound(w, "unknown Cloud Build method")
+	}
+}
+
+func (s *Service) cancelBuild(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, id string) {
+	if err := s.require(p, "cloudbuild.builds.update", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := buildName(project, location, id)
+	b, ok, err := s.Store.GetCbBuild(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		b, ok, err = s.Store.GetCbBuildByID(project, id)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !ok {
+			gcperrors.NotFound(w, "Build not found")
+			return
+		}
+		name = b.Name
+	}
+	out, ok, err := s.Store.CancelCbBuildDeepen(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Build not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, toBuildJSON(out))
+}
+
+func (s *Service) retryBuild(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, id string) {
+	if err := s.require(p, "cloudbuild.builds.create", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := buildName(project, location, id)
+	src, ok, err := s.Store.GetCbBuild(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		src, ok, err = s.Store.GetCbBuildByID(project, id)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !ok {
+			gcperrors.NotFound(w, "Build not found")
+			return
+		}
+	}
+	retryLoc := src.Location
+	if location != "" && location != "global" {
+		retryLoc = location
+	}
+	buildID := store.NewCbBuildID()
+	newName := buildName(project, retryLoc, buildID)
+	created, err := s.Store.CreateCbBuild(store.CbBuild{
+		Name: newName, ProjectID: project, Location: retryLoc, BuildID: buildID,
+		Status: "WORKING", StatusDetail: "lab theatre: retry of " + src.BuildID, BuildJSON: src.BuildJSON,
+	})
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !created {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "build already exists")
+		return
+	}
+	b, _, _ := s.Store.GetCbBuild(newName)
+	buildObj := toBuildJSON(b)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": "operations/" + buildID,
+		"metadata": map[string]any{
+			"@type": "type.googleapis.com/google.devtools.cloudbuild.v1.BuildOperationMetadata",
+			"build": buildObj,
+		},
+		"done": false,
+	})
+}
+
 func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
@@ -292,7 +402,11 @@ func (s *Service) getTrigger(w http.ResponseWriter, r *http.Request, p authn.Pri
 	if location == "" {
 		location = DefaultLocation
 	}
-	id, _ := splitColonAction(r.PathValue("trigger"))
+	id, action := splitColonAction(r.PathValue("trigger"))
+	if action != "" {
+		gcperrors.NotFound(w, "unknown Cloud Build method")
+		return
+	}
 	if err := s.require(p, "cloudbuild.triggers.get", project); err != nil {
 		writeAuthzErr(w, err)
 		return
@@ -307,6 +421,91 @@ func (s *Service) getTrigger(w http.ResponseWriter, r *http.Request, p authn.Pri
 		return
 	}
 	writeJSON(w, http.StatusOK, toTriggerJSON(t))
+}
+
+func (s *Service) triggerPOSTAction(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	if location == "" {
+		location = DefaultLocation
+	}
+	id, action := splitColonAction(r.PathValue("trigger"))
+	switch action {
+	case "run":
+		s.runTrigger(w, r, p, project, location, id)
+	default:
+		gcperrors.NotFound(w, "unknown Cloud Build method")
+	}
+}
+
+func (s *Service) runTrigger(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, id string) {
+	if err := s.require(p, "cloudbuild.builds.create", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	trig, ok, err := s.Store.GetCbTrigger(triggerName(project, location, id))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Trigger not found")
+		return
+	}
+	// Consume optional RepoSource body; theatre ignores SCM and creates a WORKING build.
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body == nil {
+		body = map[string]any{}
+	}
+	buildCfg := map[string]any{
+		"steps": []any{
+			map[string]any{"name": "gcr.io/cloud-builders/gcloud", "args": []any{"version"}},
+		},
+		"tags": []any{"trigger-" + trig.TriggerID, "lab-trigger-run"},
+	}
+	if filename, _ := extractTriggerFilename(trig.TriggerJSON); filename != "" {
+		buildCfg["filename"] = filename
+	}
+	if len(body) > 0 {
+		buildCfg["source"] = map[string]any{"repoSource": body}
+	}
+	raw, _ := json.Marshal(buildCfg)
+	buildID := store.NewCbBuildID()
+	name := buildName(project, "global", buildID)
+	created, err := s.Store.CreateCbBuild(store.CbBuild{
+		Name: name, ProjectID: project, Location: "global", BuildID: buildID,
+		Status: "WORKING", StatusDetail: "lab theatre: trigger run (no webhook)", BuildJSON: string(raw),
+	})
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !created {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "build already exists")
+		return
+	}
+	b, _, _ := s.Store.GetCbBuild(name)
+	buildObj := toBuildJSON(b)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": "operations/" + buildID,
+		"metadata": map[string]any{
+			"@type": "type.googleapis.com/google.devtools.cloudbuild.v1.BuildOperationMetadata",
+			"build": buildObj,
+		},
+		"done": false,
+	})
+}
+
+func extractTriggerFilename(triggerJSON string) (string, bool) {
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(triggerJSON), &cfg); err != nil {
+		return "", false
+	}
+	if f, ok := cfg["filename"].(string); ok && f != "" {
+		return f, true
+	}
+	return "", false
 }
 
 func (s *Service) deleteTrigger(w http.ResponseWriter, r *http.Request, p authn.Principal) {

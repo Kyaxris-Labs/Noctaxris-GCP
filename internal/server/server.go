@@ -69,9 +69,10 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 	s.registerIdentity()
 	s.registerData()
 	s.registerDocsCrypto()
-	s.registerExpandCompute()
-	s.registerExpandAnalytics()
-	s.registerExpandStage2()
+	s.registerServerless()
+	s.registerAnalytics()
+	s.registerAppsBuild()
+	s.registerComputeData()
 	return s
 }
 

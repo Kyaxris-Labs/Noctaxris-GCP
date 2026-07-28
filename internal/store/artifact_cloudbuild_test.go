@@ -114,3 +114,80 @@ func TestCloudBuildStoreTheatre(t *testing.T) {
 		t.Fatalf("delete trigger: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestArtifactBuildWorkflowsOpsStore(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	repoName := "projects/p/locations/us-central1/repositories/deep"
+	ok, err := st.CreateArRepository(store.ArRepository{
+		Name: repoName, ProjectID: "p", Location: "us-central1", RepositoryID: "deep", Format: "DOCKER",
+	})
+	if err != nil || !ok {
+		t.Fatalf("create repo: %v %v", ok, err)
+	}
+	labels := `{"a":"1"}`
+	repo, found, err := st.PatchArRepositoryDeepen(repoName, nil, &labels)
+	if err != nil || !found || repo.LabelsJSON != labels {
+		t.Fatalf("patch labels: %#v found=%v err=%v", repo, found, err)
+	}
+	pkgName := repoName + "/packages/img"
+	_, _ = st.CreateArPackage(store.ArPackage{Name: pkgName, RepositoryName: repoName, PackageID: "img"})
+	_, _ = st.CreateArVersion(store.ArVersion{
+		Name: pkgName + "/versions/v1", PackageName: pkgName, VersionID: "v1",
+		RelatedTagsJSON: `["latest"]`,
+	})
+	files, err := st.ListArFilesTheatreDeepen(repoName)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("files: %v err=%v", files, err)
+	}
+	tags, err := st.ListArTagsTheatreDeepen(pkgName)
+	if err != nil || len(tags) != 1 || tags[0].Name != pkgName+"/tags/latest" {
+		t.Fatalf("tags: %#v err=%v", tags, err)
+	}
+
+	buildID := store.NewCbBuildID()
+	bName := "projects/p/builds/" + buildID
+	_, _ = st.CreateCbBuild(store.CbBuild{
+		Name: bName, ProjectID: "p", Location: "global", BuildID: buildID, Status: "WORKING", BuildJSON: `{}`,
+	})
+	cancelled, found, err := st.CancelCbBuildDeepen(bName)
+	if err != nil || !found || cancelled.Status != "CANCELLED" {
+		t.Fatalf("cancel: %#v found=%v err=%v", cancelled, found, err)
+	}
+
+	wfName := "projects/p/locations/us-central1/workflows/deep"
+	_, _ = st.CreateWorkflow(store.Workflow{
+		Name: wfName, ProjectID: "p", Location: "us-central1", WorkflowID: "deep", SourceContents: "v1",
+	})
+	src := "v2"
+	wf, found, err := st.PatchWorkflowDeepen(wfName, nil, &src, nil, nil)
+	if err != nil || !found || wf.SourceContents != "v2" || wf.RevisionID == "000001-lab" {
+		t.Fatalf("patch wf: %#v found=%v err=%v", wf, found, err)
+	}
+	exName := wfName + "/executions/e1"
+	_, _ = st.CreateWorkflowExecution(store.WorkflowExecution{
+		Name: exName, WorkflowName: wfName, ProjectID: "p", Location: "us-central1", WorkflowID: "deep",
+		ExecutionID: "e1", State: "ACTIVE",
+	})
+	ex, found, err := st.CancelWorkflowExecutionDeepen(exName)
+	if err != nil || !found || ex.State != "CANCELLED" {
+		t.Fatalf("cancel ex: %#v found=%v err=%v", ex, found, err)
+	}
+	_, _ = st.CreateWorkflowExecution(store.WorkflowExecution{
+		Name: wfName + "/executions/e2", WorkflowName: wfName, ProjectID: "p", Location: "us-central1", WorkflowID: "deep",
+		ExecutionID: "e2", State: "ACTIVE",
+	})
+	page, next, err := st.ListWorkflowExecutionsPageDeepen(wfName, 1, "")
+	if err != nil || len(page) != 1 || next == "" {
+		t.Fatalf("page: %#v next=%q err=%v", page, next, err)
+	}
+}

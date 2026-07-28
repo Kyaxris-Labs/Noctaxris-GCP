@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/config"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/server"
@@ -367,6 +369,59 @@ func TestIAMUndeleteSignBlobKeysPageAndDisabledGate(t *testing.T) {
 	}
 }
 
+func TestIAMSignJwtTheatre(t *testing.T) {
+	srv, cfg := testServer(t)
+	email := createLabServiceAccount(t, srv, cfg, "lab-jwt", "JWT")
+
+	nowUnix := time.Now().UTC().Unix()
+	payloadBytes, err := json.Marshal(map[string]any{"sub": email, "iat": nowUnix, "exp": nowUnix + 3600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"payload": string(payloadBytes)})
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts/"+email+":signJwt", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("signJwt status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["keyId"] != "lab-none" {
+		t.Fatalf("keyId = %#v", resp["keyId"])
+	}
+	signed, _ := resp["signedJwt"].(string)
+	parts := strings.Split(signed, ".")
+	if len(parts) != 3 || parts[2] != "" {
+		t.Fatalf("expected unsigned lab JWT (empty sig), got %q", signed)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims["sub"] != email {
+		t.Fatalf("claims = %#v", claims)
+	}
+
+	badExp, _ := json.Marshal(map[string]string{"payload": `{"sub":"x","exp":1}`})
+	badReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts/"+email+":signJwt", bytes.NewReader(badExp))
+	badReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	badReq.Header.Set("Content-Type", "application/json")
+	badRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("past exp status = %d body=%s", badRec.Code, badRec.Body.String())
+	}
+}
+
 func TestServiceUsageBatchGetAndConfigTitle(t *testing.T) {
 	srv, cfg := testServer(t)
 
@@ -385,6 +440,14 @@ func TestServiceUsageBatchGetAndConfigTitle(t *testing.T) {
 	if cfgMap["name"] != "storage.googleapis.com" || cfgMap["title"] != "Cloud Storage API" {
 		t.Fatalf("config = %#v", cfgMap)
 	}
+	apis, _ := cfgMap["apis"].([]any)
+	if len(apis) != 1 {
+		t.Fatalf("apis = %#v", cfgMap["apis"])
+	}
+	doc, _ := cfgMap["documentation"].(map[string]any)
+	if doc["summary"] != "Cloud Storage API" {
+		t.Fatalf("documentation = %#v", doc)
+	}
 
 	name := "projects/" + cfg.ProjectID + "/services/storage.googleapis.com"
 	batchReq := httptest.NewRequest(http.MethodGet, "/v1/projects/"+cfg.ProjectID+"/services:batchGet?names="+name, nil)
@@ -401,6 +464,34 @@ func TestServiceUsageBatchGetAndConfigTitle(t *testing.T) {
 	services, _ := batchBody["services"].([]any)
 	if len(services) != 1 {
 		t.Fatalf("batchGet services = %#v", batchBody)
+	}
+
+	disPayload := []byte(`{"serviceIds":["storage.googleapis.com"]}`)
+	disReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/services:batchDisable", bytes.NewReader(disPayload))
+	disReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	disReq.Header.Set("Content-Type", "application/json")
+	disRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(disRec, disReq)
+	if disRec.Code != http.StatusOK {
+		t.Fatalf("batchDisable status = %d body=%s", disRec.Code, disRec.Body.String())
+	}
+	var disBody map[string]any
+	if err := json.Unmarshal(disRec.Body.Bytes(), &disBody); err != nil {
+		t.Fatal(err)
+	}
+	if disBody["done"] != true {
+		t.Fatalf("batchDisable = %#v", disBody)
+	}
+	getAfter := httptest.NewRequest(http.MethodGet, "/v1/projects/"+cfg.ProjectID+"/services/storage.googleapis.com", nil)
+	getAfter.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	getAfterRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getAfterRec, getAfter)
+	var after map[string]any
+	if err := json.Unmarshal(getAfterRec.Body.Bytes(), &after); err != nil {
+		t.Fatal(err)
+	}
+	if after["state"] != "DISABLED" {
+		t.Fatalf("after batchDisable = %#v", after)
 	}
 }
 

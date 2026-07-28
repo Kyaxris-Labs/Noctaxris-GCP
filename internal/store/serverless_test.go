@@ -20,7 +20,7 @@ func TestStripTaskAuthTokens(t *testing.T) {
 	}
 }
 
-func TestExpandComputeStoreCRUD(t *testing.T) {
+func TestServerlessStoreCRUD(t *testing.T) {
 	dir := t.TempDir()
 	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
 	if err != nil {

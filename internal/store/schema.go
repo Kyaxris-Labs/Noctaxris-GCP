@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'ACTIVE',
+  labels_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );
 
@@ -112,6 +113,16 @@ CREATE TABLE IF NOT EXISTS pubsub_messages (
   ack_id TEXT PRIMARY KEY,
   ack_deadline TEXT,
   delivered INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS pubsub_snapshots (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  subscription TEXT NOT NULL DEFAULT '',
+  labels_json TEXT NOT NULL DEFAULT '{}',
+  expire_time TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS secrets (

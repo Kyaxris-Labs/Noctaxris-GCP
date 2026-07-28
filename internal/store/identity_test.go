@@ -148,6 +148,13 @@ func TestIdentityServiceUsage(t *testing.T) {
 	if err != nil || !ok || u.State != "ENABLED" {
 		t.Fatalf("batch enable storage = %#v ok=%v err=%v", u, ok, err)
 	}
+	if err := st.BatchDisableServiceUsage("noctaxris-gcp-local", []string{"storage.googleapis.com"}); err != nil {
+		t.Fatal(err)
+	}
+	u, ok, err = st.GetServiceUsage("noctaxris-gcp-local", "storage.googleapis.com")
+	if err != nil || !ok || u.State != "DISABLED" {
+		t.Fatalf("batch disable storage = %#v ok=%v err=%v", u, ok, err)
+	}
 }
 
 func TestIdentityServiceAccountDisableAndPatch(t *testing.T) {

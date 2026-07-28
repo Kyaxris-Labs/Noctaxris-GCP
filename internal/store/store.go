@@ -47,19 +47,29 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
+	// Apply service schemas before ensureDataColumns ALTERs that target those tables.
+	if err := s.migrateAnalytics(); err != nil {
+		return err
+	}
+	if err := s.migrateArtifactCloudbuild(); err != nil {
+		return err
+	}
+	if err := s.migrateAppEngineCRM(); err != nil {
+		return err
+	}
+	if err := s.migrateWorkflowsSpanner(); err != nil {
+		return err
+	}
+	if err := s.migrateDNSDataflow(); err != nil {
+		return err
+	}
+	if err := s.migrateComputeEngine(); err != nil {
+		return err
+	}
+	if err := s.migrateBigtableMemorystore(); err != nil {
+		return err
+	}
 	if err := s.ensureDataColumns(); err != nil {
-		return err
-	}
-	if err := s.migrateExpandAnalytics(); err != nil {
-		return err
-	}
-	if err := s.migrateExpandStage2ArCb(); err != nil {
-		return err
-	}
-	if err := s.migrateExpandStage2AppEngineCRM(); err != nil {
-		return err
-	}
-	if err := s.migrateExpandStage2WorkflowsSpanner(); err != nil {
 		return err
 	}
 	var n int
@@ -104,6 +114,11 @@ func (s *Store) ensureDataColumns() error {
 		`ALTER TABLE cloud_tasks ADD COLUMN response_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE service_accounts ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE kms_keys ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE projects ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE spanner_databases ADD COLUMN ddl_statements_json TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE appengine_services ADD COLUMN split_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE appengine_services ADD COLUMN shard_by TEXT NOT NULL DEFAULT 'UNSPECIFIED'`,
+		`ALTER TABLE appengine_services ADD COLUMN migrate_traffic INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range alters {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -121,6 +136,17 @@ func (s *Store) ensureDataColumns() error {
   created_at TEXT NOT NULL
 )`); err != nil {
 		return fmt.Errorf("migrate upload sessions: %w", err)
+	}
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS pubsub_snapshots (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  subscription TEXT NOT NULL DEFAULT '',
+  labels_json TEXT NOT NULL DEFAULT '{}',
+  expire_time TEXT NOT NULL,
+  created_at TEXT NOT NULL
+)`); err != nil {
+		return fmt.Errorf("migrate pubsub snapshots: %w", err)
 	}
 	return nil
 }
@@ -227,6 +253,11 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 		"cloudbuild.googleapis.com",
 		"workflows.googleapis.com",
 		"spanner.googleapis.com",
+		"dns.googleapis.com",
+		"dataflow.googleapis.com",
+		"compute.googleapis.com",
+		"bigtableadmin.googleapis.com",
+		"redis.googleapis.com",
 	}
 	for _, svc := range wave1 {
 		if _, err := tx.Exec(
@@ -240,7 +271,7 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	// Lab org is outside the project seed transaction so concurrent Stage 2
+	// Lab org is outside the project seed transaction so concurrent
 	// schema work can own the organizations table without fighting this tx.
 	return s.EnsureLabOrganization()
 }

@@ -1,0 +1,8 @@
+# Allowlisted GO vuln IDs only (one ID per line; # comments and blanks ignored).
+# Prefer fixing reachable findings (toolchain / dependency bumps). Add an ID here
+# only when there is no module-path fix and the residual is documented in
+# docs/security-defaults.md. Keep this file empty when none apply.
+#
+# Example (AWS sibling Noctaxris): Docker Engine CVEs reported against
+# github.com/docker/docker with Fixed in: N/A. Noctaxris-GCP does not depend on
+# that client today, so no IDs are listed.

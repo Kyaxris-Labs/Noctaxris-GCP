@@ -15,7 +15,7 @@ const DefaultOrganizationName = "organizations/noctaxris-gcp-org"
 // DefaultOrganizationID is the id segment of DefaultOrganizationName.
 const DefaultOrganizationID = "noctaxris-gcp-org"
 
-const expandStage2AppEngineCRMSchema = `
+const appEngineCRMSchema = `
 CREATE TABLE IF NOT EXISTS crm_organizations (
   name TEXT PRIMARY KEY,
   org_id TEXT NOT NULL UNIQUE,
@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS appengine_services (
   name TEXT PRIMARY KEY,
   app_id TEXT NOT NULL,
   service_id TEXT NOT NULL,
+  split_json TEXT NOT NULL DEFAULT '{}',
+  shard_by TEXT NOT NULL DEFAULT 'UNSPECIFIED',
+  migrate_traffic INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (app_id, service_id)
@@ -74,9 +77,9 @@ CREATE TABLE IF NOT EXISTS appengine_versions (
 CREATE INDEX IF NOT EXISTS idx_appengine_versions_svc ON appengine_versions (app_id, service_id);
 `
 
-func (s *Store) migrateExpandStage2AppEngineCRM() error {
-	if _, err := s.db.Exec(expandStage2AppEngineCRMSchema); err != nil {
-		return fmt.Errorf("apply stage2 appengine/crm schema: %w", err)
+func (s *Store) migrateAppEngineCRM() error {
+	if _, err := s.db.Exec(appEngineCRMSchema); err != nil {
+		return fmt.Errorf("apply appengine/crm schema: %w", err)
 	}
 	return nil
 }
@@ -117,11 +120,14 @@ type AppEngineApp struct {
 
 // AppEngineService is an App Engine Service row.
 type AppEngineService struct {
-	Name      string
-	AppID     string
-	ServiceID string
-	CreatedAt string
-	UpdatedAt string
+	Name           string
+	AppID          string
+	ServiceID      string
+	SplitJSON      string
+	ShardBy        string
+	MigrateTraffic bool
+	CreatedAt      string
+	UpdatedAt      string
 }
 
 // AppEngineVersion is an App Engine Version metadata row (no serving).
@@ -384,6 +390,142 @@ func (s *Store) DeleteFolder(nameOrID string) (Folder, bool, error) {
 	return s.GetFolder(f.Name)
 }
 
+// UndeleteFolder restores a DELETE_REQUESTED folder to ACTIVE.
+func (s *Store) UndeleteFolder(nameOrID string) (Folder, bool, error) {
+	f, ok, err := s.GetFolder(nameOrID)
+	if err != nil || !ok {
+		return Folder{}, ok, err
+	}
+	if f.State == "ACTIVE" {
+		return f, true, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	etag := uuid.NewString()[:8]
+	res, err := s.db.Exec(
+		`UPDATE crm_folders SET state = 'ACTIVE', delete_time = '', updated_at = ?, etag = ? WHERE name = ?`,
+		now, etag, f.Name,
+	)
+	if err != nil {
+		return Folder{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Folder{}, false, err
+	}
+	if n == 0 {
+		return Folder{}, false, nil
+	}
+	return s.GetFolder(f.Name)
+}
+
+// MoveFolder sets a new parent on an ACTIVE folder.
+func (s *Store) MoveFolder(nameOrID, destinationParent string) (Folder, bool, error) {
+	if destinationParent == "" {
+		return Folder{}, false, fmt.Errorf("destinationParent required")
+	}
+	f, ok, err := s.GetFolder(nameOrID)
+	if err != nil || !ok {
+		return Folder{}, ok, err
+	}
+	if f.State != "ACTIVE" {
+		return Folder{}, false, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	etag := uuid.NewString()[:8]
+	res, err := s.db.Exec(
+		`UPDATE crm_folders SET parent = ?, updated_at = ?, etag = ? WHERE name = ? AND state = 'ACTIVE'`,
+		destinationParent, now, etag, f.Name,
+	)
+	if err != nil {
+		return Folder{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Folder{}, false, err
+	}
+	if n == 0 {
+		return Folder{}, false, nil
+	}
+	return s.GetFolder(f.Name)
+}
+
+// SearchFolders returns folders matching a simple query substring on display name, parent, or state.
+// Empty query returns all ACTIVE folders. Supports lite forms: displayName=, parent=, state=.
+func (s *Store) SearchFolders(query string) ([]Folder, error) {
+	query = strings.TrimSpace(query)
+	rows, err := s.db.Query(
+		`SELECT name, folder_id, parent, display_name, state, etag, created_at, updated_at, delete_time
+		 FROM crm_folders ORDER BY display_name`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	qLower := strings.ToLower(query)
+	var out []Folder
+	for rows.Next() {
+		var f Folder
+		if err := rows.Scan(&f.Name, &f.FolderID, &f.Parent, &f.DisplayName, &f.State, &f.Etag, &f.CreatedAt, &f.UpdatedAt, &f.DeleteTime); err != nil {
+			return nil, err
+		}
+		if query == "" {
+			if f.State == "ACTIVE" {
+				out = append(out, f)
+			}
+			continue
+		}
+		if strings.Contains(qLower, "=") {
+			if matchFolderSearchQuery(f, qLower) {
+				out = append(out, f)
+			}
+			continue
+		}
+		hay := strings.ToLower(f.DisplayName + " " + f.Parent + " " + f.State + " " + f.Name)
+		if strings.Contains(hay, qLower) {
+			out = append(out, f)
+		}
+	}
+	return out, rows.Err()
+}
+
+func matchFolderSearchQuery(f Folder, qLower string) bool {
+	// Support lite GCP query forms: displayName=..., parent=..., state=...
+	parts := strings.Fields(qLower)
+	matchedAny := false
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "and" || part == "or" {
+			continue
+		}
+		matchedAny = true
+		switch {
+		case strings.HasPrefix(part, "displayname="):
+			want := strings.Trim(strings.TrimPrefix(part, "displayname="), `"'`)
+			want = strings.TrimSuffix(want, "*")
+			if !strings.Contains(strings.ToLower(f.DisplayName), want) {
+				return false
+			}
+		case strings.HasPrefix(part, "parent="):
+			want := strings.Trim(strings.TrimPrefix(part, "parent="), `"'`)
+			if !strings.EqualFold(f.Parent, want) {
+				return false
+			}
+		case strings.HasPrefix(part, "state="), strings.HasPrefix(part, "lifecyclestate="):
+			want := part[strings.IndexByte(part, '=')+1:]
+			want = strings.Trim(want, `"'`)
+			if !strings.EqualFold(f.State, want) {
+				return false
+			}
+		default:
+			hay := strings.ToLower(f.DisplayName + " " + f.Parent + " " + f.State)
+			if !strings.Contains(hay, part) {
+				return false
+			}
+		}
+	}
+	return matchedAny
+}
+
 // CreateAppEngineApp inserts an Application (one per app id / project).
 func (s *Store) CreateAppEngineApp(app AppEngineApp) (bool, error) {
 	if app.AppID == "" {
@@ -453,8 +595,9 @@ func (s *Store) EnsureAppEngineService(appID, serviceID string) (AppEngineServic
 	name := fmt.Sprintf("apps/%s/services/%s", appID, serviceID)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO appengine_services (name, app_id, service_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO appengine_services
+		 (name, app_id, service_id, split_json, shard_by, migrate_traffic, created_at, updated_at)
+		 VALUES (?, ?, ?, '{}', 'UNSPECIFIED', 0, ?, ?)`,
 		name, appID, serviceID, now, now,
 	)
 	if err != nil {
@@ -473,25 +616,29 @@ func (s *Store) EnsureAppEngineService(appID, serviceID string) (AppEngineServic
 // GetAppEngineService loads a service.
 func (s *Store) GetAppEngineService(appID, serviceID string) (AppEngineService, bool, error) {
 	var svc AppEngineService
+	var migrate int
 	err := s.db.QueryRow(
-		`SELECT name, app_id, service_id, created_at, updated_at FROM appengine_services
-		 WHERE app_id = ? AND service_id = ?`,
+		`SELECT name, app_id, service_id, COALESCE(split_json, '{}'), COALESCE(shard_by, 'UNSPECIFIED'),
+		        COALESCE(migrate_traffic, 0), created_at, updated_at
+		 FROM appengine_services WHERE app_id = ? AND service_id = ?`,
 		appID, serviceID,
-	).Scan(&svc.Name, &svc.AppID, &svc.ServiceID, &svc.CreatedAt, &svc.UpdatedAt)
+	).Scan(&svc.Name, &svc.AppID, &svc.ServiceID, &svc.SplitJSON, &svc.ShardBy, &migrate, &svc.CreatedAt, &svc.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return AppEngineService{}, false, nil
 	}
 	if err != nil {
 		return AppEngineService{}, false, err
 	}
+	svc.MigrateTraffic = migrate != 0
 	return svc, true, nil
 }
 
 // ListAppEngineServices lists services for an app.
 func (s *Store) ListAppEngineServices(appID string) ([]AppEngineService, error) {
 	rows, err := s.db.Query(
-		`SELECT name, app_id, service_id, created_at, updated_at FROM appengine_services
-		 WHERE app_id = ? ORDER BY service_id`,
+		`SELECT name, app_id, service_id, COALESCE(split_json, '{}'), COALESCE(shard_by, 'UNSPECIFIED'),
+		        COALESCE(migrate_traffic, 0), created_at, updated_at
+		 FROM appengine_services WHERE app_id = ? ORDER BY service_id`,
 		appID,
 	)
 	if err != nil {
@@ -501,12 +648,52 @@ func (s *Store) ListAppEngineServices(appID string) ([]AppEngineService, error) 
 	var out []AppEngineService
 	for rows.Next() {
 		var svc AppEngineService
-		if err := rows.Scan(&svc.Name, &svc.AppID, &svc.ServiceID, &svc.CreatedAt, &svc.UpdatedAt); err != nil {
+		var migrate int
+		if err := rows.Scan(&svc.Name, &svc.AppID, &svc.ServiceID, &svc.SplitJSON, &svc.ShardBy, &migrate, &svc.CreatedAt, &svc.UpdatedAt); err != nil {
 			return nil, err
 		}
+		svc.MigrateTraffic = migrate != 0
 		out = append(out, svc)
 	}
 	return out, rows.Err()
+}
+
+// UpdateAppEngineServiceTraffic stores traffic split metadata (no serving).
+func (s *Store) UpdateAppEngineServiceTraffic(appID, serviceID, splitJSON, shardBy string, migrateTraffic bool) (AppEngineService, bool, error) {
+	svc, ok, err := s.GetAppEngineService(appID, serviceID)
+	if err != nil || !ok {
+		return AppEngineService{}, ok, err
+	}
+	if splitJSON == "" {
+		splitJSON = "{}"
+	}
+	if shardBy == "" {
+		shardBy = svc.ShardBy
+	}
+	if shardBy == "" {
+		shardBy = "UNSPECIFIED"
+	}
+	migrate := 0
+	if migrateTraffic {
+		migrate = 1
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.Exec(
+		`UPDATE appengine_services SET split_json = ?, shard_by = ?, migrate_traffic = ?, updated_at = ?
+		 WHERE app_id = ? AND service_id = ?`,
+		splitJSON, shardBy, migrate, now, appID, serviceID,
+	)
+	if err != nil {
+		return AppEngineService{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return AppEngineService{}, false, err
+	}
+	if n == 0 {
+		return AppEngineService{}, false, nil
+	}
+	return s.GetAppEngineService(appID, serviceID)
 }
 
 // CreateAppEngineVersion stores version metadata and ensures the parent service exists.

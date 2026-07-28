@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+- CI govulncheck: bump Go to 1.26.5 (clears `GO-2026-5856`); adopt Noctaxris-style `scripts/govulncheck-ci` + empty allowlist
+
+## [0.4.0] - 2026-07-28
+
+### Added
+
+| Area | Change |
+|------|--------|
+| Compute Engine | Instances CRUD metadata theatre (status stop/start/reset; no nested VMs); VPC networks, regional subnetworks, firewalls CRUD lite under `/compute/v1/...` |
+| Cloud DNS | managedZones + resourceRecordSets CRUD (`dns/v1`); zone create seeds NS/SOA metadata |
+| Dataflow | regional jobs create/get/list theatre (`v1b3`); create=`RUNNING`, get advances to `DONE`; project-level jobs list |
+| Cloud Bigtable | Admin API v2 instances/tables CRUD theatre (cluster metadata lite; no data plane / no Bigtable server) |
+| Memorystore Redis | Location-scoped instances CRUD theatre (`tier`, `memorySizeGb`, host theatre; no Redis process) |
+| SDK smokes | Soft-skip HTTP coverage for Compute Engine, Cloud DNS, Bigtable, Memorystore, Dataflow (Go/Node/Python) |
+| Terraform | `lab-dns` (`google_dns_managed_zone` via `dns_custom_endpoint`); `lab-compute` (`google_compute_network` via `compute_custom_endpoint`); `run.sh` default set includes both; README documents skips for DNS Changes, Compute images/instances, and Bigtable gRPC |
+
+### Changed
+
+| Area | Change |
+|------|--------|
+| Artifact Registry | Repository IAM get/set; `files.list` and package `tags.list` metadata theatre; PATCH labels via `updateMask` |
+| Cloud Build | `builds:cancel` / `builds:retry`; project-scoped `triggers:run` theatre (no webhook) |
+| Cloud Workflows | PATCH workflow (revision bump on source change); execution `:cancel`; JSON `argument` validation; list `pageSize` |
+| Cloud Spanner | `PATCH .../ddl` stores statements (completed Operation); `sessions:batchCreate`; `:read` empty ResultSet; `:partitionQuery` stub; list instance configs stub |
+| App Engine | Service patch traffic split + `migrateTraffic` theatre; list instances empty stub |
+| Cloud Resource Manager | MoveFolder; SearchFolders; undelete folder; org getIamPolicy/setIamPolicy lite; project labels patch |
+| IAM | `signJwt` theatre (`alg=none` unsigned lab JWT; Credentials-shaped payload / `keyId` / `signedJwt`) |
+| Service Usage | `services:batchDisable`; richer get/list config (`apis`, `documentation.summary` for seeded titles) |
+| Pub/Sub | Snapshots create/get/list/delete lite (REST + gRPC metadata; seek-to-snapshot still rejected) |
+
+### Fixed
+
 ## [0.3.0] - 2026-07-28
 
 ### Added
@@ -51,7 +89,7 @@
 - Cloud Monitoring lab: metric descriptors and time series write/list with basic aligners
 - Cloud Datastore lab: gRPC Lookup / Commit / equality RunQuery (`DATASTORE_EMULATOR_HOST`)
 - Eventarc lab: triggers for Pub/Sub publish and GCS finalize with best-effort HTTP / Cloud Run delivery
-- `registerExpandCompute` and `registerExpandAnalytics` wiring from `server.New`
+- `registerServerless` and `registerAnalytics` wiring from `server.New`
 
 ### Changed
 

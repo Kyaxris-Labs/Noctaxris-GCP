@@ -26,8 +26,10 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 var createDBNameRE = regexp.MustCompile(`(?i)CREATE\s+DATABASE\s+` + "`" + `?([A-Za-z0-9_-]+)` + "`" + `?`)
 
 // Mount registers Spanner Admin and session ExecuteSql REST routes.
-// Colon methods (:executeSql) are parsed from the session path segment.
+// Colon methods (:executeSql, :read, :partitionQuery, sessions:batchCreate) are
+// parsed from path segments (ServeMux-safe).
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
+	mux.HandleFunc("GET /v1/projects/{project}/instanceConfigs", s.wrap(principalFrom, s.listInstanceConfigs))
 	mux.HandleFunc("GET /v1/projects/{project}/instances", s.wrap(principalFrom, s.listInstances))
 	mux.HandleFunc("POST /v1/projects/{project}/instances", s.wrap(principalFrom, s.createInstance))
 	mux.HandleFunc("GET /v1/projects/{project}/instances/{instance}", s.wrap(principalFrom, s.getInstance))
@@ -37,8 +39,10 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v1/projects/{project}/instances/{instance}/databases", s.wrap(principalFrom, s.createDatabase))
 	mux.HandleFunc("GET /v1/projects/{project}/instances/{instance}/databases/{database}", s.wrap(principalFrom, s.getDatabase))
 	mux.HandleFunc("DELETE /v1/projects/{project}/instances/{instance}/databases/{database}", s.wrap(principalFrom, s.deleteDatabase))
+	mux.HandleFunc("PATCH /v1/projects/{project}/instances/{instance}/databases/{database}/ddl", s.wrap(principalFrom, s.updateDDL))
 
 	mux.HandleFunc("POST /v1/projects/{project}/instances/{instance}/databases/{database}/sessions", s.wrap(principalFrom, s.createSession))
+	mux.HandleFunc("POST /v1/projects/{project}/instances/{instance}/databases/{database}/{sessionsCol}", s.wrap(principalFrom, s.sessionsCollectionPost))
 	mux.HandleFunc("POST /v1/projects/{project}/instances/{instance}/databases/{database}/sessions/{session}", s.wrap(principalFrom, s.sessionAction))
 }
 
@@ -345,6 +349,134 @@ func (s *Service) createSession(w http.ResponseWriter, r *http.Request, p authn.
 	})
 }
 
+func (s *Service) sessionsCollectionPost(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	col, action := splitAction(r.PathValue("sessionsCol"))
+	if col != "sessions" || action != "batchCreate" {
+		gcperrors.NotFound(w, "unknown Spanner sessions collection method")
+		return
+	}
+	s.batchCreateSessions(w, r, p)
+}
+
+func (s *Service) batchCreateSessions(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	instID, _ := splitAction(r.PathValue("instance"))
+	dbID, _ := splitAction(r.PathValue("database"))
+	if err := s.require(p, "spanner.sessions.create", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	dbName := databaseName(project, instID, dbID)
+	if _, ok, err := s.Store.GetSpannerDatabase(dbName); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Database not found")
+		return
+	}
+	var body struct {
+		SessionCount int `json:"sessionCount"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.SessionCount <= 0 {
+		body.SessionCount = 1
+	}
+	if body.SessionCount > 100 {
+		body.SessionCount = 100
+	}
+	sessions := make([]map[string]any, 0, body.SessionCount)
+	for i := 0; i < body.SessionCount; i++ {
+		sess, created, err := s.Store.CreateSpannerSession(store.SpannerSession{
+			DatabaseName: dbName, ProjectID: project, InstanceID: instID, DatabaseID: dbID,
+		})
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !created {
+			continue
+		}
+		sessions = append(sessions, map[string]any{
+			"name":       sess.Name,
+			"createTime": sess.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"session": sessions})
+}
+
+func (s *Service) updateDDL(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	instID, _ := splitAction(r.PathValue("instance"))
+	dbID, _ := splitAction(r.PathValue("database"))
+	if err := s.require(p, "spanner.databases.updateDdl", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	dbName := databaseName(project, instID, dbID)
+	var body struct {
+		Statements  []string `json:"statements"`
+		OperationID string   `json:"operationId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	if len(body.Statements) == 0 {
+		gcperrors.InvalidArgument(w, "statements is required")
+		return
+	}
+	db, ok, err := s.Store.AppendSpannerDDL(dbName, body.Statements)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Database not found")
+		return
+	}
+	opID := body.OperationID
+	if opID == "" {
+		opID = fmt.Sprintf("_%d", time.Now().UnixNano())
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Theatre: completed Operation (no Spanner DDL engine).
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": db.Name + "/operations/" + opID,
+		"metadata": map[string]any{
+			"@type":      "type.googleapis.com/google.spanner.admin.database.v1.UpdateDatabaseDdlMetadata",
+			"database":   db.Name,
+			"statements": body.Statements,
+		},
+		"done": true,
+		"response": map[string]any{
+			"@type": "type.googleapis.com/google.protobuf.Empty",
+		},
+		"createTime": now,
+		"endTime":    now,
+	})
+}
+
+func (s *Service) listInstanceConfigs(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "spanner.instanceConfigs.list", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	cfgID := "regional-us-central1"
+	writeJSON(w, http.StatusOK, map[string]any{
+		"instanceConfigs": []map[string]any{
+			{
+				"name":        fmt.Sprintf("projects/%s/instanceConfigs/%s", project, cfgID),
+				"displayName": cfgID,
+				"configType":  "GOOGLE_MANAGED",
+				"replicas": []map[string]any{
+					{"location": "us-central1", "type": "READ_WRITE", "defaultLeaderLocation": true},
+				},
+			},
+		},
+	})
+}
+
 func (s *Service) sessionAction(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	instID, _ := splitAction(r.PathValue("instance"))
@@ -353,30 +485,29 @@ func (s *Service) sessionAction(w http.ResponseWriter, r *http.Request, p authn.
 	switch action {
 	case "executeSql":
 		s.executeSQL(w, r, p, project, instID, dbID, sessID)
+	case "read":
+		s.read(w, r, p, project, instID, dbID, sessID)
+	case "partitionQuery":
+		s.partitionQuery(w, r, p, project, instID, dbID, sessID)
 	default:
 		gcperrors.NotFound(w, "unknown Spanner session method")
 	}
 }
 
-func (s *Service) executeSQL(w http.ResponseWriter, r *http.Request, p authn.Principal, project, instID, dbID, sessID string) {
-	if err := s.require(p, "spanner.databases.select", project); err != nil {
-		writeAuthzErr(w, err)
-		return
-	}
+func (s *Service) requireSession(w http.ResponseWriter, project, instID, dbID, sessID string) bool {
 	sessName := databaseName(project, instID, dbID) + "/sessions/" + sessID
 	if _, ok, err := s.Store.GetSpannerSession(sessName); err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return
+		return false
 	} else if !ok {
 		gcperrors.NotFound(w, "Session not found")
-		return
+		return false
 	}
-	var body struct {
-		SQL string `json:"sql"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	// Theatre: no Spanner dialect / query engine; return empty ResultSet-shaped JSON.
-	writeJSON(w, http.StatusOK, map[string]any{
+	return true
+}
+
+func emptyResultSet() map[string]any {
+	return map[string]any{
 		"metadata": map[string]any{
 			"rowType": map[string]any{"fields": []any{}},
 		},
@@ -388,6 +519,58 @@ func (s *Service) executeSQL(w http.ResponseWriter, r *http.Request, p authn.Pri
 					map[string]any{"displayName": "LabExecuteSqlTheatre", "kind": "RELATIONAL"},
 				},
 			},
+		},
+	}
+}
+
+func (s *Service) executeSQL(w http.ResponseWriter, r *http.Request, p authn.Principal, project, instID, dbID, sessID string) {
+	if err := s.require(p, "spanner.databases.select", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	if !s.requireSession(w, project, instID, dbID, sessID) {
+		return
+	}
+	var body struct {
+		SQL string `json:"sql"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	// Theatre: no Spanner dialect / query engine; return empty ResultSet-shaped JSON.
+	writeJSON(w, http.StatusOK, emptyResultSet())
+}
+
+func (s *Service) read(w http.ResponseWriter, r *http.Request, p authn.Principal, project, instID, dbID, sessID string) {
+	if err := s.require(p, "spanner.databases.read", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	if !s.requireSession(w, project, instID, dbID, sessID) {
+		return
+	}
+	_ = json.NewDecoder(r.Body).Decode(&map[string]any{})
+	writeJSON(w, http.StatusOK, emptyResultSet())
+}
+
+func (s *Service) partitionQuery(w http.ResponseWriter, r *http.Request, p authn.Principal, project, instID, dbID, sessID string) {
+	if err := s.require(p, "spanner.databases.partitionQuery", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	if !s.requireSession(w, project, instID, dbID, sessID) {
+		return
+	}
+	var body struct {
+		SQL string `json:"sql"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"partitions": []map[string]any{
+			{"partitionToken": "bGFiLXBhcnRpdGlvbi0w"}, // base64("lab-partition-0")
+		},
+		"transaction": map[string]any{
+			"id":            "bGFiLXR4",
+			"readTimestamp": now,
 		},
 	})
 }
@@ -413,12 +596,15 @@ func toInstanceJSON(inst store.SpannerInstance) map[string]any {
 }
 
 func toDatabaseJSON(db store.SpannerDatabase) map[string]any {
+	var ddl any = []any{}
+	_ = json.Unmarshal([]byte(db.DDLStatementsJSON), &ddl)
 	return map[string]any{
 		"name":            db.Name,
 		"state":           db.State,
 		"createTime":      db.CreatedAt,
 		"databaseDialect": db.Dialect,
 		"reconciling":     false,
+		"ddlStatements":   ddl,
 	}
 }
 

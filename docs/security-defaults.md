@@ -45,3 +45,13 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
 - Distroless `nonroot` (UID 65532).
 - No `EXPOSE` of anything except the documented API port in the image metadata.
 - Healthcheck uses the binary (`noctaxris-gcp healthcheck`), not curl.
+
+## Vulnerability scan (govulncheck)
+
+- CI installs `govulncheck` at a pinned module version (not `@latest`) and runs
+  `go run ./scripts/govulncheck-ci`, which fails on any symbol-reachable finding
+  whose OSV ID is not listed in `scripts/govulncheck-allowlist.txt`.
+- Prefer toolchain and dependency upgrades over allowlisting. The allowlist is
+  only for residuals with no module-path fix (documented when an ID is added).
+- Go toolchain tracks a current patch (see `go.mod`); API image build stage uses
+  a digest-pinned `golang` bookworm base matching that version.

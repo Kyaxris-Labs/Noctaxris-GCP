@@ -15,9 +15,9 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
-// stage2Mux mounts Workflows + Spanner the same way registerExpandStage2 does,
-// without constructing the full Server (peer Stage 2 mounts may conflict on shared paths).
-func stage2Mux(t *testing.T) (*http.ServeMux, *store.Store, string) {
+// appsBuildMux mounts Workflows + Spanner the same way registerAppsBuild does,
+// without constructing the full Server (peer mounts may conflict on shared paths).
+func appsBuildMux(t *testing.T) (*http.ServeMux, *store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
 	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
@@ -44,7 +44,7 @@ func stage2Mux(t *testing.T) (*http.ServeMux, *store.Store, string) {
 }
 
 func TestWorkflowsViaServer(t *testing.T) {
-	mux, _, project := stage2Mux(t)
+	mux, _, project := appsBuildMux(t)
 	loc := workflows.DefaultLocation
 	base := "/v1/projects/" + project + "/locations/" + loc + "/workflows"
 	body := `{"sourceContents":"main:\n  steps:\n    - done:\n        return: ok\n"}`
@@ -63,13 +63,26 @@ func TestWorkflowsViaServer(t *testing.T) {
 	}
 	var ex map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &ex)
+	if ex["state"] != "ACTIVE" {
+		t.Fatalf("create execution should be ACTIVE: %#v", ex)
+	}
+	exName, _ := ex["name"].(string)
+	parts := bytes.Split([]byte(exName), []byte("/"))
+	execID := string(parts[len(parts)-1])
+	req = httptest.NewRequest(http.MethodGet, base+"/server-wf/executions/"+execID, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get execution status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &ex)
 	if ex["state"] != "SUCCEEDED" {
-		t.Fatalf("execution=%#v", ex)
+		t.Fatalf("get should advance to SUCCEEDED: %#v", ex)
 	}
 }
 
 func TestSpannerViaServer(t *testing.T) {
-	mux, _, project := stage2Mux(t)
+	mux, _, project := appsBuildMux(t)
 	instBase := "/v1/projects/" + project + "/instances"
 	body := `{"instanceId":"srv","instance":{"config":"projects/` + project + `/instanceConfigs/regional-us-central1","displayName":"Srv","nodeCount":1}}`
 	req := httptest.NewRequest(http.MethodPost, instBase, bytes.NewReader([]byte(body)))

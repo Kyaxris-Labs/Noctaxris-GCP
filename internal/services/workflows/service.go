@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,11 +32,13 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/workflows", s.wrap(principalFrom, s.listWorkflows))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/workflows", s.wrap(principalFrom, s.createWorkflow))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/workflows/{workflow}", s.wrap(principalFrom, s.getWorkflow))
+	mux.HandleFunc("PATCH /v1/projects/{project}/locations/{location}/workflows/{workflow}", s.wrap(principalFrom, s.patchWorkflow))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/workflows/{workflow}", s.wrap(principalFrom, s.deleteWorkflow))
 
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/workflows/{workflow}/executions", s.wrap(principalFrom, s.listExecutions))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/workflows/{workflow}/executions", s.wrap(principalFrom, s.createExecution))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/workflows/{workflow}/executions/{execution}", s.wrap(principalFrom, s.getExecution))
+	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/workflows/{workflow}/executions/{execution}", s.wrap(principalFrom, s.executionPOSTAction))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -146,7 +149,11 @@ func (s *Service) createWorkflow(w http.ResponseWriter, r *http.Request, p authn
 func (s *Service) getWorkflow(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
-	id, _ := splitAction(r.PathValue("workflow"))
+	id, action := splitAction(r.PathValue("workflow"))
+	if action != "" {
+		gcperrors.NotFound(w, "unknown Workflows method")
+		return
+	}
 	if err := s.require(p, "workflows.workflows.get", project); err != nil {
 		writeAuthzErr(w, err)
 		return
@@ -163,6 +170,65 @@ func (s *Service) getWorkflow(w http.ResponseWriter, r *http.Request, p authn.Pr
 	writeJSON(w, http.StatusOK, toWorkflowJSON(wf))
 }
 
+func (s *Service) patchWorkflow(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	id, _ := splitAction(r.PathValue("workflow"))
+	if err := s.require(p, "workflows.workflows.update", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body == nil {
+		body = map[string]any{}
+	}
+	mask := r.URL.Query().Get("updateMask")
+	var descPtr, srcPtr, saPtr, labelsPtr *string
+	if mask == "" || fieldMaskHas(mask, "description") {
+		if v, ok := body["description"].(string); ok {
+			descPtr = &v
+		}
+	}
+	if mask == "" || fieldMaskHas(mask, "sourceContents") {
+		if v, ok := body["sourceContents"].(string); ok {
+			srcPtr = &v
+		}
+	}
+	if mask == "" || fieldMaskHas(mask, "serviceAccount") {
+		if v, ok := body["serviceAccount"].(string); ok {
+			saPtr = &v
+		}
+	}
+	if mask == "" || fieldMaskHas(mask, "labels") {
+		if labels, ok := body["labels"]; ok {
+			raw, _ := json.Marshal(labels)
+			s := string(raw)
+			labelsPtr = &s
+		}
+	}
+	wf, ok, err := s.Store.PatchWorkflowDeepen(workflowName(project, location, id), descPtr, srcPtr, saPtr, labelsPtr)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Workflow not found")
+		return
+	}
+	// Lab: return Workflow directly (real API returns a long-running Operation).
+	writeJSON(w, http.StatusOK, toWorkflowJSON(wf))
+}
+
+func fieldMaskHas(mask, field string) bool {
+	for _, p := range strings.Split(mask, ",") {
+		if strings.TrimSpace(p) == field {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) listWorkflows(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
@@ -170,8 +236,14 @@ func (s *Service) listWorkflows(w http.ResponseWriter, r *http.Request, p authn.
 		writeAuthzErr(w, err)
 		return
 	}
-	list, err := s.Store.ListWorkflows(project, location)
+	pageSize := parsePageSize(r.URL.Query().Get("pageSize"))
+	pageToken := r.URL.Query().Get("pageToken")
+	list, next, err := s.Store.ListWorkflowsPageDeepen(project, location, pageSize, pageToken)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid pageToken") {
+			gcperrors.InvalidArgument(w, "invalid pageToken")
+			return
+		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
@@ -179,7 +251,11 @@ func (s *Service) listWorkflows(w http.ResponseWriter, r *http.Request, p authn.
 	for _, wf := range list {
 		items = append(items, toWorkflowJSON(wf))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workflows": items})
+	resp := map[string]any{"workflows": items}
+	if next != "" {
+		resp["nextPageToken"] = next
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Service) deleteWorkflow(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -226,18 +302,22 @@ func (s *Service) createExecution(w http.ResponseWriter, r *http.Request, p auth
 		body = map[string]any{}
 	}
 	argument, _ := body["argument"].(string)
+	if argument != "" {
+		trimmed := strings.TrimSpace(argument)
+		if !json.Valid([]byte(trimmed)) {
+			gcperrors.InvalidArgument(w, "argument must be valid JSON")
+			return
+		}
+		argument = trimmed
+	}
 	execID := uuid.NewString()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	// Theatre: no real workflow engine; mark SUCCEEDED with fixed result JSON.
-	result := `{"ok":true,"lab":"noctaxris-gcp-workflows"}`
-	if argument != "" {
-		result = fmt.Sprintf(`{"ok":true,"lab":"noctaxris-gcp-workflows","argument":%s}`, jsonStringOrRaw(argument))
-	}
+	// Theatre: start ACTIVE; get advances to SUCCEEDED; :cancel marks CANCELLED.
 	name := wfName + "/executions/" + execID
 	created, err := s.Store.CreateWorkflowExecution(store.WorkflowExecution{
 		Name: name, WorkflowName: wfName, ProjectID: project, Location: location, WorkflowID: wfID,
-		ExecutionID: execID, Argument: argument, Result: result, State: "SUCCEEDED",
-		WorkflowRevisionID: wf.RevisionID, CreatedAt: now, StartTime: now, EndTime: now,
+		ExecutionID: execID, Argument: argument, Result: "", State: "ACTIVE",
+		WorkflowRevisionID: wf.RevisionID, CreatedAt: now, StartTime: now, EndTime: "",
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -255,19 +335,59 @@ func (s *Service) getExecution(w http.ResponseWriter, r *http.Request, p authn.P
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	wfID, _ := splitAction(r.PathValue("workflow"))
-	execID, _ := splitAction(r.PathValue("execution"))
+	execID, action := splitAction(r.PathValue("execution"))
+	if action != "" {
+		gcperrors.NotFound(w, "unknown Workflows method")
+		return
+	}
 	if err := s.require(p, "workflows.executions.get", project); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
 	name := workflowName(project, location, wfID) + "/executions/" + execID
-	ex, ok, err := s.Store.GetWorkflowExecution(name)
+	ex, ok, err := s.Store.AdvanceWorkflowExecutionDeepen(name)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
 	if !ok {
 		gcperrors.NotFound(w, "Execution not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, toExecutionJSON(ex))
+}
+
+func (s *Service) executionPOSTAction(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	wfID, _ := splitAction(r.PathValue("workflow"))
+	execID, action := splitAction(r.PathValue("execution"))
+	switch action {
+	case "cancel":
+		s.cancelExecution(w, r, p, project, location, wfID, execID)
+	default:
+		gcperrors.NotFound(w, "unknown Workflows method")
+	}
+}
+
+func (s *Service) cancelExecution(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, wfID, execID string) {
+	if err := s.require(p, "workflows.executions.cancel", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := workflowName(project, location, wfID) + "/executions/" + execID
+	ex, ok, err := s.Store.CancelWorkflowExecutionDeepen(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Execution not found")
+		return
+	}
+	if ex.State != "CANCELLED" {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition,
+			"execution is not ACTIVE")
 		return
 	}
 	writeJSON(w, http.StatusOK, toExecutionJSON(ex))
@@ -289,8 +409,14 @@ func (s *Service) listExecutions(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.NotFound(w, "Workflow not found")
 		return
 	}
-	list, err := s.Store.ListWorkflowExecutions(wfName)
+	pageSize := parsePageSize(r.URL.Query().Get("pageSize"))
+	pageToken := r.URL.Query().Get("pageToken")
+	list, next, err := s.Store.ListWorkflowExecutionsPageDeepen(wfName, pageSize, pageToken)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid pageToken") {
+			gcperrors.InvalidArgument(w, "invalid pageToken")
+			return
+		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
@@ -298,7 +424,22 @@ func (s *Service) listExecutions(w http.ResponseWriter, r *http.Request, p authn
 	for _, ex := range list {
 		items = append(items, toExecutionJSON(ex))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"executions": items})
+	resp := map[string]any{"executions": items}
+	if next != "" {
+		resp["nextPageToken"] = next
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func parsePageSize(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func toWorkflowJSON(w store.Workflow) map[string]any {
@@ -319,27 +460,18 @@ func toWorkflowJSON(w store.Workflow) map[string]any {
 }
 
 func toExecutionJSON(e store.WorkflowExecution) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"name":               e.Name,
 		"createTime":         e.CreatedAt,
 		"startTime":          e.StartTime,
-		"endTime":            e.EndTime,
 		"duration":           "0s",
 		"state":              e.State,
 		"argument":           e.Argument,
 		"result":             e.Result,
 		"workflowRevisionId": e.WorkflowRevisionID,
 	}
-}
-
-func jsonStringOrRaw(argument string) string {
-	trimmed := strings.TrimSpace(argument)
-	if trimmed == "" {
-		return `""`
+	if e.EndTime != "" {
+		out["endTime"] = e.EndTime
 	}
-	if json.Valid([]byte(trimmed)) {
-		return trimmed
-	}
-	b, _ := json.Marshal(argument)
-	return string(b)
+	return out
 }

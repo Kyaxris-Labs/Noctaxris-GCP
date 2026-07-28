@@ -303,6 +303,42 @@ func TestPubSubFilterAndSeek(t *testing.T) {
 	}
 }
 
+func TestPubSubSnapshotCRUD(t *testing.T) {
+	st := openTestStore(t)
+	topic := "projects/noctaxris-gcp-local/topics/t-snap"
+	sub := "projects/noctaxris-gcp-local/subscriptions/s-snap"
+	snapName := "projects/noctaxris-gcp-local/snapshots/snap1"
+	if _, created, err := st.CreateTopic(topic, "noctaxris-gcp-local"); err != nil || !created {
+		t.Fatalf("topic: %v %v", created, err)
+	}
+	if _, created, err := st.CreateSubscription(sub, topic, "noctaxris-gcp-local", 10); err != nil || !created {
+		t.Fatalf("sub: %v %v", created, err)
+	}
+	snap, created, err := st.CreateSnapshot(snapName, sub, map[string]string{"k": "v"})
+	if err != nil || !created {
+		t.Fatalf("create: %v %v", created, err)
+	}
+	if snap.Topic != topic || snap.ExpireTime == "" {
+		t.Fatalf("snap = %#v", snap)
+	}
+	got, ok, err := st.GetSnapshot(snapName)
+	if err != nil || !ok || got.Labels["k"] != "v" {
+		t.Fatalf("get = %#v ok=%v err=%v", got, ok, err)
+	}
+	list, err := st.ListSnapshots("noctaxris-gcp-local")
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list = %#v err=%v", list, err)
+	}
+	deleted, err := st.DeleteSnapshot(snapName)
+	if err != nil || !deleted {
+		t.Fatalf("delete: %v %v", deleted, err)
+	}
+	_, ok, err = st.GetSnapshot(snapName)
+	if err != nil || ok {
+		t.Fatalf("get after delete ok=%v err=%v", ok, err)
+	}
+}
+
 func TestSecretReplicationCMEKAndVersionFilter(t *testing.T) {
 	st := openTestStore(t)
 	name := "projects/noctaxris-gcp-local/secrets/cmek-sec"

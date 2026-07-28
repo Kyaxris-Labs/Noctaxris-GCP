@@ -182,7 +182,7 @@ func TestCloudTasksQueueTaskRunViaServer(t *testing.T) {
 	}
 }
 
-func TestExpandComputeAuthzFailClosed(t *testing.T) {
+func TestServerlessAuthzFailClosed(t *testing.T) {
 	srv, cfg := testServer(t)
 	loc := cloudrun.DefaultLocation
 	path := "/v2/projects/" + cfg.ProjectID + "/locations/" + loc + "/services?serviceId=x"

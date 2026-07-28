@@ -250,7 +250,7 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 	raw := decodeAccount(r.PathValue("account"))
 	account, action := splitColonAction(raw)
 	if account == "" || action == "" {
-		gcperrors.InvalidArgument(w, "expected serviceAccounts/{account}:enable|disable|undelete|signBlob|getIamPolicy|setIamPolicy|testIamPermissions")
+		gcperrors.InvalidArgument(w, "expected serviceAccounts/{account}:enable|disable|undelete|signBlob|signJwt|getIamPolicy|setIamPolicy|testIamPermissions")
 		return
 	}
 	projectResource := "projects/" + projectID
@@ -304,6 +304,8 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("{}"))
 	case "signBlob":
 		h.signBlob(w, r, projectResource, sa)
+	case "signJwt":
+		h.signJwt(w, r, projectResource, sa)
 	case "getIamPolicy":
 		h.getIamPolicy(w, r, projectResource, saResource)
 	case "setIamPolicy":
@@ -382,6 +384,75 @@ func (h *Handler) signBlob(w http.ResponseWriter, r *http.Request, projectResour
 		// IAM Credentials API field name (same digest; not an RSA signature).
 		"signedBlob": sig,
 	})
+}
+
+// signJwt mints an unsigned lab JWT (alg=none, empty signature). Not real asymmetric signing.
+// Shape matches IAM Credentials projects.serviceAccounts.signJwt (payload + keyId + signedJwt).
+func (h *Handler) signJwt(w http.ResponseWriter, r *http.Request, projectResource string, sa store.ServiceAccount) {
+	if _, ok := h.require(w, r, "iam.serviceAccounts.signJwt", projectResource); !ok {
+		return
+	}
+	_ = sa
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	payload := strings.TrimSpace(req.Payload)
+	if payload == "" {
+		gcperrors.InvalidArgument(w, "payload is required")
+		return
+	}
+	var claims map[string]any
+	if err := json.Unmarshal([]byte(payload), &claims); err != nil {
+		gcperrors.InvalidArgument(w, "payload must be a serialized JSON object")
+		return
+	}
+	if expRaw, ok := claims["exp"]; ok {
+		exp, ok := jsonNumberAsInt64(expRaw)
+		if !ok {
+			gcperrors.InvalidArgument(w, "exp claim must be an integer unix timestamp")
+			return
+		}
+		now := h.now().Unix()
+		if exp < now {
+			gcperrors.InvalidArgument(w, "exp claim must not be in the past")
+			return
+		}
+		if exp > now+12*3600 {
+			gcperrors.InvalidArgument(w, "exp claim must be within 12 hours")
+			return
+		}
+	}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT","kid":"lab-none"}`))
+	mid := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"keyId":     "lab-none",
+		"signedJwt": header + "." + mid + ".",
+	})
+}
+
+func jsonNumberAsInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	default:
+		return 0, false
+	}
 }
 
 func (h *Handler) getIamPolicy(w http.ResponseWriter, r *http.Request, projectResource, saResource string) {

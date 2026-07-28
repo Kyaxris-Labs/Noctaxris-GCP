@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const expandAnalyticsSchema = `
+const analyticsSchema = `
 CREATE TABLE IF NOT EXISTS bq_datasets (
   project_id TEXT NOT NULL,
   dataset_id TEXT NOT NULL,
@@ -173,9 +173,9 @@ CREATE TABLE IF NOT EXISTS firebase_oob_codes (
 );
 `
 
-func (s *Store) migrateExpandAnalytics() error {
-	if _, err := s.db.Exec(expandAnalyticsSchema); err != nil {
-		return fmt.Errorf("apply expand analytics schema: %w", err)
+func (s *Store) migrateAnalytics() error {
+	if _, err := s.db.Exec(analyticsSchema); err != nil {
+		return fmt.Errorf("apply analytics schema: %w", err)
 	}
 	alters := []string{
 		`ALTER TABLE eventarc_triggers ADD COLUMN channel TEXT NOT NULL DEFAULT ''`,
@@ -183,7 +183,7 @@ func (s *Store) migrateExpandAnalytics() error {
 	for _, stmt := range alters {
 		if _, err := s.db.Exec(stmt); err != nil {
 			if !strings.Contains(err.Error(), "duplicate column") {
-				return fmt.Errorf("migrate expand analytics column: %w", err)
+				return fmt.Errorf("migrate analytics column: %w", err)
 			}
 		}
 	}

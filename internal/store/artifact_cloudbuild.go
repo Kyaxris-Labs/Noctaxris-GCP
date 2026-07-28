@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const expandStage2ArCbSchema = `
+const artifactCloudbuildSchema = `
 CREATE TABLE IF NOT EXISTS ar_repositories (
   name TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -68,9 +68,9 @@ CREATE TABLE IF NOT EXISTS cb_triggers (
 );
 `
 
-func (s *Store) migrateExpandStage2ArCb() error {
-	if _, err := s.db.Exec(expandStage2ArCbSchema); err != nil {
-		return fmt.Errorf("apply expand stage2 ar/cb schema: %w", err)
+func (s *Store) migrateArtifactCloudbuild() error {
+	if _, err := s.db.Exec(artifactCloudbuildSchema); err != nil {
+		return fmt.Errorf("apply artifact registry/cloud build schema: %w", err)
 	}
 	return nil
 }

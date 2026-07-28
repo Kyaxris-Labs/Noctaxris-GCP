@@ -16,6 +16,7 @@ type Project struct {
 	ID          string
 	DisplayName string
 	State       string
+	LabelsJSON  string
 	CreatedAt   string
 }
 
@@ -49,13 +50,28 @@ type ServiceUsage struct {
 	State       string
 }
 
+func scanProject(row interface {
+	Scan(dest ...any) error
+}) (Project, error) {
+	var p Project
+	err := row.Scan(&p.ID, &p.DisplayName, &p.State, &p.LabelsJSON, &p.CreatedAt)
+	if err != nil {
+		return Project{}, err
+	}
+	if p.LabelsJSON == "" {
+		p.LabelsJSON = "{}"
+	}
+	return p, nil
+}
+
+const projectSelectCols = `id, display_name, state, COALESCE(labels_json, '{}'), created_at`
+
 // GetProject loads a project by id.
 func (s *Store) GetProject(id string) (Project, bool, error) {
-	var p Project
-	err := s.db.QueryRow(
-		`SELECT id, display_name, state, created_at FROM projects WHERE id = ?`,
+	p, err := scanProject(s.db.QueryRow(
+		`SELECT `+projectSelectCols+` FROM projects WHERE id = ?`,
 		id,
-	).Scan(&p.ID, &p.DisplayName, &p.State, &p.CreatedAt)
+	))
 	if err == sql.ErrNoRows {
 		return Project{}, false, nil
 	}
@@ -68,7 +84,7 @@ func (s *Store) GetProject(id string) (Project, bool, error) {
 // ListProjects returns all seeded projects ordered by id.
 func (s *Store) ListProjects() ([]Project, error) {
 	rows, err := s.db.Query(
-		`SELECT id, display_name, state, created_at FROM projects ORDER BY id`,
+		`SELECT ` + projectSelectCols + ` FROM projects ORDER BY id`,
 	)
 	if err != nil {
 		return nil, err
@@ -76,8 +92,8 @@ func (s *Store) ListProjects() ([]Project, error) {
 	defer rows.Close()
 	var out []Project
 	for rows.Next() {
-		var p Project
-		if err := rows.Scan(&p.ID, &p.DisplayName, &p.State, &p.CreatedAt); err != nil {
+		p, err := scanProject(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -94,7 +110,7 @@ func (s *Store) SearchProjects(query string) ([]Project, error) {
 	}
 	like := "%" + strings.ToLower(query) + "%"
 	rows, err := s.db.Query(
-		`SELECT id, display_name, state, created_at FROM projects
+		`SELECT `+projectSelectCols+` FROM projects
 		 WHERE lower(id) LIKE ? OR lower(display_name) LIKE ?
 		 ORDER BY id`,
 		like, like,
@@ -105,8 +121,8 @@ func (s *Store) SearchProjects(query string) ([]Project, error) {
 	defer rows.Close()
 	var out []Project
 	for rows.Next() {
-		var p Project
-		if err := rows.Scan(&p.ID, &p.DisplayName, &p.State, &p.CreatedAt); err != nil {
+		p, err := scanProject(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -116,7 +132,31 @@ func (s *Store) SearchProjects(query string) ([]Project, error) {
 
 // UpdateProjectDisplayName sets the project display name.
 func (s *Store) UpdateProjectDisplayName(id, displayName string) (Project, bool, error) {
-	res, err := s.db.Exec(`UPDATE projects SET display_name = ? WHERE id = ?`, displayName, id)
+	return s.UpdateProject(id, displayName, "", true, false)
+}
+
+// UpdateProject patches displayName and/or labels on a project.
+func (s *Store) UpdateProject(id, displayName, labelsJSON string, setDisplay, setLabels bool) (Project, bool, error) {
+	if !setDisplay && !setLabels {
+		return s.GetProject(id)
+	}
+	cur, ok, err := s.GetProject(id)
+	if err != nil || !ok {
+		return Project{}, ok, err
+	}
+	if !setDisplay {
+		displayName = cur.DisplayName
+	}
+	if !setLabels {
+		labelsJSON = cur.LabelsJSON
+	}
+	if labelsJSON == "" {
+		labelsJSON = "{}"
+	}
+	res, err := s.db.Exec(
+		`UPDATE projects SET display_name = ?, labels_json = ? WHERE id = ?`,
+		displayName, labelsJSON, id,
+	)
 	if err != nil {
 		return Project{}, false, err
 	}
@@ -505,6 +545,35 @@ func (s *Store) BatchEnableServiceUsage(projectID string, serviceNames []string)
 		if _, err := tx.Exec(
 			`INSERT INTO service_usage (project_id, service_name, state) VALUES (?, ?, 'ENABLED')
 			 ON CONFLICT(project_id, service_name) DO UPDATE SET state = 'ENABLED'`,
+			projectID, name,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// BatchDisableServiceUsage disables multiple services atomically (all or nothing).
+func (s *Store) BatchDisableServiceUsage(projectID string, serviceNames []string) error {
+	if len(serviceNames) == 0 {
+		return fmt.Errorf("serviceIds required")
+	}
+	if len(serviceNames) > 20 {
+		return fmt.Errorf("at most 20 services per batchDisable")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, name := range serviceNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return fmt.Errorf("empty service id")
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO service_usage (project_id, service_name, state) VALUES (?, ?, 'DISABLED')
+			 ON CONFLICT(project_id, service_name) DO UPDATE SET state = 'DISABLED'`,
 			projectID, name,
 		); err != nil {
 			return err

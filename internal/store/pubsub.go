@@ -575,3 +575,115 @@ func messageMatchesFilter(filter string, attributes map[string]string) bool {
 	}
 	return true
 }
+
+// PubSubSnapshot is a Pub/Sub snapshot metadata row (lite; no backlog copy).
+type PubSubSnapshot struct {
+	Name         string
+	ProjectID    string
+	Topic        string
+	Subscription string
+	Labels       map[string]string
+	ExpireTime   string
+	CreatedAt    string
+}
+
+// CreateSnapshot inserts a snapshot from a subscription. created=false means already exists.
+func (s *Store) CreateSnapshot(name, subscription string, labels map[string]string) (*PubSubSnapshot, bool, error) {
+	name = strings.TrimSpace(name)
+	subscription = strings.TrimSpace(subscription)
+	if name == "" || subscription == "" {
+		return nil, false, fmt.Errorf("snapshot name and subscription required")
+	}
+	sub, ok, err := s.GetSubscription(subscription)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, fmt.Errorf("subscription not found")
+	}
+	parts := strings.Split(name, "/")
+	if len(parts) < 4 || parts[0] != "projects" || parts[2] != "snapshots" {
+		return nil, false, fmt.Errorf("invalid snapshot name")
+	}
+	projectID := parts[1]
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	now := time.Now().UTC()
+	expire := now.Add(7 * 24 * time.Hour).Format(time.RFC3339Nano)
+	created := now.Format(time.RFC3339Nano)
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO pubsub_snapshots (name, project_id, topic, subscription, labels_json, expire_time, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		name, projectID, sub.Topic, subscription, encodeStringMap(labels), expire, created,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if n == 0 {
+		return nil, false, nil
+	}
+	return &PubSubSnapshot{
+		Name: name, ProjectID: projectID, Topic: sub.Topic, Subscription: subscription,
+		Labels: labels, ExpireTime: expire, CreatedAt: created,
+	}, true, nil
+}
+
+// GetSnapshot loads a snapshot by resource name.
+func (s *Store) GetSnapshot(name string) (*PubSubSnapshot, bool, error) {
+	var snap PubSubSnapshot
+	var labelsJSON string
+	err := s.db.QueryRow(
+		`SELECT name, project_id, topic, subscription, COALESCE(labels_json, '{}'), expire_time, created_at
+		 FROM pubsub_snapshots WHERE name = ?`, name,
+	).Scan(&snap.Name, &snap.ProjectID, &snap.Topic, &snap.Subscription, &labelsJSON, &snap.ExpireTime, &snap.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	snap.Labels = decodeStringMap(labelsJSON)
+	return &snap, true, nil
+}
+
+// ListSnapshots lists snapshots for a project id (not the projects/ prefix).
+func (s *Store) ListSnapshots(projectID string) ([]PubSubSnapshot, error) {
+	rows, err := s.db.Query(
+		`SELECT name, project_id, topic, subscription, COALESCE(labels_json, '{}'), expire_time, created_at
+		 FROM pubsub_snapshots WHERE project_id = ? ORDER BY name`,
+		projectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PubSubSnapshot
+	for rows.Next() {
+		var snap PubSubSnapshot
+		var labelsJSON string
+		if err := rows.Scan(&snap.Name, &snap.ProjectID, &snap.Topic, &snap.Subscription, &labelsJSON, &snap.ExpireTime, &snap.CreatedAt); err != nil {
+			return nil, err
+		}
+		snap.Labels = decodeStringMap(labelsJSON)
+		out = append(out, snap)
+	}
+	return out, rows.Err()
+}
+
+// DeleteSnapshot removes a snapshot by resource name.
+func (s *Store) DeleteSnapshot(name string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM pubsub_snapshots WHERE name = ?`, name)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}

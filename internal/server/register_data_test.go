@@ -590,3 +590,86 @@ func TestSecretReplicationAndVersionFilter(t *testing.T) {
 		t.Fatalf("filter list = %s", rec.Body.String())
 	}
 }
+
+func TestPubSubSnapshotsCRUD(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+
+	putTopic := httptest.NewRequest(http.MethodPut, "/v1/projects/"+project+"/topics/snap-topic", strings.NewReader(`{}`))
+	putTopic.Header.Set("Authorization", auth)
+	putTopic.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, putTopic)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("topic: %d %s", rec.Code, rec.Body.String())
+	}
+	subBody := `{"topic":"projects/` + project + `/topics/snap-topic"}`
+	putSub := httptest.NewRequest(http.MethodPut, "/v1/projects/"+project+"/subscriptions/snap-sub", strings.NewReader(subBody))
+	putSub.Header.Set("Authorization", auth)
+	putSub.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, putSub)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sub: %d %s", rec.Code, rec.Body.String())
+	}
+
+	createBody := `{"subscription":"projects/` + project + `/subscriptions/snap-sub","labels":{"env":"lab"}}`
+	create := httptest.NewRequest(http.MethodPut, "/v1/projects/"+project+"/snapshots/lab-snap", strings.NewReader(createBody))
+	create.Header.Set("Authorization", auth)
+	create.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, create)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create snapshot: %d %s", rec.Code, rec.Body.String())
+	}
+	var snap map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if snap["name"] != "projects/"+project+"/snapshots/lab-snap" || snap["topic"] != "projects/"+project+"/topics/snap-topic" {
+		t.Fatalf("snapshot = %#v", snap)
+	}
+	if snap["expireTime"] == nil || snap["expireTime"] == "" {
+		t.Fatalf("missing expireTime: %#v", snap)
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/snapshots/lab-snap", nil)
+	get.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, get)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get snapshot: %d %s", rec.Code, rec.Body.String())
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/snapshots", nil)
+	list.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, list)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list snapshots: %d %s", rec.Code, rec.Body.String())
+	}
+	var listBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &listBody); err != nil {
+		t.Fatal(err)
+	}
+	snaps, _ := listBody["snapshots"].([]any)
+	if len(snaps) < 1 {
+		t.Fatalf("list = %s", rec.Body.String())
+	}
+
+	del := httptest.NewRequest(http.MethodDelete, "/v1/projects/"+project+"/snapshots/lab-snap", nil)
+	del.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, del)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete snapshot: %d %s", rec.Code, rec.Body.String())
+	}
+	get2 := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/snapshots/lab-snap", nil)
+	get2.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, get2)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get after delete status = %d", rec.Code)
+	}
+}

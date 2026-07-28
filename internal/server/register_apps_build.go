@@ -11,9 +11,9 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/workflows"
 )
 
-// registerExpandStage2 mounts Stage 2 new services.
+// registerAppsBuild mounts Artifact Registry, Cloud Build, Workflows, Spanner, and App Engine.
 // CRM orgs/folders are wired through registerIdentity (resourcemanager.Mount).
-func (s *Server) registerExpandStage2() {
+func (s *Server) registerAppsBuild() {
 	principalFrom := func(r *http.Request) (authn.Principal, bool) {
 		return PrincipalFromContext(r.Context())
 	}

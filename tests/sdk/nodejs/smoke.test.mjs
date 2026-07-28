@@ -248,3 +248,89 @@ test("get app engine app smoke", async (t) => {
     assert.equal(parsed.id, project, body);
   }
 });
+
+test("list compute instances smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+
+  const { status, body } = await doJSON(
+    "GET",
+    `${ep}/compute/v1/projects/${project}/zones/us-central1-a/instances`,
+    token,
+  );
+  assert.equal(status, 200, `list compute instances status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.equal(parsed.kind, "compute#instanceList", body);
+  assert.ok(Object.prototype.hasOwnProperty.call(parsed, "items"), body);
+});
+
+test("list dns managed zones smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+
+  const { status, body } = await doJSON(
+    "GET",
+    `${ep}/dns/v1/projects/${project}/managedZones`,
+    token,
+  );
+  assert.equal(status, 200, `list managed zones status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(Object.prototype.hasOwnProperty.call(parsed, "managedZones"), body);
+});
+
+test("list bigtable instances smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+
+  const { status, body } = await doJSON(
+    "GET",
+    `${ep}/v2/projects/${project}/instances`,
+    token,
+  );
+  assert.equal(status, 200, `list bigtable instances status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(Object.prototype.hasOwnProperty.call(parsed, "instances"), body);
+});
+
+test("list memorystore instances smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+
+  const { status, body } = await doJSON(
+    "GET",
+    `${ep}/v1/projects/${project}/locations/us-central1/instances`,
+    token,
+  );
+  assert.equal(status, 200, `list memorystore instances status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(Object.prototype.hasOwnProperty.call(parsed, "instances"), body);
+});
+
+test("list dataflow jobs smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+
+  const { status, body } = await doJSON(
+    "GET",
+    `${ep}/v1b3/projects/${project}/locations/us-central1/jobs`,
+    token,
+  );
+  assert.equal(status, 200, `list dataflow jobs status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(Object.prototype.hasOwnProperty.call(parsed, "jobs"), body);
+});

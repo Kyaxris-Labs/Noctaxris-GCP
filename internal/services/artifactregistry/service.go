@@ -29,13 +29,18 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/repositories", s.wrap(principalFrom, s.listRepositories))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/repositories", s.wrap(principalFrom, s.createRepository))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/repositories/{repository}", s.wrap(principalFrom, s.getRepository))
+	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/repositories/{repository}", s.wrap(principalFrom, s.repositoryPOSTAction))
 	mux.HandleFunc("PATCH /v1/projects/{project}/locations/{location}/repositories/{repository}", s.wrap(principalFrom, s.patchRepository))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/repositories/{repository}", s.wrap(principalFrom, s.deleteRepository))
+
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/repositories/{repository}/files", s.wrap(principalFrom, s.listFiles))
 
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/repositories/{repository}/packages", s.wrap(principalFrom, s.listPackages))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/repositories/{repository}/packages", s.wrap(principalFrom, s.createPackage))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/repositories/{repository}/packages/{package}", s.wrap(principalFrom, s.getPackage))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/repositories/{repository}/packages/{package}", s.wrap(principalFrom, s.deletePackage))
+
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/repositories/{repository}/packages/{package}/tags", s.wrap(principalFrom, s.listTags))
 
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/repositories/{repository}/packages/{package}/versions", s.wrap(principalFrom, s.listVersions))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/repositories/{repository}/packages/{package}/versions", s.wrap(principalFrom, s.createVersion))
@@ -177,7 +182,13 @@ func (s *Service) getRepository(w http.ResponseWriter, r *http.Request, p authn.
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	id, action := splitColonAction(r.PathValue("repository"))
-	if action != "" {
+	switch action {
+	case "getIamPolicy":
+		s.getIamPolicy(w, r, p, project, location, id)
+		return
+	case "":
+		// get repository
+	default:
 		gcperrors.NotFound(w, "unknown Artifact Registry method")
 		return
 	}
@@ -197,23 +208,112 @@ func (s *Service) getRepository(w http.ResponseWriter, r *http.Request, p authn.
 	writeJSON(w, http.StatusOK, toRepoJSON(repo))
 }
 
+func (s *Service) repositoryPOSTAction(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	id, action := splitColonAction(r.PathValue("repository"))
+	switch action {
+	case "setIamPolicy":
+		s.setIamPolicy(w, r, p, project, location, id)
+	case "getIamPolicy":
+		// Some clients POST getIamPolicy; accept both.
+		s.getIamPolicy(w, r, p, project, location, id)
+	default:
+		gcperrors.NotFound(w, "unknown Artifact Registry method")
+	}
+}
+
+func (s *Service) getIamPolicy(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, id string) {
+	if err := s.require(p, "artifactregistry.repositories.getIamPolicy", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := repoName(project, location, id)
+	if _, ok, err := s.Store.GetArRepository(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Repository not found")
+		return
+	}
+	raw, found, err := s.Store.GetIAMPolicyJSON(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, authz.Policy{Etag: "ACAB", Bindings: []authz.Binding{}})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (s *Service) setIamPolicy(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, id string) {
+	if err := s.require(p, "artifactregistry.repositories.setIamPolicy", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := repoName(project, location, id)
+	if _, ok, err := s.Store.GetArRepository(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Repository not found")
+		return
+	}
+	var req struct {
+		Policy authz.Policy `json:"policy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid setIamPolicy body")
+		return
+	}
+	if err := s.Store.PutIAMPolicyJSON(name, req.Policy); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, req.Policy)
+}
+
 func (s *Service) patchRepository(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
-	id := r.PathValue("repository")
+	id, _ := splitColonAction(r.PathValue("repository"))
 	if err := s.require(p, "artifactregistry.repositories.update", project); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	desc, _ := body["description"].(string)
-	labelsJSON := ""
-	if labels, ok := body["labels"]; ok {
-		raw, _ := json.Marshal(labels)
-		labelsJSON = string(raw)
+	if body == nil {
+		body = map[string]any{}
 	}
-	repo, ok, err := s.Store.UpdateArRepository(repoName(project, location, id), desc, labelsJSON)
+	mask := r.URL.Query().Get("updateMask")
+	wantDesc := mask == "" || fieldMaskHas(mask, "description")
+	wantLabels := mask == "" || fieldMaskHas(mask, "labels")
+	var descPtr *string
+	var labelsPtr *string
+	if wantDesc {
+		if desc, ok := body["description"].(string); ok {
+			descPtr = &desc
+		} else if mask != "" {
+			empty := ""
+			descPtr = &empty
+		}
+	}
+	if wantLabels {
+		if labels, ok := body["labels"]; ok {
+			raw, _ := json.Marshal(labels)
+			s := string(raw)
+			labelsPtr = &s
+		} else if mask != "" {
+			empty := "{}"
+			labelsPtr = &empty
+		}
+	}
+	repo, ok, err := s.Store.PatchArRepositoryDeepen(repoName(project, location, id), descPtr, labelsPtr)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -223,6 +323,81 @@ func (s *Service) patchRepository(w http.ResponseWriter, r *http.Request, p auth
 		return
 	}
 	writeJSON(w, http.StatusOK, toRepoJSON(repo))
+}
+
+func fieldMaskHas(mask, field string) bool {
+	for _, p := range strings.Split(mask, ",") {
+		if strings.TrimSpace(p) == field {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) listFiles(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	repoID, _ := splitColonAction(r.PathValue("repository"))
+	if err := s.require(p, "artifactregistry.files.list", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := repoName(project, location, repoID)
+	if _, ok, err := s.Store.GetArRepository(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Repository not found")
+		return
+	}
+	list, err := s.Store.ListArFilesTheatreDeepen(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	items := make([]map[string]any, 0, len(list))
+	for _, f := range list {
+		items = append(items, map[string]any{
+			"name":       f.Name,
+			"sizeBytes":  f.SizeBytes,
+			"owner":      f.Owner,
+			"createTime": f.CreateTime,
+			"updateTime": f.UpdateTime,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"files": items})
+}
+
+func (s *Service) listTags(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	repoID, _ := splitColonAction(r.PathValue("repository"))
+	pkgID, _ := splitColonAction(r.PathValue("package"))
+	if err := s.require(p, "artifactregistry.tags.list", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	pkgName := packageName(repoName(project, location, repoID), pkgID)
+	if _, ok, err := s.Store.GetArPackage(pkgName); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Package not found")
+		return
+	}
+	list, err := s.Store.ListArTagsTheatreDeepen(pkgName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	items := make([]map[string]any, 0, len(list))
+	for _, t := range list {
+		items = append(items, map[string]any{
+			"name":    t.Name,
+			"version": t.Version,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tags": items})
 }
 
 func (s *Service) deleteRepository(w http.ResponseWriter, r *http.Request, p authn.Principal) {

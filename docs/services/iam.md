@@ -17,6 +17,7 @@ policies are stored on the SA resource name.
 | Enable service account | `POST` | `/v1/projects/{project}/serviceAccounts/{email}:enable` |
 | Disable service account | `POST` | `/v1/projects/{project}/serviceAccounts/{email}:disable` |
 | Sign blob (lab) | `POST` | `/v1/projects/{project}/serviceAccounts/{email}:signBlob` |
+| Sign JWT (lab) | `POST` | `/v1/projects/{project}/serviceAccounts/{email}:signJwt` |
 | Get SA IAM policy | `POST` | `/v1/projects/{project}/serviceAccounts/{email}:getIamPolicy` |
 | Set SA IAM policy | `POST` | `/v1/projects/{project}/serviceAccounts/{email}:setIamPolicy` |
 | Test SA IAM permissions | `POST` | `/v1/projects/{project}/serviceAccounts/{email}:testIamPermissions` |
@@ -46,6 +47,12 @@ keys. List/get skip soft-deleted rows.
 `keyId=lab-sha256` and `signature` / `signedBlob` as the base64 SHA-256 digest
 of the decoded bytes (not an RSA signature).
 
+`signJwt` accepts IAM Credentials-shaped body `{"payload":"<json claims>"}`.
+The lab returns `keyId=lab-none` and `signedJwt` as an unsigned JWT
+(`alg=none`, empty signature segment). This is not real asymmetric signing.
+If `exp` is present it must be an integer unix timestamp not in the past and
+within 12 hours (same bound as the official Credentials API).
+
 List keys accepts `pageSize` (default 100, max 100) and `pageToken` (integer
 offset); responses may include `nextPageToken`.
 
@@ -54,8 +61,9 @@ Create service account fails with `FAILED_PRECONDITION` when
 
 ## Emulator limits
 
-- No workload identity federation, signJwt, or service account impersonation.
+- No workload identity federation or service account impersonation.
 - `signBlob` is SHA-256 theatre, not PKCS#1 / RSA signing.
+- `signJwt` is unsigned lab JWT theatre (`alg=none`), not RSA/ES256.
 - Soft-delete has no 30-day purge timer; rows remain until process data is wiped.
 - Key material is a lab credentials JSON (not a PKCS#8 RSA PEM).
 - gRPC `IAM` admin service is not registered yet; use REST.

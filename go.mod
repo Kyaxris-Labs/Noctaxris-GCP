@@ -1,6 +1,6 @@
 module github.com/Kyaxris-Labs/Noctaxris-GCP
 
-go 1.26.4
+go 1.26.5
 
 require (
 	cloud.google.com/go/datastore v1.26.0

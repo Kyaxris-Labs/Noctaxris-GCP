@@ -48,6 +48,11 @@ before starting. Startup refuses that pair on the non-loopback container bind.
 | Cloud Run / Functions / Scheduler / Tasks | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
 | BigQuery / Monitoring / Eventarc | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
 | Artifact Registry / Cloud Build / Workflows / Spanner / App Engine | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
+| Compute Engine | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/compute/v1/...`; no nested VMs) |
+| Cloud DNS | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/dns/v1/...`) |
+| Dataflow | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1b3/...`; job theatre only) |
+| Cloud Bigtable Admin | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST Admin API v2; no data plane) |
+| Memorystore Redis | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/...`; no Redis process) |
 | Other Google clients | `option.WithEndpoint("127.0.0.1:4588")` (or language equivalent) + Bearer |
 | Terraform Google provider | Custom endpoints with versioned path suffixes (see below) |
 
@@ -70,6 +75,8 @@ provider "google" {
   pubsub_custom_endpoint         = "http://127.0.0.1:4588/v1/"
   secret_manager_custom_endpoint = "http://127.0.0.1:4588/v1/"
   cloud_run_v2_custom_endpoint   = "http://127.0.0.1:4588/v2/"
+  dns_custom_endpoint            = "http://127.0.0.1:4588/dns/v1/"
+  compute_custom_endpoint        = "http://127.0.0.1:4588/compute/v1/"
 }
 ```
 
@@ -77,6 +84,12 @@ provider "google" {
 |-------|-----------|-----------|
 | `tests/terraform/stacks/lab-storage` | GCS bucket, Secret Manager secret, Pub/Sub topic | `storage` / `pubsub` / `secret_manager` |
 | `tests/terraform/stacks/lab-run` | `google_cloud_run_v2_service` (metadata theatre; no containers) | `cloud_run_v2` |
+| `tests/terraform/stacks/lab-dns` | `google_dns_managed_zone` | `dns` (`…/dns/v1/`) |
+| `tests/terraform/stacks/lab-compute` | `google_compute_network` (no VMs) | `compute` (`…/compute/v1/`) |
+
+Not stacked: DNS record sets (provider `Changes.create`; lab has no Changes API),
+Compute instances (Images API / `ResolveImage`), Bigtable (provider gRPC admin
+client vs lab REST `/v2/`). See `tests/terraform/README.md`.
 
 ### gcloud `api_endpoint_overrides`
 
@@ -104,6 +117,11 @@ gcloud config set api_endpoint_overrides/workflows http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/workflowexecutions http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/spanner http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/appengine http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/compute http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/dns http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/dataflow http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/bigtableadmin http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/redis http://127.0.0.1:4588/
 gcloud projects describe noctaxris-gcp-local --format=json
 ```
 

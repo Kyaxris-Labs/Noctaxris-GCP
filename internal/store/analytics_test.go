@@ -7,7 +7,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
-func TestExpandAnalyticsBQAndFirebase(t *testing.T) {
+func TestAnalyticsBQAndFirebase(t *testing.T) {
 	dir := t.TempDir()
 	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
 	if err != nil {
@@ -47,7 +47,7 @@ func TestExpandAnalyticsBQAndFirebase(t *testing.T) {
 	}
 }
 
-func TestExpandAnalyticsMonitoringDatastoreEventarc(t *testing.T) {
+func TestAnalyticsMonitoringDatastoreEventarc(t *testing.T) {
 	dir := t.TempDir()
 	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
 	if err != nil {

@@ -35,11 +35,15 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 
 	// Organizations (seeded lab org) + folders CRUD lite.
 	mux.HandleFunc("GET /v3/organizations/{organization}", h.handleGetOrganization)
+	mux.HandleFunc("POST /v3/organizations/{organization}", h.handleOrganizationPost)
 	mux.HandleFunc("GET /v3/folders", h.handleListFolders)
 	mux.HandleFunc("POST /v3/folders", h.handleCreateFolder)
+	// SearchFolders: GET /v3/folders:search — colon inside {foldersCol}.
+	mux.HandleFunc("GET /v3/{foldersCol}", h.handleFoldersCollectionGet)
 	mux.HandleFunc("GET /v3/folders/{folder}", h.handleGetFolder)
 	mux.HandleFunc("PATCH /v3/folders/{folder}", h.handlePatchFolder)
 	mux.HandleFunc("DELETE /v3/folders/{folder}", h.handleDeleteFolder)
+	mux.HandleFunc("POST /v3/folders/{folder}", h.handleFolderPost)
 }
 
 func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {
@@ -165,18 +169,31 @@ func (h *Handler) handlePatchProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		DisplayName string `json:"displayName"`
+		DisplayName string            `json:"displayName"`
+		Labels      map[string]string `json:"labels"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")
 		return
 	}
 	mask := r.URL.Query().Get("updateMask")
-	if mask != "" && !fieldMaskIncludes(mask, "displayName") {
-		gcperrors.InvalidArgument(w, "updateMask must include displayName")
+	setDisplay := mask == "" || fieldMaskIncludes(mask, "displayName") || fieldMaskIncludes(mask, "display_name")
+	setLabels := mask == "" && req.Labels != nil || fieldMaskIncludes(mask, "labels")
+	if mask != "" && !setDisplay && !setLabels {
+		gcperrors.InvalidArgument(w, "updateMask must include displayName and/or labels")
 		return
 	}
-	p, ok, err := h.Store.UpdateProjectDisplayName(projectID, req.DisplayName)
+	if mask == "" {
+		// No mask: update displayName when present; labels when present.
+		setDisplay = true
+		setLabels = req.Labels != nil
+	}
+	labelsJSON := "{}"
+	if req.Labels != nil {
+		raw, _ := json.Marshal(req.Labels)
+		labelsJSON = string(raw)
+	}
+	p, ok, err := h.Store.UpdateProject(projectID, req.DisplayName, labelsJSON, setDisplay, setLabels)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -271,6 +288,46 @@ func (h *Handler) handleGetOrganization(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, organizationJSON(o))
+}
+
+func (h *Handler) handleOrganizationPost(w http.ResponseWriter, r *http.Request) {
+	raw := r.PathValue("organization")
+	orgID, action := splitColonAction(raw)
+	if orgID == "" {
+		gcperrors.InvalidArgument(w, "invalid organization name")
+		return
+	}
+	resource := "organizations/" + orgID
+	switch action {
+	case "getIamPolicy":
+		h.getResourceIamPolicy(w, r, resource, "resourcemanager.organizations.getIamPolicy")
+	case "setIamPolicy":
+		h.setResourceIamPolicy(w, r, resource, "resourcemanager.organizations.setIamPolicy")
+	default:
+		gcperrors.InvalidArgument(w, "unknown method on organization")
+	}
+}
+
+func (h *Handler) handleFoldersCollectionGet(w http.ResponseWriter, r *http.Request) {
+	col, action := splitColonAction(r.PathValue("foldersCol"))
+	if col != "folders" || action != "search" {
+		gcperrors.InvalidArgument(w, "expected folders:search")
+		return
+	}
+	if _, ok := h.require(w, r, "resourcemanager.folders.get", "folders/-"); !ok {
+		return
+	}
+	query := r.URL.Query().Get("query")
+	list, err := h.Store.SearchFolders(query)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	folders := make([]map[string]any, 0, len(list))
+	for _, f := range list {
+		folders = append(folders, folderJSON(f))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"folders": folders})
 }
 
 func (h *Handler) handleListFolders(w http.ResponseWriter, r *http.Request) {
@@ -439,8 +496,113 @@ func (h *Handler) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, folderJSON(f))
 }
 
+func (h *Handler) handleFolderPost(w http.ResponseWriter, r *http.Request) {
+	raw := r.PathValue("folder")
+	folderID, action := splitColonAction(raw)
+	if folderID == "" {
+		gcperrors.InvalidArgument(w, "invalid folder name")
+		return
+	}
+	resource := "folders/" + folderID
+	switch action {
+	case "move":
+		h.moveFolder(w, r, folderID)
+	case "undelete":
+		h.undeleteFolder(w, r, folderID)
+	case "getIamPolicy":
+		h.getResourceIamPolicy(w, r, resource, "resourcemanager.folders.getIamPolicy")
+	case "setIamPolicy":
+		h.setResourceIamPolicy(w, r, resource, "resourcemanager.folders.setIamPolicy")
+	default:
+		gcperrors.InvalidArgument(w, "unknown method on folder")
+	}
+}
+
+func (h *Handler) moveFolder(w http.ResponseWriter, r *http.Request, folderID string) {
+	resource := "folders/" + folderID
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		DestinationParent string `json:"destinationParent"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	if req.DestinationParent == "" {
+		gcperrors.InvalidArgument(w, "destinationParent is required")
+		return
+	}
+	if !strings.HasPrefix(req.DestinationParent, "organizations/") && !strings.HasPrefix(req.DestinationParent, "folders/") {
+		gcperrors.InvalidArgument(w, "destinationParent must be organizations/{org} or folders/{folder}")
+		return
+	}
+	// GCP requires move on current parent and destination; lab checks folder + destination.
+	if _, ok := h.require(w, r, "resourcemanager.folders.move", resource); !ok {
+		return
+	}
+	if _, ok := h.require(w, r, "resourcemanager.folders.move", req.DestinationParent); !ok {
+		return
+	}
+	if strings.HasPrefix(req.DestinationParent, "organizations/") {
+		if _, ok, err := h.Store.GetOrganization(req.DestinationParent); err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		} else if !ok {
+			gcperrors.NotFound(w, "Destination organization not found.")
+			return
+		}
+	} else {
+		if pf, ok, err := h.Store.GetFolder(req.DestinationParent); err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		} else if !ok || pf.State != "ACTIVE" {
+			gcperrors.NotFound(w, "Destination folder not found.")
+			return
+		}
+	}
+	f, ok, err := h.Store.MoveFolder(folderID, req.DestinationParent)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Requested entity was not found.")
+		return
+	}
+	writeJSON(w, http.StatusOK, folderJSON(f))
+}
+
+func (h *Handler) undeleteFolder(w http.ResponseWriter, r *http.Request, folderID string) {
+	resource := "folders/" + folderID
+	if _, ok := h.require(w, r, "resourcemanager.folders.undelete", resource); !ok {
+		return
+	}
+	f, ok, err := h.Store.UndeleteFolder(folderID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Requested entity was not found.")
+		return
+	}
+	writeJSON(w, http.StatusOK, folderJSON(f))
+}
+
 func (h *Handler) getIamPolicy(w http.ResponseWriter, r *http.Request, resource string) {
-	if _, ok := h.require(w, r, "resourcemanager.projects.getIamPolicy", resource); !ok {
+	h.getResourceIamPolicy(w, r, resource, "resourcemanager.projects.getIamPolicy")
+}
+
+func (h *Handler) setIamPolicy(w http.ResponseWriter, r *http.Request, resource string) {
+	h.setResourceIamPolicy(w, r, resource, "resourcemanager.projects.setIamPolicy")
+}
+
+func (h *Handler) getResourceIamPolicy(w http.ResponseWriter, r *http.Request, resource, permission string) {
+	if _, ok := h.require(w, r, permission, resource); !ok {
 		return
 	}
 	raw, ok, err := h.Store.GetIAMPolicyJSON(resource)
@@ -457,8 +619,8 @@ func (h *Handler) getIamPolicy(w http.ResponseWriter, r *http.Request, resource 
 	_, _ = w.Write(raw)
 }
 
-func (h *Handler) setIamPolicy(w http.ResponseWriter, r *http.Request, resource string) {
-	if _, ok := h.require(w, r, "resourcemanager.projects.setIamPolicy", resource); !ok {
+func (h *Handler) setResourceIamPolicy(w http.ResponseWriter, r *http.Request, resource, permission string) {
+	if _, ok := h.require(w, r, permission, resource); !ok {
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -513,11 +675,16 @@ func (h *Handler) testIamPermissions(w http.ResponseWriter, r *http.Request, res
 }
 
 func projectJSON(p store.Project) map[string]any {
+	var labels any = map[string]string{}
+	if p.LabelsJSON != "" {
+		_ = json.Unmarshal([]byte(p.LabelsJSON), &labels)
+	}
 	return map[string]any{
 		"name":        "projects/" + p.ID,
 		"projectId":   p.ID,
 		"displayName": p.DisplayName,
 		"state":       p.State,
+		"labels":      labels,
 		"createTime":  p.CreatedAt,
 		// Lab theatre: seeded projects hang under the default organization.
 		"parent": store.DefaultOrganizationName,

@@ -28,6 +28,11 @@ with honest emulator limits on each page.
 | Workflows | lab | [workflows.md](workflows.md) | REST v1 workflows CRUD + executions SUCCEEDED theatre |
 | Cloud Spanner | lab | [spanner.md](spanner.md) | REST v1 instances/databases + session ExecuteSql theatre |
 | App Engine | lab | [app-engine.md](app-engine.md) | REST Admin API v1 apps/services/versions (control-plane theatre) |
+| Compute Engine | lab | [compute-engine.md](compute-engine.md) | REST compute/v1 instances + VPC networks/subnets/firewalls (metadata theatre) |
+| Cloud Bigtable | lab | [bigtable.md](bigtable.md) | REST Admin API v2 instances/tables (control-plane theatre) |
+| Memorystore Redis | lab | [memorystore.md](memorystore.md) | REST v1 location-scoped instances (no Redis process) |
+| Cloud DNS | lab | [cloud-dns.md](cloud-dns.md) | REST dns/v1 managedZones + rrsets CRUD |
+| Dataflow | lab | [dataflow.md](dataflow.md) | REST v1b3 jobs create/get/list theatre (no workers) |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 Seeded organization: `organizations/noctaxris-gcp-org`.
@@ -43,7 +48,12 @@ Per-service deferred depth lives on each page. Shared gaps:
 - Bearer required on API paths (health/ready/version are public; Identity Toolkit
   `/identitytoolkit.googleapis.com/v1/accounts*` client methods are also public)
 - Root principal bypasses IAM evaluation (lab operator)
-- No host `docker.sock`; Compose publishes loopback only
+- No host `docker.sock`; no nested DinD; Compose publishes loopback only
+- Compute Engine stores instance/VPC/firewall metadata only (no VMs or NICs)
+- Bigtable Admin is control-plane theatre (no row mutate/read)
+- Memorystore Redis is control-plane theatre (no Redis process)
+- Dataflow jobs advance state theatre only (no workers or pipeline execution)
+- Cloud DNS stores zones/rrsets only (no authoritative query plane)
 
 ## Client smoke
 
@@ -63,9 +73,24 @@ HTTP live smokes under `tests/sdk/` (Go, Node.js, Python) cover:
 | Artifact Registry | list repositories in `us-central1` |
 | Workflows | list workflows in `us-central1` |
 | App Engine | get app (soft-skip on 404 when app not created) |
+| Compute Engine | list instances in `us-central1-a` |
+| Cloud DNS | list managed zones |
+| Cloud Bigtable | list instances |
+| Memorystore Redis | list instances in `us-central1` |
+| Dataflow | list jobs in `us-central1` |
 
-Terraform apply/destroy soft-skips the same way; default stacks are `lab-storage`
-and `lab-run` under `tests/terraform/stacks/` (`bash tests/terraform/run.sh`).
+Terraform apply/destroy soft-skips the same way. Stacks under
+`tests/terraform/stacks/`:
+
+| Stack | Focus |
+|-------|-------|
+| `lab-storage` | Cloud Storage bucket |
+| `lab-run` | Cloud Run service |
+| `lab-dns` | Cloud DNS managed zone |
+| `lab-compute` | Compute Engine VPC network |
+
+Default run (`bash tests/terraform/run.sh`) applies `lab-storage` and `lab-run`.
+Override with `STACK=lab-dns` or `STACK=lab-compute`.
 
 ```bash
 export NOCTAXRIS_GCP_ENDPOINT=http://127.0.0.1:4588
@@ -74,6 +99,8 @@ go test ./tests/sdk/go/ -count=1
 # node --test tests/sdk/nodejs/*.test.mjs
 # pytest tests/sdk/python/
 # bash tests/terraform/run.sh
+# STACK=lab-dns bash tests/terraform/run.sh
+# STACK=lab-compute bash tests/terraform/run.sh
 ```
 
 ## gcloud `api_endpoint_overrides`
@@ -104,6 +131,11 @@ gcloud config set api_endpoint_overrides/workflows http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/workflowexecutions http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/spanner http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/appengine http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/compute http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/dns http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/dataflow http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/bigtableadmin http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/redis http://127.0.0.1:4588/
 ```
 
 Firebase Auth and Datastore prefer emulator host env vars

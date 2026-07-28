@@ -10,8 +10,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/scheduler"
 )
 
-// registerExpandCompute registers Cloud Run, Cloud Functions, Cloud Scheduler, and Cloud Tasks REST.
-func (s *Server) registerExpandCompute() {
+// registerServerless registers Cloud Run, Cloud Functions, Cloud Scheduler, and Cloud Tasks REST.
+func (s *Server) registerServerless() {
 	principalFrom := func(r *http.Request) (authn.Principal, bool) {
 		return PrincipalFromContext(r.Context())
 	}

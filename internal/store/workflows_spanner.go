@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,7 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const expandStage2WorkflowsSpannerSchema = `
+const workflowsSpannerSchema = `
 CREATE TABLE IF NOT EXISTS wf_workflows (
   name TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS spanner_databases (
   state TEXT NOT NULL DEFAULT 'READY',
   create_statement TEXT NOT NULL DEFAULT '',
   extra_statements_json TEXT NOT NULL DEFAULT '[]',
+  ddl_statements_json TEXT NOT NULL DEFAULT '[]',
   dialect TEXT NOT NULL DEFAULT 'GOOGLE_STANDARD_SQL',
   created_at TEXT NOT NULL,
   UNIQUE (instance_name, database_id)
@@ -86,9 +88,9 @@ CREATE TABLE IF NOT EXISTS spanner_sessions (
 );
 `
 
-func (s *Store) migrateExpandStage2WorkflowsSpanner() error {
-	if _, err := s.db.Exec(expandStage2WorkflowsSpannerSchema); err != nil {
-		return fmt.Errorf("apply expand stage2 workflows/spanner schema: %w", err)
+func (s *Store) migrateWorkflowsSpanner() error {
+	if _, err := s.db.Exec(workflowsSpannerSchema); err != nil {
+		return fmt.Errorf("apply workflows/spanner schema: %w", err)
 	}
 	return nil
 }
@@ -346,6 +348,7 @@ type SpannerDatabase struct {
 	State               string
 	CreateStatement     string
 	ExtraStatementsJSON string
+	DDLStatementsJSON   string
 	Dialect             string
 	CreatedAt           string
 }
@@ -493,6 +496,9 @@ func (s *Store) CreateSpannerDatabase(db SpannerDatabase) (bool, error) {
 	if db.ExtraStatementsJSON == "" {
 		db.ExtraStatementsJSON = "[]"
 	}
+	if db.DDLStatementsJSON == "" {
+		db.DDLStatementsJSON = "[]"
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if db.CreatedAt == "" {
 		db.CreatedAt = now
@@ -500,10 +506,10 @@ func (s *Store) CreateSpannerDatabase(db SpannerDatabase) (bool, error) {
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO spanner_databases
 		 (name, instance_name, project_id, instance_id, database_id, state, create_statement,
-		  extra_statements_json, dialect, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  extra_statements_json, ddl_statements_json, dialect, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		db.Name, db.InstanceName, db.ProjectID, db.InstanceID, db.DatabaseID, db.State, db.CreateStatement,
-		db.ExtraStatementsJSON, db.Dialect, db.CreatedAt,
+		db.ExtraStatementsJSON, db.DDLStatementsJSON, db.Dialect, db.CreatedAt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("create spanner database: %w", err)
@@ -520,11 +526,11 @@ func (s *Store) GetSpannerDatabase(name string) (SpannerDatabase, bool, error) {
 	var db SpannerDatabase
 	err := s.db.QueryRow(
 		`SELECT name, instance_name, project_id, instance_id, database_id, state, create_statement,
-		        extra_statements_json, dialect, created_at
+		        extra_statements_json, COALESCE(ddl_statements_json, '[]'), dialect, created_at
 		 FROM spanner_databases WHERE name = ?`, name,
 	).Scan(
 		&db.Name, &db.InstanceName, &db.ProjectID, &db.InstanceID, &db.DatabaseID, &db.State, &db.CreateStatement,
-		&db.ExtraStatementsJSON, &db.Dialect, &db.CreatedAt,
+		&db.ExtraStatementsJSON, &db.DDLStatementsJSON, &db.Dialect, &db.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return SpannerDatabase{}, false, nil
@@ -539,7 +545,7 @@ func (s *Store) GetSpannerDatabase(name string) (SpannerDatabase, bool, error) {
 func (s *Store) ListSpannerDatabases(instanceName string) ([]SpannerDatabase, error) {
 	rows, err := s.db.Query(
 		`SELECT name, instance_name, project_id, instance_id, database_id, state, create_statement,
-		        extra_statements_json, dialect, created_at
+		        extra_statements_json, COALESCE(ddl_statements_json, '[]'), dialect, created_at
 		 FROM spanner_databases WHERE instance_name = ? ORDER BY name`,
 		instanceName,
 	)
@@ -552,13 +558,45 @@ func (s *Store) ListSpannerDatabases(instanceName string) ([]SpannerDatabase, er
 		var db SpannerDatabase
 		if err := rows.Scan(
 			&db.Name, &db.InstanceName, &db.ProjectID, &db.InstanceID, &db.DatabaseID, &db.State, &db.CreateStatement,
-			&db.ExtraStatementsJSON, &db.Dialect, &db.CreatedAt,
+			&db.ExtraStatementsJSON, &db.DDLStatementsJSON, &db.Dialect, &db.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
 		out = append(out, db)
 	}
 	return out, rows.Err()
+}
+
+// AppendSpannerDDL stores DDL statements theatre-side (no schema engine).
+func (s *Store) AppendSpannerDDL(name string, statements []string) (SpannerDatabase, bool, error) {
+	db, ok, err := s.GetSpannerDatabase(name)
+	if err != nil || !ok {
+		return SpannerDatabase{}, ok, err
+	}
+	var existing []string
+	if db.DDLStatementsJSON != "" && db.DDLStatementsJSON != "[]" {
+		_ = json.Unmarshal([]byte(db.DDLStatementsJSON), &existing)
+	}
+	existing = append(existing, statements...)
+	raw, err := json.Marshal(existing)
+	if err != nil {
+		return SpannerDatabase{}, false, err
+	}
+	res, err := s.db.Exec(
+		`UPDATE spanner_databases SET ddl_statements_json = ? WHERE name = ?`,
+		string(raw), name,
+	)
+	if err != nil {
+		return SpannerDatabase{}, false, fmt.Errorf("append spanner ddl: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return SpannerDatabase{}, false, err
+	}
+	if n == 0 {
+		return SpannerDatabase{}, false, nil
+	}
+	return s.GetSpannerDatabase(name)
 }
 
 // DeleteSpannerDatabase deletes a database and its sessions.

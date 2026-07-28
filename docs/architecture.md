@@ -25,7 +25,8 @@ flowchart TB
       DOC[Firestore / KMS / Logging]
       CMP[Run / Functions / Scheduler / Tasks]
       AN[BQ / Firebase Auth / Monitoring / Datastore / Eventarc]
-      EXP[Artifact Registry / Cloud Build / Workflows / Spanner / App Engine]
+      APPS[Artifact Registry / Cloud Build / Workflows / Spanner / App Engine]
+      CDATA[Compute Engine / Bigtable / Memorystore / DNS / Dataflow]
     end
   end
 
@@ -43,7 +44,8 @@ flowchart TB
   REST --> DOC
   REST --> CMP
   REST --> AN
-  REST --> EXP
+  REST --> APPS
+  REST --> CDATA
   GRPC --> DATA
   GRPC --> DOC
   GRPC --> AN
@@ -52,7 +54,8 @@ flowchart TB
   DOC --> AUTHZ
   CMP --> AUTHZ
   AN --> AUTHZ
-  EXP --> AUTHZ
+  APPS --> AUTHZ
+  CDATA --> AUTHZ
   AUTHZ --> STORE
   STORE --> DATAVOL
   AEAD --> SECRETS
@@ -82,9 +85,10 @@ flowchart TB
 | `registerIdentity` | Cloud Resource Manager (projects, org seed, folders), IAM Admin, Service Usage (REST); creates gRPC server + Bearer interceptors |
 | `registerData` | Cloud Storage (REST), Pub/Sub (gRPC + REST), Secret Manager (REST + gRPC) |
 | `registerDocsCrypto` | Firestore (gRPC), Cloud KMS (REST), Cloud Logging (REST) |
-| `registerExpandCompute` | Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks (REST) |
-| `registerExpandAnalytics` | BigQuery (REST), Firebase Auth / Identity Toolkit (REST), Cloud Monitoring (REST), Datastore (gRPC), Eventarc (REST) |
-| `registerExpandStage2` | Artifact Registry, Cloud Build, Workflows, Cloud Spanner, App Engine (REST) |
+| `registerServerless` | Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks (REST) |
+| `registerAnalytics` | BigQuery (REST), Firebase Auth / Identity Toolkit (REST), Cloud Monitoring (REST), Datastore (gRPC), Eventarc (REST) |
+| `registerAppsBuild` | Artifact Registry, Cloud Build, Workflows, Cloud Spanner, App Engine (REST) |
+| `registerComputeData` | Compute Engine (incl. VPC/firewall), Bigtable Admin, Memorystore Redis, Cloud DNS, Dataflow (REST) |
 
 ## Request path
 

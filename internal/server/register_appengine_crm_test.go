@@ -99,6 +99,65 @@ func TestCRMOrganizationAndFoldersViaServer(t *testing.T) {
 	}
 }
 
+func TestCRMMoveFolderViaServer(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+
+	createA := []byte(`{"parent":"` + store.DefaultOrganizationName + `","displayName":"Move Child"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v3/folders", bytes.NewReader(createA))
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create child status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var folderA map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &folderA)
+	idA := folderA["name"].(string)[len("folders/"):]
+
+	createB := []byte(`{"parent":"` + store.DefaultOrganizationName + `","displayName":"Move Parent"}`)
+	req = httptest.NewRequest(http.MethodPost, "/v3/folders", bytes.NewReader(createB))
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create parent status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var folderB map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &folderB)
+	idB := folderB["name"].(string)[len("folders/"):]
+
+	moveBody := []byte(`{"destinationParent":"folders/` + idB + `"}`)
+	req = httptest.NewRequest(http.MethodPost, "/v3/folders/"+idA+":move", bytes.NewReader(moveBody))
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var moved map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &moved)
+	if moved["parent"] != "folders/"+idB {
+		t.Fatalf("moved parent = %#v", moved["parent"])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v3/folders/"+idA, nil)
+	req.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get moved folder status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["parent"] != "folders/"+idB {
+		t.Fatalf("get parent = %#v", got["parent"])
+	}
+}
+
 func TestAppEngineViaServer(t *testing.T) {
 	srv, cfg := testServer(t)
 	appID := cfg.ProjectID

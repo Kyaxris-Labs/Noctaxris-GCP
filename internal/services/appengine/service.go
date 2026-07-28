@@ -28,10 +28,12 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/apps/{app}", s.wrap(principalFrom, s.getApp))
 	mux.HandleFunc("GET /v1/apps/{app}/services", s.wrap(principalFrom, s.listServices))
 	mux.HandleFunc("GET /v1/apps/{app}/services/{service}", s.wrap(principalFrom, s.getService))
+	mux.HandleFunc("PATCH /v1/apps/{app}/services/{service}", s.wrap(principalFrom, s.patchService))
 	mux.HandleFunc("GET /v1/apps/{app}/services/{service}/versions", s.wrap(principalFrom, s.listVersions))
 	mux.HandleFunc("POST /v1/apps/{app}/services/{service}/versions", s.wrap(principalFrom, s.createVersion))
 	mux.HandleFunc("GET /v1/apps/{app}/services/{service}/versions/{version}", s.wrap(principalFrom, s.getVersion))
 	mux.HandleFunc("DELETE /v1/apps/{app}/services/{service}/versions/{version}", s.wrap(principalFrom, s.deleteVersion))
+	mux.HandleFunc("GET /v1/apps/{app}/services/{service}/versions/{version}/instances", s.wrap(principalFrom, s.listInstances))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -189,6 +191,73 @@ func (s *Service) getService(w http.ResponseWriter, r *http.Request, p authn.Pri
 	writeJSON(w, http.StatusOK, toServiceJSON(svc))
 }
 
+func (s *Service) patchService(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	appID := r.PathValue("app")
+	serviceID := r.PathValue("service")
+	if err := s.require(p, "appengine.services.update", appID); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	if _, ok, err := s.Store.GetAppEngineService(appID, serviceID); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Service not found")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		Split   map[string]any `json:"split"`
+		ShardBy string         `json:"shardBy"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			gcperrors.InvalidArgument(w, "invalid JSON body")
+			return
+		}
+	}
+	migrateTraffic := strings.EqualFold(r.URL.Query().Get("migrateTraffic"), "true")
+	splitJSON := "{}"
+	if req.Split != nil {
+		raw, _ := json.Marshal(req.Split)
+		splitJSON = string(raw)
+	}
+	svc, ok, err := s.Store.UpdateAppEngineServiceTraffic(appID, serviceID, splitJSON, req.ShardBy, migrateTraffic)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Service not found")
+		return
+	}
+	// Lab returns Service synchronously (GCP returns an LRO Operation).
+	writeJSON(w, http.StatusOK, toServiceJSON(svc))
+}
+
+func (s *Service) listInstances(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	appID := r.PathValue("app")
+	serviceID := r.PathValue("service")
+	versionID := r.PathValue("version")
+	if err := s.require(p, "appengine.instances.list", appID); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	if _, ok, err := s.Store.GetAppEngineVersion(appID, serviceID, versionID); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Version not found")
+		return
+	}
+	// No runtime / no DinD: empty instance list.
+	writeJSON(w, http.StatusOK, map[string]any{"instances": []any{}})
+}
+
 func (s *Service) listVersions(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	appID := r.PathValue("app")
 	serviceID := r.PathValue("service")
@@ -334,13 +403,17 @@ func toAppJSON(app store.AppEngineApp) map[string]any {
 }
 
 func toServiceJSON(svc store.AppEngineService) map[string]any {
-	return map[string]any{
-		"name": svc.Name,
-		"id":   svc.ServiceID,
-		"split": map[string]any{
-			"allocations": map[string]any{},
-		},
+	var split any = map[string]any{"allocations": map[string]any{}}
+	if svc.SplitJSON != "" && svc.SplitJSON != "{}" {
+		_ = json.Unmarshal([]byte(svc.SplitJSON), &split)
 	}
+	out := map[string]any{
+		"name":    svc.Name,
+		"id":      svc.ServiceID,
+		"split":   split,
+		"shardBy": svc.ShardBy,
+	}
+	return out
 }
 
 func toVersionJSON(v store.AppEngineVersion) map[string]any {

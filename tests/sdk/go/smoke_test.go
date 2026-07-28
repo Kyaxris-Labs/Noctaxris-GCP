@@ -315,3 +315,101 @@ func TestGetAppEngineAppSmoke(t *testing.T) {
 		t.Fatalf("app id=%v want %s body=%s", parsed["id"], project, body)
 	}
 }
+
+func TestListComputeInstancesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/compute/v1/projects/" + project + "/zones/us-central1-a/instances"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list compute instances status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode compute instances: %v body=%s", err, body)
+	}
+	if kind, _ := parsed["kind"].(string); kind != "compute#instanceList" {
+		t.Fatalf("kind=%v want compute#instanceList body=%s", parsed["kind"], body)
+	}
+	if _, ok := parsed["items"]; !ok {
+		t.Fatalf("missing items field body=%s", body)
+	}
+}
+
+func TestListDNSManagedZonesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/dns/v1/projects/" + project + "/managedZones"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list managed zones status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode managed zones: %v body=%s", err, body)
+	}
+	if _, ok := parsed["managedZones"]; !ok {
+		t.Fatalf("missing managedZones field body=%s", body)
+	}
+}
+
+func TestListBigtableInstancesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v2/projects/" + project + "/instances"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list bigtable instances status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode bigtable instances: %v body=%s", err, body)
+	}
+	if _, ok := parsed["instances"]; !ok {
+		t.Fatalf("missing instances field body=%s", body)
+	}
+}
+
+func TestListMemorystoreInstancesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/locations/us-central1/instances"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list memorystore instances status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode memorystore instances: %v body=%s", err, body)
+	}
+	if _, ok := parsed["instances"]; !ok {
+		t.Fatalf("missing instances field body=%s", body)
+	}
+}
+
+func TestListDataflowJobsSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1b3/projects/" + project + "/locations/us-central1/jobs"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list dataflow jobs status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode dataflow jobs: %v body=%s", err, body)
+	}
+	if _, ok := parsed["jobs"]; !ok {
+		t.Fatalf("missing jobs field body=%s", body)
+	}
+}

@@ -158,12 +158,14 @@ func (h *Handler) servicesCollectionPost(w http.ResponseWriter, r *http.Request)
 	projectID := r.PathValue("project")
 	col, action := splitColonAction(r.PathValue("servicesCol"))
 	if col != "services" || action == "" {
-		gcperrors.InvalidArgument(w, "expected services:batchEnable|batchGet")
+		gcperrors.InvalidArgument(w, "expected services:batchEnable|batchDisable|batchGet")
 		return
 	}
 	switch action {
 	case "batchEnable":
 		h.batchEnable(w, r, projectID)
+	case "batchDisable":
+		h.batchDisable(w, r, projectID)
 	case "batchGet":
 		// Accept POST body {"names":[...]} in addition to official GET + query.
 		h.batchGet(w, r, projectID)
@@ -208,6 +210,47 @@ func (h *Handler) batchEnable(w http.ResponseWriter, r *http.Request, projectID 
 		"done": true,
 		"response": map[string]any{
 			"@type":    "type.googleapis.com/google.api.serviceusage.v1.BatchEnableServicesResponse",
+			"services": services,
+		},
+	})
+}
+
+func (h *Handler) batchDisable(w http.ResponseWriter, r *http.Request, projectID string) {
+	resource := "projects/" + projectID
+	if !h.require(w, r, "serviceusage.services.disable", resource) {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		ServiceIDs []string `json:"serviceIds"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	if err := h.Store.BatchDisableServiceUsage(projectID, req.ServiceIDs); err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	services := make([]map[string]any, 0, len(req.ServiceIDs))
+	for _, id := range req.ServiceIDs {
+		id = strings.TrimSpace(id)
+		services = append(services, map[string]any{
+			"name":   "projects/" + projectID + "/services/" + id,
+			"parent": "projects/" + projectID,
+			"state":  "DISABLED",
+			"config": serviceConfig(id),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": "operations/batchDisable-" + projectID,
+		"done": true,
+		"response": map[string]any{
+			"@type":    "type.googleapis.com/google.api.serviceusage.v1.BatchDisableServicesResponse",
 			"services": services,
 		},
 	})
@@ -296,9 +339,15 @@ func serviceJSON(u store.ServiceUsage) map[string]any {
 }
 
 func serviceConfig(serviceName string) map[string]any {
-	cfg := map[string]any{"name": serviceName}
+	cfg := map[string]any{
+		"name": serviceName,
+		"apis": []map[string]any{{"name": serviceName}},
+	}
 	if title := serviceTitle(serviceName); title != "" {
 		cfg["title"] = title
+		cfg["documentation"] = map[string]any{
+			"summary": title,
+		}
 	}
 	return cfg
 }
@@ -323,6 +372,16 @@ func serviceTitle(serviceName string) string {
 		"monitoring.googleapis.com":           "Cloud Monitoring API",
 		"datastore.googleapis.com":            "Cloud Datastore API",
 		"eventarc.googleapis.com":             "Eventarc API",
+		"appengine.googleapis.com":            "App Engine Admin API",
+		"artifactregistry.googleapis.com":     "Artifact Registry API",
+		"cloudbuild.googleapis.com":           "Cloud Build API",
+		"workflows.googleapis.com":            "Workflows API",
+		"spanner.googleapis.com":              "Cloud Spanner API",
+		"compute.googleapis.com":              "Compute Engine API",
+		"dns.googleapis.com":                  "Cloud DNS API",
+		"dataflow.googleapis.com":             "Dataflow API",
+		"bigtableadmin.googleapis.com":        "Cloud Bigtable Admin API",
+		"redis.googleapis.com":                "Google Cloud Memorystore for Redis API",
 	}
 	return titles[serviceName]
 }

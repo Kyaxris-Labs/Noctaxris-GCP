@@ -23,17 +23,27 @@ if (-not $env:NOCTAXRIS_GCP_ENDPOINT) { Write-Host "NOCTAXRIS_GCP_ENDPOINT unset
 |-------|-----------|---------------------------|
 | `lab-storage` (default set) | GCS bucket, Secret Manager secret, Pub/Sub topic | `storage_custom_endpoint` (`…/storage/v1/`), `secret_manager_custom_endpoint` (`…/v1/`), `pubsub_custom_endpoint` (`…/v1/`) |
 | `lab-run` | Cloud Run v2 service (metadata theatre; no containers) | `cloud_run_v2_custom_endpoint` (`…/v2/`) |
+| `lab-dns` | Cloud DNS managed zone | `dns_custom_endpoint` (`…/dns/v1/`) |
+| `lab-compute` | Compute VPC network (metadata theatre; no VMs) | `compute_custom_endpoint` (`…/compute/v1/`) |
 
 Secrets stay in `lab-storage` (no separate `lab-secrets` stack). Auth uses
 `GOOGLE_OAUTH_ACCESS_TOKEN` set from the root Bearer by `run.sh`.
 
 ```bash
 # one stack
-STACK=lab-run bash tests/terraform/run.sh
+STACK=lab-dns bash tests/terraform/run.sh
 
 # subset
-STACKS="lab-storage lab-run" bash tests/terraform/run.sh
+STACKS="lab-storage lab-run lab-dns lab-compute" bash tests/terraform/run.sh
 ```
+
+## Honest skips
+
+| Gap | Why not a stack |
+|-----|-----------------|
+| `google_dns_record_set` | Provider uses `Changes.create`; lab has rrsets CRUD only (no Changes API) |
+| `google_compute_instance` | Provider `ResolveImage` needs Images API; lab has no disks/images |
+| `google_bigtable_*` | Provider uses gRPC `InstanceAdminClient`; lab Bigtable Admin is REST `/v2/` only (`bigtable_custom_endpoint` alone is not enough) |
 
 When Compose publishes `127.0.0.1:4588` on a Windows host, run Terraform from
 that host (not WSL loopback).

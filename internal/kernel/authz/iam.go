@@ -163,7 +163,7 @@ func memberIn(members []string, want string) bool {
 	return false
 }
 
-// roleGrants is a lab-complete role→permission map for Wave 1 scaffolding.
+// roleGrants is a lab-complete role→permission map for seeded IAM roles.
 // roles/owner grants every permission. Other roles grant matching prefixes.
 func roleGrants(role, permission string) bool {
 	switch role {
@@ -226,6 +226,8 @@ func viewerGrants(permission string) bool {
 		"pubsub.topics.list",
 		"pubsub.subscriptions.get",
 		"pubsub.subscriptions.list",
+		"pubsub.snapshots.get",
+		"pubsub.snapshots.list",
 		"secretmanager.secrets.get",
 		"secretmanager.secrets.list",
 		"secretmanager.versions.get",

@@ -10,7 +10,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/secretmanager"
 )
 
-// registerData mounts Wave 1 DATA services: Cloud Storage, Pub/Sub, Secret Manager.
+// registerData mounts Cloud Storage, Pub/Sub, and Secret Manager.
 // Requires s.grpc from registerIdentity / newGRPCServer.
 func (s *Server) registerData() {
 	if s.grpc == nil {

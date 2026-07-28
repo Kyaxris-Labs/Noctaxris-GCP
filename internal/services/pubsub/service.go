@@ -553,8 +553,11 @@ func (s *Service) Seek(ctx context.Context, req *pubsubpb.SeekRequest) (*pubsubp
 	if err := s.require(ctx, "pubsub.subscriptions.consume", projectResource(projectID)); err != nil {
 		return nil, err
 	}
+	if req.GetSnapshot() != "" {
+		return nil, status.Error(codes.InvalidArgument, "seek to snapshot not supported (snapshot CRUD is metadata-only)")
+	}
 	if req.GetTime() == nil {
-		return nil, status.Error(codes.InvalidArgument, "seek time required (snapshots not supported)")
+		return nil, status.Error(codes.InvalidArgument, "seek time required")
 	}
 	if err := s.Store.SeekToTime(req.GetSubscription(), req.GetTime().AsTime()); err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -563,6 +566,82 @@ func (s *Service) Seek(ctx context.Context, req *pubsubpb.SeekRequest) (*pubsubp
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 	return &pubsubpb.SeekResponse{}, nil
+}
+
+func (s *Service) CreateSnapshot(ctx context.Context, req *pubsubpb.CreateSnapshotRequest) (*pubsubpb.Snapshot, error) {
+	projectID := projectFromResource(req.GetName())
+	if projectID == "" {
+		return nil, gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid snapshot name")
+	}
+	if err := s.require(ctx, "pubsub.snapshots.create", projectResource(projectID)); err != nil {
+		return nil, err
+	}
+	snap, created, err := s.Store.CreateSnapshot(req.GetName(), req.GetSubscription(), req.GetLabels())
+	if err != nil {
+		if strings.Contains(err.Error(), "subscription not found") {
+			return nil, status.Error(codes.NotFound, "subscription not found")
+		}
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	if !created {
+		return nil, status.Error(codes.AlreadyExists, "snapshot already exists")
+	}
+	return snapshotPB(snap), nil
+}
+
+func (s *Service) GetSnapshot(ctx context.Context, req *pubsubpb.GetSnapshotRequest) (*pubsubpb.Snapshot, error) {
+	projectID := projectFromResource(req.GetSnapshot())
+	if projectID == "" {
+		return nil, gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid snapshot name")
+	}
+	if err := s.require(ctx, "pubsub.snapshots.get", projectResource(projectID)); err != nil {
+		return nil, err
+	}
+	snap, ok, err := s.Store.GetSnapshot(req.GetSnapshot())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	if !ok {
+		return nil, status.Error(codes.NotFound, "snapshot not found")
+	}
+	return snapshotPB(snap), nil
+}
+
+func (s *Service) ListSnapshots(ctx context.Context, req *pubsubpb.ListSnapshotsRequest) (*pubsubpb.ListSnapshotsResponse, error) {
+	projectID := strings.TrimPrefix(req.GetProject(), "projects/")
+	if projectID == "" || strings.Contains(projectID, "/") {
+		return nil, gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid project")
+	}
+	if err := s.require(ctx, "pubsub.snapshots.list", projectResource(projectID)); err != nil {
+		return nil, err
+	}
+	list, err := s.Store.ListSnapshots(projectID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	out := &pubsubpb.ListSnapshotsResponse{}
+	for i := range list {
+		out.Snapshots = append(out.Snapshots, snapshotPB(&list[i]))
+	}
+	return out, nil
+}
+
+func (s *Service) DeleteSnapshot(ctx context.Context, req *pubsubpb.DeleteSnapshotRequest) (*emptypb.Empty, error) {
+	projectID := projectFromResource(req.GetSnapshot())
+	if projectID == "" {
+		return nil, gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid snapshot name")
+	}
+	if err := s.require(ctx, "pubsub.snapshots.delete", projectResource(projectID)); err != nil {
+		return nil, err
+	}
+	ok, err := s.Store.DeleteSnapshot(req.GetSnapshot())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	if !ok {
+		return nil, status.Error(codes.NotFound, "snapshot not found")
+	}
+	return &emptypb.Empty{}, nil
 }
 
 func pullResponse(msgs []store.PubSubMessage) *pubsubpb.PullResponse {
@@ -600,6 +679,14 @@ func receivedMessages(msgs []store.PubSubMessage) []*pubsubpb.ReceivedMessage {
 
 func topicPB(t *store.PubSubTopic) *pubsubpb.Topic {
 	return &pubsubpb.Topic{Name: t.Name, Labels: t.Labels}
+}
+
+func snapshotPB(s *store.PubSubSnapshot) *pubsubpb.Snapshot {
+	out := &pubsubpb.Snapshot{Name: s.Name, Topic: s.Topic, Labels: s.Labels}
+	if ts, err := parseRFCTime(s.ExpireTime); err == nil {
+		out.ExpireTime = timestamppb.New(ts)
+	}
+	return out
 }
 
 func subscriptionPB(sub *store.PubSubSubscription) *pubsubpb.Subscription {

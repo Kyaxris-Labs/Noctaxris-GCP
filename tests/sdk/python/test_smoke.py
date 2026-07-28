@@ -211,3 +211,71 @@ def test_get_app_engine_app_smoke() -> None:
     parsed = json.loads(body)
     if parsed.get("id"):
         assert parsed["id"] == project, body
+
+
+def test_list_compute_instances_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+
+    status, body = do_json(
+        "GET",
+        f"{ep}/compute/v1/projects/{project}/zones/us-central1-a/instances",
+        token,
+    )
+    assert status == 200, body
+    parsed = json.loads(body)
+    assert parsed.get("kind") == "compute#instanceList", body
+    assert "items" in parsed, body
+
+
+def test_list_dns_managed_zones_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+
+    status, body = do_json("GET", f"{ep}/dns/v1/projects/{project}/managedZones", token)
+    assert status == 200, body
+    parsed = json.loads(body)
+    assert "managedZones" in parsed, body
+
+
+def test_list_bigtable_instances_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+
+    status, body = do_json("GET", f"{ep}/v2/projects/{project}/instances", token)
+    assert status == 200, body
+    parsed = json.loads(body)
+    assert "instances" in parsed, body
+
+
+def test_list_memorystore_instances_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+
+    status, body = do_json(
+        "GET",
+        f"{ep}/v1/projects/{project}/locations/us-central1/instances",
+        token,
+    )
+    assert status == 200, body
+    parsed = json.loads(body)
+    assert "instances" in parsed, body
+
+
+def test_list_dataflow_jobs_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+
+    status, body = do_json(
+        "GET",
+        f"{ep}/v1b3/projects/{project}/locations/us-central1/jobs",
+        token,
+    )
+    assert status == 200, body
+    parsed = json.loads(body)
+    assert "jobs" in parsed, body

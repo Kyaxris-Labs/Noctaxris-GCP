@@ -32,6 +32,11 @@ func (s *Service) RegisterREST(mux *http.ServeMux, principal HTTPPrincipal) {
 	mux.HandleFunc("PATCH /v1/projects/{project}/subscriptions/{subscription}", h.patchSubscription)
 	mux.HandleFunc("DELETE /v1/projects/{project}/subscriptions/{subscription}", h.deleteSubscription)
 	mux.HandleFunc("POST /v1/projects/{project}/subscriptions/{subscription}", h.subscriptionPost)
+
+	mux.HandleFunc("GET /v1/projects/{project}/snapshots", h.listSnapshots)
+	mux.HandleFunc("PUT /v1/projects/{project}/snapshots/{snapshot}", h.createSnapshot)
+	mux.HandleFunc("GET /v1/projects/{project}/snapshots/{snapshot}", h.getSnapshot)
+	mux.HandleFunc("DELETE /v1/projects/{project}/snapshots/{snapshot}", h.deleteSnapshot)
 }
 
 type restHandler struct {
@@ -74,6 +79,10 @@ func topicName(project, topicID string) string {
 
 func subName(project, subID string) string {
 	return "projects/" + project + "/subscriptions/" + subID
+}
+
+func snapshotName(project, snapshotID string) string {
+	return "projects/" + project + "/snapshots/" + snapshotID
 }
 
 func (h *restHandler) listTopics(w http.ResponseWriter, r *http.Request) {
@@ -505,14 +514,19 @@ func (h *restHandler) seek(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Time string `json:"time"`
+		Time     string `json:"time"`
+		Snapshot string `json:"snapshot"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid seek body")
 		return
 	}
+	if body.Snapshot != "" {
+		gcperrors.InvalidArgument(w, "seek to snapshot not supported (snapshot CRUD is metadata-only)")
+		return
+	}
 	if body.Time == "" {
-		gcperrors.InvalidArgument(w, "seek time required (snapshots not supported)")
+		gcperrors.InvalidArgument(w, "seek time required")
 		return
 	}
 	t, err := time.Parse(time.RFC3339Nano, body.Time)
@@ -535,12 +549,113 @@ func (h *restHandler) seek(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("{}"))
 }
 
+func (h *restHandler) listSnapshots(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	if !h.require(w, r, "pubsub.snapshots.list", projectResource(project)) {
+		return
+	}
+	list, err := h.svc.Store.ListSnapshots(project)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	snaps := make([]map[string]any, 0, len(list))
+	for i := range list {
+		snaps = append(snaps, snapshotJSON(&list[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": snaps})
+}
+
+func (h *restHandler) createSnapshot(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	snapID, _ := splitColon(r.PathValue("snapshot"))
+	if !h.require(w, r, "pubsub.snapshots.create", projectResource(project)) {
+		return
+	}
+	var body struct {
+		Subscription string            `json:"subscription"`
+		Labels       map[string]string `json:"labels"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid snapshot body")
+		return
+	}
+	if strings.TrimSpace(body.Subscription) == "" {
+		gcperrors.InvalidArgument(w, "subscription required")
+		return
+	}
+	snap, created, err := h.svc.Store.CreateSnapshot(snapshotName(project, snapID), body.Subscription, body.Labels)
+	if err != nil {
+		if strings.Contains(err.Error(), "subscription not found") {
+			gcperrors.NotFound(w, "subscription not found")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !created {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "snapshot already exists")
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshotJSON(snap))
+}
+
+func (h *restHandler) getSnapshot(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	snapID, _ := splitColon(r.PathValue("snapshot"))
+	if !h.require(w, r, "pubsub.snapshots.get", projectResource(project)) {
+		return
+	}
+	snap, ok, err := h.svc.Store.GetSnapshot(snapshotName(project, snapID))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "snapshot not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshotJSON(snap))
+}
+
+func (h *restHandler) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	snapID, _ := splitColon(r.PathValue("snapshot"))
+	if !h.require(w, r, "pubsub.snapshots.delete", projectResource(project)) {
+		return
+	}
+	ok, err := h.svc.Store.DeleteSnapshot(snapshotName(project, snapID))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "snapshot not found")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("{}"))
+}
+
 func topicJSON(t *store.PubSubTopic) map[string]any {
 	labels := t.Labels
 	if labels == nil {
 		labels = map[string]string{}
 	}
 	return map[string]any{"name": t.Name, "labels": labels}
+}
+
+func snapshotJSON(s *store.PubSubSnapshot) map[string]any {
+	labels := s.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	return map[string]any{
+		"name":       s.Name,
+		"topic":      s.Topic,
+		"expireTime": s.ExpireTime,
+		"labels":     labels,
+	}
 }
 
 func subscriptionJSON(sub *store.PubSubSubscription) map[string]any {

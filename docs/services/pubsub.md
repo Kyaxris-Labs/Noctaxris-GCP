@@ -3,9 +3,9 @@
 **Status:** lab
 
 gRPC `google.pubsub.v1.Publisher` / `Subscriber` and a REST mirror under
-`/v1/projects/{project}/topics|subscriptions` on the shared port. Official Go
-clients that honor `PUBSUB_EMULATOR_HOST` can target the same address;
-Terraform typically uses the REST surface.
+`/v1/projects/{project}/topics|subscriptions|snapshots` on the shared port.
+Official Go clients that honor `PUBSUB_EMULATOR_HOST` can target the same
+address; Terraform typically uses the REST surface.
 
 ## Implemented
 
@@ -13,6 +13,7 @@ Terraform typically uses the REST surface.
 |------|---------|
 | Topics | Create / Get / List / Delete / Update (gRPC + REST); Publish |
 | Subscriptions | Create / Get / List / Delete / Update (gRPC + REST); Pull; Acknowledge; ModifyAckDeadline |
+| Snapshots | Create / Get / List / Delete (gRPC + REST); metadata only |
 | Filters | Attribute equality: `attributes.key = "value"` (AND-combined terms); non-matching messages are not delivered |
 | Seek | Seek to time (gRPC + REST `:seek`); clears ack state for later messages, deletes earlier backlog |
 | StreamingPull | Long-lived loop: recv acks/modacks, send messages until client cancels |
@@ -25,6 +26,11 @@ REST paths (colon actions live inside path wildcards):
 - `POST /v1/projects/{p}/topics/{topic}:publish`
 - `PUT|GET|PATCH|DELETE /v1/projects/{p}/subscriptions/{sub}`
 - `POST .../subscriptions/{sub}:pull|:acknowledge|:modifyAckDeadline|:modifyPushConfig|:seek`
+- `PUT|GET|DELETE /v1/projects/{p}/snapshots/{snap}`
+- `GET /v1/projects/{p}/snapshots`
+
+Create snapshot body: `{"subscription":"projects/.../subscriptions/...","labels":{...}}`.
+Response includes `name`, `topic` (from the subscription), `expireTime` (lab: create+7d), and `labels`.
 
 Publish fans out one stored copy per matching subscription. Pull leases messages for the
 subscription ack deadline; Acknowledge deletes them. Push delivery is best-effort
@@ -32,9 +38,10 @@ and does not block publish success when the endpoint is unreachable.
 
 ### Authz
 
-Permissions such as `pubsub.topics.*` and `pubsub.subscriptions.*` (including
-`pubsub.subscriptions.consume` for Pull / Acknowledge / ModifyAckDeadline /
-StreamingPull / Seek) are evaluated on `projects/{projectId}`.
+Permissions such as `pubsub.topics.*`, `pubsub.subscriptions.*`, and
+`pubsub.snapshots.*` (including `pubsub.subscriptions.consume` for Pull /
+Acknowledge / ModifyAckDeadline / StreamingPull / Seek) are evaluated on
+`projects/{projectId}`.
 
 gRPC Bearer auth is applied by the shared server interceptor. Handlers also
 re-check IAM when a principal is present.
@@ -42,7 +49,7 @@ re-check IAM when a principal is present.
 ## Emulator limits
 
 - No ordering keys, exactly-once delivery, or schemas
-- No snapshots (seek-to-snapshot returns invalid argument)
+- Snapshots are metadata-only (no backlog retention); seek-to-snapshot returns invalid argument
 - Filter language is attribute equality only (no HAS, OR, NOT)
 - Message retention and backlog quotas are not enforced
 - Push has no OIDC / auth header injection
@@ -90,6 +97,10 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"maxMessages":10}' \
   "$EP/v1/projects/$PROJECT/subscriptions/lab-sub:pull"
 
+curl -sS -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"subscription\":\"projects/$PROJECT/subscriptions/lab-sub\"}" \
+  "$EP/v1/projects/$PROJECT/snapshots/lab-snap"
+
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"pushConfig":{"pushEndpoint":"http://127.0.0.1:9/push"}}' \
   "$EP/v1/projects/$PROJECT/subscriptions/lab-sub:modifyPushConfig"
@@ -100,6 +111,7 @@ Also: `go test ./internal/server/ -run 'TestPubSub'`
 ## Deferred depth
 
 - Ordering keys / exactly-once / schemas
-- Snapshots and dead-letter policies
+- Snapshot backlog retention and seek-to-snapshot
+- Dead-letter policies
 - Full filter language (OR / NOT / HAS)
 - Authenticated push (OIDC)

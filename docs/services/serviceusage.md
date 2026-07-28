@@ -1,7 +1,7 @@
 # Service Usage
 
-Lab-complete enable, disable, batchEnable, batchGet, get, and list for project
-services.
+Lab-complete enable, disable, batchEnable, batchDisable, batchGet, get, and list
+for project services.
 
 ## Lab actions
 
@@ -13,20 +13,22 @@ services.
 | Enable | `POST` | `/v1/projects/{project}/services/{service}:enable` |
 | Disable | `POST` | `/v1/projects/{project}/services/{service}:disable` |
 | Batch enable | `POST` | `/v1/projects/{project}/services:batchEnable` |
+| Batch disable | `POST` | `/v1/projects/{project}/services:batchDisable` |
 
 Service names look like `storage.googleapis.com`. Resource names are
 `projects/{project}/services/{service}`.
 
 List accepts `filter=state:ENABLED` or `filter=state:DISABLED`.
 
-Batch enable body: `{"serviceIds":["storage.googleapis.com",...]}` (max 20).
-The store update is atomic.
+Batch enable / batch disable body: `{"serviceIds":["storage.googleapis.com",...]}`
+(max 20). The store update is atomic.
 
 Batch get accepts `names` query values (resource names or bare service ids,
 max 30). POST with body `{"names":[...]}` is also accepted.
 
-Get/list/batchGet include `config.name` and, for known seeded APIs,
-`config.title`.
+Get/list/batchGet include `config.name`, `config.apis` (one entry matching the
+service id), and for known seeded APIs `config.title` plus
+`config.documentation.summary`.
 
 Permissions: `serviceusage.services.list|get|enable|disable` on
 `projects/{project}`.
@@ -35,17 +37,17 @@ EnsureRoot seeds known lab APIs as `ENABLED` for the default project
 (CRM, IAM, Service Usage, Storage, Pub/Sub, Secret Manager, Firestore, KMS,
 Logging, Run, Functions, Scheduler, Tasks, BigQuery, Identity Toolkit,
 Monitoring, Datastore, Eventarc, App Engine, Artifact Registry, Cloud Build,
-Workflows, Spanner).
+Workflows, Spanner, Compute Engine, Cloud DNS, Dataflow, Bigtable Admin,
+Memorystore Redis).
 
 IAM create service account refuses with `FAILED_PRECONDITION` when
 `iam.googleapis.com` is DISABLED (example Service Usage gate).
 
 ## Emulator limits
 
-- No batchDisable.
-- Enable/disable/batchEnable return a completed Operation immediately (no async LRO worker).
+- Enable/disable/batchEnable/batchDisable return a completed Operation immediately (no async LRO worker).
 - Get of an unknown service returns `DISABLED` rather than only catalog hits.
-- Config payloads include `name` and a static `title` for seeded APIs only.
+- Config payloads are static lab metadata (`name`, `apis`, optional `title` / `documentation`); not a full Service Config.
 - gRPC `ServiceUsage` is not registered yet; use REST.
 
 ## Verification / CLI smoke

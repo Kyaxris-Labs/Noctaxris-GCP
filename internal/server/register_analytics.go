@@ -11,8 +11,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/monitoring"
 )
 
-// registerExpandAnalytics mounts BigQuery, Firebase Auth, Monitoring, Datastore, and Eventarc.
-func (s *Server) registerExpandAnalytics() {
+// registerAnalytics mounts BigQuery, Firebase Auth, Monitoring, Datastore, and Eventarc.
+func (s *Server) registerAnalytics() {
 	if s.grpc == nil {
 		s.grpc = s.newGRPCServer()
 	}
