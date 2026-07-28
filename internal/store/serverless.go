@@ -561,6 +561,137 @@ func (s *Store) UpdateCloudFunction(name, configJSON, labResponseJSON string) (C
 	return fn, true, nil
 }
 
+// SetCloudFunctionState updates function state theatre (e.g. DEPLOYING → ACTIVE).
+func (s *Store) SetCloudFunctionState(name, state string) (CloudFunction, bool, error) {
+	if state == "" {
+		return CloudFunction{}, false, fmt.Errorf("state required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.Exec(
+		`UPDATE cloud_functions SET state = ?, updated_at = ? WHERE name = ?`,
+		state, now, name,
+	)
+	if err != nil {
+		return CloudFunction{}, false, fmt.Errorf("set cloud function state: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return CloudFunction{}, false, err
+	}
+	if n == 0 {
+		return CloudFunction{}, false, nil
+	}
+	return s.GetCloudFunction(name)
+}
+
+// CloudFunctionUpload is a lab source upload acceptance row.
+type CloudFunctionUpload struct {
+	UploadID   string
+	ProjectID  string
+	Location   string
+	Bucket     string
+	Object     string
+	SizeBytes  int64
+	AcceptedAt string
+}
+
+// AcceptCloudFunctionUpload records a source zip upload theatre (no build).
+func (s *Store) AcceptCloudFunctionUpload(u CloudFunctionUpload) error {
+	if u.UploadID == "" || u.ProjectID == "" || u.Location == "" {
+		return fmt.Errorf("cloud function upload requires upload id, project, and location")
+	}
+	if u.AcceptedAt == "" {
+		u.AcceptedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO cloud_function_uploads
+		 (upload_id, project_id, location, bucket, object, size_bytes, accepted_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		u.UploadID, u.ProjectID, u.Location, u.Bucket, u.Object, u.SizeBytes, u.AcceptedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("accept cloud function upload: %w", err)
+	}
+	return nil
+}
+
+// GetCloudFunctionUpload loads an accepted upload by id.
+func (s *Store) GetCloudFunctionUpload(uploadID string) (CloudFunctionUpload, bool, error) {
+	var u CloudFunctionUpload
+	err := s.db.QueryRow(
+		`SELECT upload_id, project_id, location, bucket, object, size_bytes, accepted_at
+		 FROM cloud_function_uploads WHERE upload_id = ?`, uploadID,
+	).Scan(&u.UploadID, &u.ProjectID, &u.Location, &u.Bucket, &u.Object, &u.SizeBytes, &u.AcceptedAt)
+	if err == sql.ErrNoRows {
+		return CloudFunctionUpload{}, false, nil
+	}
+	if err != nil {
+		return CloudFunctionUpload{}, false, fmt.Errorf("get cloud function upload: %w", err)
+	}
+	return u, true, nil
+}
+
+// HasCloudFunctionUploadObject reports whether a storageSource object was accepted.
+func (s *Store) HasCloudFunctionUploadObject(projectID, bucket, object string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(1) FROM cloud_function_uploads
+		 WHERE project_id = ? AND bucket = ? AND object = ?`,
+		projectID, bucket, object,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ActivateCloudFunctionsForStorageSource sets DEPLOYING functions with matching
+// buildConfig.source.storageSource to ACTIVE after upload accept theatre.
+func (s *Store) ActivateCloudFunctionsForStorageSource(projectID, location, bucket, object string) (int, error) {
+	list, err := s.ListCloudFunctions(projectID, location)
+	if err != nil {
+		return 0, err
+	}
+	activated := 0
+	for _, fn := range list {
+		if fn.State != "DEPLOYING" {
+			continue
+		}
+		b, o, ok := storageSourceFromConfigJSON(fn.ConfigJSON)
+		if !ok || b != bucket || o != object {
+			continue
+		}
+		if _, found, err := s.SetCloudFunctionState(fn.Name, "ACTIVE"); err != nil {
+			return activated, err
+		} else if found {
+			activated++
+		}
+	}
+	return activated, nil
+}
+
+func storageSourceFromConfigJSON(configJSON string) (bucket, object string, ok bool) {
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		return "", "", false
+	}
+	bc, _ := cfg["buildConfig"].(map[string]any)
+	if bc == nil {
+		return "", "", false
+	}
+	src, _ := bc["source"].(map[string]any)
+	if src == nil {
+		return "", "", false
+	}
+	ss, _ := src["storageSource"].(map[string]any)
+	if ss == nil {
+		return "", "", false
+	}
+	bucket, _ = ss["bucket"].(string)
+	object, _ = ss["object"].(string)
+	return bucket, object, bucket != "" && object != ""
+}
+
 // DeleteCloudFunction removes a function.
 func (s *Store) DeleteCloudFunction(name string) (bool, error) {
 	res, err := s.db.Exec(`DELETE FROM cloud_functions WHERE name = ?`, name)

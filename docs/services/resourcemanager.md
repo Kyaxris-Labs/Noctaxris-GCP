@@ -2,8 +2,8 @@
 
 Lab-complete project get/list/search/patch (displayName + labels) and project IAM
 policy methods on the Resource Manager REST surface, plus v1 getAncestry theatre,
-a seeded organization with org IAM lite, and folders CRUD including move,
-undelete, and search.
+a seeded organization with org IAM lite, folders CRUD including move, undelete,
+and search, and TagKeys / TagBindings lite.
 
 ## Lab actions
 
@@ -30,6 +30,14 @@ undelete, and search.
 | Undelete folder | `POST` | `/v3/folders/{folder}:undelete` |
 | Folder get IAM policy | `POST` | `/v3/folders/{folder}:getIamPolicy` |
 | Folder set IAM policy | `POST` | `/v3/folders/{folder}:setIamPolicy` |
+| Create tag key | `POST` | `/v3/tagKeys` |
+| List tag keys | `GET` | `/v3/tagKeys?parent=` |
+| Get tag key | `GET` | `/v3/tagKeys/{tagKey}` |
+| Delete tag key | `DELETE` | `/v3/tagKeys/{tagKey}` |
+| Create tag binding | `POST` | `/v3/tagBindings` |
+| List tag bindings | `GET` | `/v3/tagBindings?parent=` |
+| Get tag binding | `GET` | `/v3/tagBindings/{tagBinding}` |
+| Delete tag binding | `DELETE` | `/v3/tagBindings/{tagBinding}` |
 
 Permissions checked (except `testIamPermissions`): `resourcemanager.projects.get`,
 `resourcemanager.projects.list`, `resourcemanager.projects.search`,
@@ -38,13 +46,16 @@ Permissions checked (except `testIamPermissions`): `resourcemanager.projects.get
 `resourcemanager.organizations.getIamPolicy`,
 `resourcemanager.organizations.setIamPolicy`,
 `resourcemanager.folders.create|get|list|update|delete|move|undelete`,
-`resourcemanager.folders.getIamPolicy`, `resourcemanager.folders.setIamPolicy`.
+`resourcemanager.folders.getIamPolicy`, `resourcemanager.folders.setIamPolicy`,
+`resourcemanager.tagKeys.create|get|list|delete`,
+`resourcemanager.tagBindings.create|get|list|delete`.
 List/search authorize against `projects/-` (or the optional `parent` query for
 list). Folder list/create authorize against the `parent` resource; move checks
 the folder and `destinationParent`. Folder search authorizes against `folders/-`.
-The root principal bypasses IAM evaluation. `testIamPermissions` returns the
-subset of requested permissions the caller holds; calling it does not require
-its own permission.
+Tag key create/list authorize against the TagKey `parent`; tag binding create/list
+authorize against the binding `parent`. The root principal bypasses IAM
+evaluation. `testIamPermissions` returns the subset of requested permissions the
+caller holds; calling it does not require its own permission.
 
 ### Organization
 
@@ -67,6 +78,14 @@ parent / state substring, or lite query forms `displayName=`, `parent=`,
 `state=`. Patch updates `displayName` (optional `updateMask=displayName`). Lab
 returns Folder JSON synchronously rather than an LRO Operation.
 
+### Tag keys and bindings
+
+TagKey create body requires `parent` (`organizations/...` or `projects/...`) and
+`shortName`. Namespaced name is `{parentId}/{shortName}`. TagBinding create
+accepts `parent` plus `tagValueNamespacedName` (or `tagValue` as a namespaced
+string). The lab allocates `tagValues/{id}` and `tagBindings/{id}` without a
+separate TagValues CRUD surface. No effective-tag policy evaluation.
+
 List and search return seeded projects only. Search body field `query` matches
 project id or display name (case-insensitive substring); empty query returns all.
 
@@ -78,7 +97,7 @@ an LRO Operation.
 
 - No create/delete project; only the seeded default project (and any rows added
   via store tooling).
-- No tag bindings.
+- TagValues are not a first-class CRUD API; bindings store namespaced names.
 - Nested folder height/fanout constraints are not enforced beyond parent existence.
 - Project `name` uses `projects/{projectId}` (string id), not a numeric project number.
 - gRPC `Projects` / `Folders` / `Organizations` services are not registered yet; use REST.
@@ -86,16 +105,17 @@ an LRO Operation.
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/resourcemanager/ ./internal/server/ -run CRM -count=1
+go test ./internal/services/resourcemanager/ ./internal/server/ -run 'CRM|Tag' -count=1
 gcloud config set api_endpoint_overrides/cloudresourcemanager http://127.0.0.1:4588/
 gcloud projects describe noctaxris-gcp-local --format=json
-gcloud projects get-iam-policy noctaxris-gcp-local --format=json
 gcloud resource-manager folders list --organization=noctaxris-gcp-org --format=json
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
-curl -s -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:4588/v3/organizations/noctaxris-gcp-org
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "http://127.0.0.1:4588/v3/folders:search?query=displayName=Team"
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"parent":"organizations/noctaxris-gcp-org","shortName":"env"}' \
+  http://127.0.0.1:4588/v3/tagKeys
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"parent":"projects/noctaxris-gcp-local","tagValueNamespacedName":"noctaxris-gcp-org/env/prod"}' \
+  http://127.0.0.1:4588/v3/tagBindings
 ```
 
 Point `CLOUDSDK_AUTH_ACCESS_TOKEN` (or Application Default Credentials equivalent)

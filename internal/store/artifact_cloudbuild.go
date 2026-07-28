@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -577,6 +578,7 @@ func (s *Store) ListCbBuilds(projectID, location string) ([]CbBuild, error) {
 }
 
 // AdvanceCbBuildToSuccess flips WORKING builds to SUCCESS theatre and returns the updated row.
+// Persists per-step status SUCCESS into build_json so getBuild shows STEPS.
 func (s *Store) AdvanceCbBuildToSuccess(name string) (CbBuild, bool, error) {
 	b, ok, err := s.GetCbBuild(name)
 	if err != nil || !ok {
@@ -585,17 +587,53 @@ func (s *Store) AdvanceCbBuildToSuccess(name string) (CbBuild, bool, error) {
 	if b.Status == "WORKING" || b.Status == "QUEUED" || b.Status == "PENDING" {
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		b.Status = "SUCCESS"
-		b.StatusDetail = "lab theatre: no steps executed"
+		b.StatusDetail = "lab theatre: steps marked SUCCESS (not executed)"
 		b.FinishTime = now
+		b.BuildJSON = markCbBuildStepsStatus(b.BuildJSON, "SUCCESS")
 		_, err = s.db.Exec(
-			`UPDATE cb_builds SET status = ?, status_detail = ?, finish_time = ? WHERE name = ?`,
-			b.Status, b.StatusDetail, b.FinishTime, name,
+			`UPDATE cb_builds SET status = ?, status_detail = ?, finish_time = ?, build_json = ? WHERE name = ?`,
+			b.Status, b.StatusDetail, b.FinishTime, b.BuildJSON, name,
 		)
 		if err != nil {
 			return CbBuild{}, false, err
 		}
 	}
 	return b, true, nil
+}
+
+// markCbBuildStepsStatus sets status on each step in build JSON (Cloud Build BuildStep.status).
+func markCbBuildStepsStatus(buildJSON, status string) string {
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(buildJSON), &cfg); err != nil || cfg == nil {
+		cfg = map[string]any{}
+	}
+	steps, _ := cfg["steps"].([]any)
+	if len(steps) == 0 {
+		raw, _ := json.Marshal(cfg)
+		if buildJSON == "" {
+			return "{}"
+		}
+		if len(cfg) == 0 {
+			return buildJSON
+		}
+		return string(raw)
+	}
+	outSteps := make([]any, 0, len(steps))
+	for _, step := range steps {
+		sm, ok := step.(map[string]any)
+		if !ok {
+			outSteps = append(outSteps, step)
+			continue
+		}
+		sm["status"] = status
+		outSteps = append(outSteps, sm)
+	}
+	cfg["steps"] = outSteps
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return buildJSON
+	}
+	return string(raw)
 }
 
 // CreateCbTrigger inserts a trigger. Returns false when the name already exists.

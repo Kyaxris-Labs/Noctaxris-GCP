@@ -18,6 +18,7 @@ flowchart TB
     STORE[(SQLite state.db)]
     AEAD[ChaCha20-Poly1305]
     AUDIT[audit.jsonl]
+    INV[Cloud Run Invoker]
 
     subgraph services [Registered services]
       ID[CRM / IAM / Service Usage]
@@ -27,12 +28,18 @@ flowchart TB
       AN[BQ / Firebase Auth / Monitoring / Datastore / Eventarc]
       APPS[Artifact Registry / Cloud Build / Workflows / Spanner / App Engine]
       CDATA[Compute Engine / Bigtable / Memorystore / DNS / Dataflow]
+      SEC[Cloud Armor / Certificate Manager]
+      STORAI[Filestore / Vertex AI]
     end
   end
 
   subgraph volumes [Volumes]
     DATAVOL[noctaxris-gcp-data]
     SECRETS[noctaxris-gcp-secrets / master.key]
+  end
+
+  subgraph nested [Opt-in nested DinD]
+    ENGINE[noctaxris-gcp-engine TLS :2376]
   end
 
   SDK -->|127.0.0.1:4588| H2C
@@ -46,9 +53,14 @@ flowchart TB
   REST --> AN
   REST --> APPS
   REST --> CDATA
+  REST --> SEC
+  REST --> STORAI
   GRPC --> DATA
   GRPC --> DOC
   GRPC --> AN
+  CMP --> INV
+  INV -->|mock default| CMP
+  INV -.->|NOCTAXRIS_GCP_DOCKER_HOST set| ENGINE
   ID --> AUTHZ
   DATA --> AUTHZ
   DOC --> AUTHZ
@@ -56,6 +68,8 @@ flowchart TB
   AN --> AUTHZ
   APPS --> AUTHZ
   CDATA --> AUTHZ
+  SEC --> AUTHZ
+  STORAI --> AUTHZ
   AUTHZ --> STORE
   STORE --> DATAVOL
   AEAD --> SECRETS
@@ -68,7 +82,8 @@ flowchart TB
 
 | Package | Role |
 |---------|------|
-| `internal/config` | `NOCTAXRIS_GCP_*` load + loopback / TLS gate |
+| `internal/config` | `NOCTAXRIS_GCP_*` load + loopback / TLS gate + Docker host validation |
+| `internal/compute` | Opt-in nested DinD dial, image allowlist, Cloud Run invoker (mock default) |
 | `internal/kernel/authn` | Bearer extraction; root vs registered tokens |
 | `internal/kernel/authz` | IAM policy Evaluate / testIamPermissions |
 | `internal/kernel/audit` | JSONL audit writer |
@@ -89,6 +104,8 @@ flowchart TB
 | `registerAnalytics` | BigQuery (REST), Firebase Auth / Identity Toolkit (REST), Cloud Monitoring (REST), Datastore (gRPC), Eventarc (REST) |
 | `registerAppsBuild` | Artifact Registry, Cloud Build, Workflows, Cloud Spanner, App Engine (REST) |
 | `registerComputeData` | Compute Engine (incl. VPC/firewall), Bigtable Admin, Memorystore Redis, Cloud DNS, Dataflow (REST) |
+| `registerSecurity` | Cloud Armor (Compute securityPolicies), Certificate Manager (REST) |
+| `registerStorageAI` | Filestore (`/file/v1/` instances), Vertex AI publisher predict/generateContent (REST) |
 
 ## Request path
 

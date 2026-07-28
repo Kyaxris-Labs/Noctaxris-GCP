@@ -6,9 +6,10 @@ subnetworks, and firewall rules. No nested VMs, DinD, qemu, or host
 
 ## Status
 
-**lab** — CRUD lite stores JSON metadata; instance `status` theatre only
-(`RUNNING` / `TERMINATED`). Mutating calls return a completed
-`compute#operation`.
+**lab** — CRUD lite stores JSON metadata; instance `status` theatre
+(`RUNNING` / `TERMINATED`); instance `metadata` map stored and returned on get;
+firewall `:validate` allow/deny eval lite and `:testIamPermissions`. Mutating
+calls return a completed `compute#operation`.
 
 ## Wire protocol
 
@@ -28,10 +29,11 @@ REST on the shared listener (`http://127.0.0.1:4588`), googleapis-shaped
 | `POST` | `/compute/v1/projects/{p}/zones/{z}/instances/{instance}/start` |
 | `POST` | `/compute/v1/projects/{p}/zones/{z}/instances/{instance}/reset` |
 
-Insert body requires `name`. Optional `machineType`, `networkInterfaces`.
-Default status after insert is `RUNNING`. `stop` sets `TERMINATED`; `start` /
-`reset` set `RUNNING`. Path actions are parsed from a trailing wildcard
-(ServeMux-safe; colon-style `instance:stop` also accepted).
+Insert body requires `name`. Optional `machineType`, `networkInterfaces`,
+`metadata` (string map or `{items:[{key,value}]}`). Default status after insert
+is `RUNNING`. `stop` sets `TERMINATED`; `start` / `reset` set `RUNNING`. Path
+actions are parsed from a trailing wildcard (ServeMux-safe; colon-style
+`instance:stop` also accepted).
 
 ### Networks / subnetworks / firewalls
 
@@ -43,9 +45,17 @@ Default status after insert is `RUNNING`. `stop` sets `TERMINATED`; `start` /
 | `GET`/`PATCH`/`DELETE` | `/compute/v1/projects/{p}/regions/{r}/subnetworks/{subnetwork}` |
 | `GET`/`POST` | `/compute/v1/projects/{p}/global/firewalls` |
 | `GET`/`PATCH`/`DELETE` | `/compute/v1/projects/{p}/global/firewalls/{firewall}` |
+| `POST` | `/compute/v1/projects/{p}/global/firewalls/{firewall}:validate` |
+| `POST` | `/compute/v1/projects/{p}/global/firewalls/{firewall}:testIamPermissions` |
 
 Create bodies require `name`. Subnetworks store `network` and `ipCidrRange`.
 Extra JSON fields are kept in metadata.
+
+`:validate` body: `{"sourceIp":"10.1.2.3","protocol":"tcp","port":80}`. Response
+includes `matched`, `allowed`, `action` (`ALLOW`/`DENY`/`NONE`), and `reason`.
+Evaluation is single-rule lite against `sourceRanges` + `allowed`/`denied`
+(fail-closed on miss). `:testIamPermissions` returns granted permission strings
+for the caller on the project.
 
 ## Authz
 
@@ -63,29 +73,32 @@ Seeded Service Usage: `compute.googleapis.com`.
 - Metadata only; never starts a VM or attaches a real NIC
 - No disks, images, instance groups, or load balancers
 - Insert/delete/stop/start/reset return completed Operations (no poll queue)
-- Firewall rules are stored JSON; no packet filter
+- Firewall `:validate` evaluates one rule only (no priority chain across rules)
+- No guest metadata server (`metadata.google.internal`) yet
 
 ## Deferred depth
 
 - Attached disks, snapshots, images, MIGs, backend services
 - Operations get/list and async progress
 - Private Google Access / Cloud NAT / routes CRUD depth
+- Instance metadata server path theatre
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/compute/ ./internal/store/ ./internal/server/ -run 'GCE|Compute' -count=1
+go test ./internal/services/compute/ ./internal/store/ ./internal/server/ -run 'GCE|Compute|InstanceMetadata|Firewall' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/zones/us-central1-a/instances" \
-  -d '{"name":"lab-vm","machineType":"zones/us-central1-a/machineTypes/e2-micro"}'
+  -d '{"name":"lab-vm","machineType":"zones/us-central1-a/machineTypes/e2-micro","metadata":{"role":"lab"}}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/zones/us-central1-a/instances/lab-vm"
-curl -s -H "Authorization: Bearer $TOKEN" -X POST \
-  "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/zones/us-central1-a/instances/lab-vm/stop"
 curl -s -H "Authorization: Bearer $TOKEN" \
-  -X POST "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/global/networks" \
-  -d '{"name":"lab-vpc","autoCreateSubnetworks":false}'
+  -X POST "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/global/firewalls" \
+  -d '{"name":"allow-http","network":"global/networks/default","sourceRanges":["0.0.0.0/0"],"allowed":[{"IPProtocol":"tcp","ports":["80"]}]}'
+curl -s -H "Authorization: Bearer $TOKEN" -X POST \
+  "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/global/firewalls/allow-http:validate" \
+  -d '{"sourceIp":"203.0.113.10","protocol":"tcp","port":80}'
 ```
 
 ```bash

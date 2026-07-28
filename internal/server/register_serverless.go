@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/compute"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/cloudfunctions"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/cloudrun"
@@ -16,7 +17,11 @@ func (s *Server) registerServerless() {
 		return PrincipalFromContext(r.Context())
 	}
 
-	runSvc := &cloudrun.Service{Store: s.store, Authz: s.authz}
+	runSvc := &cloudrun.Service{
+		Store:   s.store,
+		Authz:   s.authz,
+		Invoker: compute.NewInvoker(s.cfg.DockerHost, s.cfg.DockerTLSCertPath),
+	}
 	runSvc.Mount(s.mux, principalFrom)
 
 	fnSvc := &cloudfunctions.Service{Store: s.store, Authz: s.authz}

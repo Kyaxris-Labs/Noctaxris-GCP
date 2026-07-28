@@ -20,6 +20,10 @@ type FirestoreDoc struct {
 
 // PutFirestoreDoc inserts or replaces a document.
 func (s *Store) PutFirestoreDoc(doc FirestoreDoc) error {
+	return s.putFirestoreDocTx(s.db, doc)
+}
+
+func (s *Store) putFirestoreDocTx(ex execQuery, doc FirestoreDoc) error {
 	if doc.Path == "" || doc.ProjectID == "" || doc.CollectionID == "" || doc.DocumentID == "" {
 		return fmt.Errorf("firestore doc requires path, project, collection, and document id")
 	}
@@ -33,7 +37,7 @@ func (s *Store) PutFirestoreDoc(doc FirestoreDoc) error {
 	if doc.UpdateTime == "" {
 		doc.UpdateTime = now
 	}
-	_, err := s.db.Exec(
+	_, err := ex.Exec(
 		`INSERT INTO firestore_docs (path, project_id, collection_id, document_id, fields_json, create_time, update_time)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
@@ -49,8 +53,12 @@ func (s *Store) PutFirestoreDoc(doc FirestoreDoc) error {
 
 // GetFirestoreDoc loads a document by full resource path.
 func (s *Store) GetFirestoreDoc(path string) (FirestoreDoc, bool, error) {
+	return s.getFirestoreDocTx(s.db, path)
+}
+
+func (s *Store) getFirestoreDocTx(ex rowQuery, path string) (FirestoreDoc, bool, error) {
 	var d FirestoreDoc
-	err := s.db.QueryRow(
+	err := ex.QueryRow(
 		`SELECT path, project_id, collection_id, document_id, fields_json, create_time, update_time
 		 FROM firestore_docs WHERE path = ?`, path,
 	).Scan(&d.Path, &d.ProjectID, &d.CollectionID, &d.DocumentID, &d.FieldsJSON, &d.CreateTime, &d.UpdateTime)
@@ -65,7 +73,11 @@ func (s *Store) GetFirestoreDoc(path string) (FirestoreDoc, bool, error) {
 
 // DeleteFirestoreDoc removes a document by path. ok is false when missing.
 func (s *Store) DeleteFirestoreDoc(path string) (bool, error) {
-	res, err := s.db.Exec(`DELETE FROM firestore_docs WHERE path = ?`, path)
+	return s.deleteFirestoreDocTx(s.db, path)
+}
+
+func (s *Store) deleteFirestoreDocTx(ex execQuery, path string) (bool, error) {
+	res, err := ex.Exec(`DELETE FROM firestore_docs WHERE path = ?`, path)
 	if err != nil {
 		return false, fmt.Errorf("delete firestore doc: %w", err)
 	}
@@ -74,6 +86,34 @@ func (s *Store) DeleteFirestoreDoc(path string) (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// ApplyFirestoreWritesAtomic applies put and delete ops in one SQLite transaction (all-or-nothing).
+func (s *Store) ApplyFirestoreWritesAtomic(puts []FirestoreDoc, deletes []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, d := range deletes {
+		if _, err := s.deleteFirestoreDocTx(tx, d); err != nil {
+			return err
+		}
+	}
+	for _, doc := range puts {
+		if err := s.putFirestoreDocTx(tx, doc); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+type execQuery interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+type rowQuery interface {
+	QueryRow(query string, args ...any) *sql.Row
 }
 
 // ListFirestoreDocs lists documents in a collection under a parent documents prefix.

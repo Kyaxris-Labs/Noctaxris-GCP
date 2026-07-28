@@ -14,8 +14,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
-// Service serves Spanner Admin REST v1 (instances/databases) plus ExecuteSql theatre.
-// No Spanner server binary is embedded; SQL returns fixed empty/theatre rows.
+// Service serves Spanner Admin REST v1 (instances/databases) plus session SQL/read/commit theatre.
+// No Spanner server binary is embedded; rows are SQLite-backed mutation insert lite.
 type Service struct {
 	Store *store.Store
 	Authz *authz.Evaluator
@@ -25,8 +25,8 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 
 var createDBNameRE = regexp.MustCompile(`(?i)CREATE\s+DATABASE\s+` + "`" + `?([A-Za-z0-9_-]+)` + "`" + `?`)
 
-// Mount registers Spanner Admin and session ExecuteSql REST routes.
-// Colon methods (:executeSql, :read, :partitionQuery, sessions:batchCreate) are
+// Mount registers Spanner Admin and session ExecuteSql/Read/Commit REST routes.
+// Colon methods (:executeSql, :read, :commit, :partitionQuery, sessions:batchCreate) are
 // parsed from path segments (ServeMux-safe).
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/instanceConfigs", s.wrap(principalFrom, s.listInstanceConfigs))
@@ -489,6 +489,8 @@ func (s *Service) sessionAction(w http.ResponseWriter, r *http.Request, p authn.
 		s.read(w, r, p, project, instID, dbID, sessID)
 	case "partitionQuery":
 		s.partitionQuery(w, r, p, project, instID, dbID, sessID)
+	case "commit":
+		s.commit(w, r, p, project, instID, dbID, sessID)
 	default:
 		gcperrors.NotFound(w, "unknown Spanner session method")
 	}
@@ -507,13 +509,32 @@ func (s *Service) requireSession(w http.ResponseWriter, project, instID, dbID, s
 }
 
 func emptyResultSet() map[string]any {
+	return resultSetWithRows(nil, nil)
+}
+
+func resultSetWithRows(cols []string, rows [][]string) map[string]any {
+	fields := make([]any, 0, len(cols))
+	for _, c := range cols {
+		fields = append(fields, map[string]any{
+			"name": c,
+			"type": map[string]any{"code": "STRING"},
+		})
+	}
+	outRows := make([]any, 0, len(rows))
+	for _, row := range rows {
+		vals := make([]any, 0, len(row))
+		for _, v := range row {
+			vals = append(vals, v)
+		}
+		outRows = append(outRows, vals)
+	}
 	return map[string]any{
 		"metadata": map[string]any{
-			"rowType": map[string]any{"fields": []any{}},
+			"rowType": map[string]any{"fields": fields},
 		},
-		"rows": []any{},
+		"rows": outRows,
 		"stats": map[string]any{
-			"rowCountExact": "0",
+			"rowCountExact": fmt.Sprintf("%d", len(outRows)),
 			"queryPlan": map[string]any{
 				"planNodes": []any{
 					map[string]any{"displayName": "LabExecuteSqlTheatre", "kind": "RELATIONAL"},
@@ -535,8 +556,14 @@ func (s *Service) executeSQL(w http.ResponseWriter, r *http.Request, p authn.Pri
 		SQL string `json:"sql"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	// Theatre: no Spanner dialect / query engine; return empty ResultSet-shaped JSON.
-	writeJSON(w, http.StatusOK, emptyResultSet())
+	sqlText := strings.TrimSpace(strings.TrimSuffix(body.SQL, ";"))
+	dbName := databaseName(project, instID, dbID)
+	cols, rows, err := s.querySpannerRows(dbName, sqlText)
+	if err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resultSetWithRows(cols, rows))
 }
 
 func (s *Service) read(w http.ResponseWriter, r *http.Request, p authn.Principal, project, instID, dbID, sessID string) {
@@ -547,8 +574,228 @@ func (s *Service) read(w http.ResponseWriter, r *http.Request, p authn.Principal
 	if !s.requireSession(w, project, instID, dbID, sessID) {
 		return
 	}
-	_ = json.NewDecoder(r.Body).Decode(&map[string]any{})
-	writeJSON(w, http.StatusOK, emptyResultSet())
+	var body struct {
+		Table   string   `json:"table"`
+		Columns []string `json:"columns"`
+		KeySet  *struct {
+			All  bool       `json:"all"`
+			Keys [][]string `json:"keys"`
+		} `json:"keySet"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid read body")
+		return
+	}
+	table := strings.TrimSpace(body.Table)
+	if table == "" {
+		gcperrors.InvalidArgument(w, "table is required")
+		return
+	}
+	dbName := databaseName(project, instID, dbID)
+	stored, err := s.Store.ListSpannerRows(dbName, table)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	cols, rows := projectSpannerRows(stored, body.Columns, body.KeySet != nil && body.KeySet.All, nil)
+	if body.KeySet != nil && !body.KeySet.All && len(body.KeySet.Keys) > 0 {
+		cols, rows = projectSpannerRows(stored, body.Columns, false, body.KeySet.Keys)
+	}
+	writeJSON(w, http.StatusOK, resultSetWithRows(cols, rows))
+}
+
+func (s *Service) commit(w http.ResponseWriter, r *http.Request, p authn.Principal, project, instID, dbID, sessID string) {
+	if err := s.require(p, "spanner.databases.write", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	if !s.requireSession(w, project, instID, dbID, sessID) {
+		return
+	}
+	var body struct {
+		Mutations []struct {
+			Insert *struct {
+				Table   string              `json:"table"`
+				Columns []string            `json:"columns"`
+				Values  [][]json.RawMessage `json:"values"`
+			} `json:"insert"`
+		} `json:"mutations"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid commit body")
+		return
+	}
+	if len(body.Mutations) == 0 {
+		gcperrors.InvalidArgument(w, "mutations required")
+		return
+	}
+	dbName := databaseName(project, instID, dbID)
+	for _, m := range body.Mutations {
+		if m.Insert == nil {
+			gcperrors.InvalidArgument(w, "lab commit supports insert mutations only")
+			return
+		}
+		ins := m.Insert
+		if strings.TrimSpace(ins.Table) == "" || len(ins.Columns) == 0 {
+			gcperrors.InvalidArgument(w, "insert table and columns required")
+			return
+		}
+		valueRows := make([][]string, 0, len(ins.Values))
+		for _, rawRow := range ins.Values {
+			row := make([]string, 0, len(rawRow))
+			for _, cell := range rawRow {
+				v, err := decodeSpannerJSONValue(cell)
+				if err != nil {
+					gcperrors.InvalidArgument(w, err.Error())
+					return
+				}
+				row = append(row, v)
+			}
+			valueRows = append(valueRows, row)
+		}
+		if err := s.Store.InsertSpannerRows(dbName, ins.Table, ins.Columns, valueRows); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				gcperrors.NotFound(w, err.Error())
+				return
+			}
+			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"commitTimestamp": time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+var (
+	reSpannerSelect = regexp.MustCompile(`(?is)^\s*SELECT\s+(.+?)\s+FROM\s+([A-Za-z0-9_]+)(?:\s+WHERE\s+([A-Za-z0-9_]+)\s*=\s*(.+?))?\s*$`)
+)
+
+func (s *Service) querySpannerRows(dbName, sqlText string) ([]string, [][]string, error) {
+	if sqlText == "" {
+		return nil, nil, nil
+	}
+	// Lab smoke / theatre: SELECT without FROM (e.g. SELECT 1) returns empty ResultSet.
+	trimmed := strings.TrimSpace(sqlText)
+	if reSpannerSelect.FindStringSubmatch(trimmed) == nil {
+		upper := strings.ToUpper(trimmed)
+		if strings.HasPrefix(upper, "SELECT") && !strings.Contains(upper, " FROM ") {
+			return nil, nil, nil
+		}
+	}
+	m := reSpannerSelect.FindStringSubmatch(sqlText)
+	if m == nil {
+		return nil, nil, fmt.Errorf("lab executeSql supports: SELECT cols|* FROM Table [WHERE col = value]")
+	}
+	selectCols, table := m[1], m[2]
+	whereCol, whereRaw := m[3], m[4]
+	stored, err := s.Store.ListSpannerRows(dbName, table)
+	if err != nil {
+		return nil, nil, err
+	}
+	var wantCols []string
+	if strings.TrimSpace(selectCols) != "*" {
+		for _, c := range strings.Split(selectCols, ",") {
+			wantCols = append(wantCols, strings.TrimSpace(c))
+		}
+	}
+	var keyFilter [][]string
+	if whereCol != "" {
+		want := strings.TrimSpace(whereRaw)
+		want = strings.Trim(want, `"'`)
+		keyFilter = [][]string{{want}}
+		// Restrict to matching whereCol == first selected / stored column equality by scanning.
+		cols, rows := projectSpannerRows(stored, wantCols, true, nil)
+		filtered := rows[:0]
+		colIdx := -1
+		for i, c := range cols {
+			if strings.EqualFold(c, whereCol) {
+				colIdx = i
+				break
+			}
+		}
+		if colIdx < 0 {
+			return cols, nil, nil
+		}
+		for _, row := range rows {
+			if colIdx < len(row) && row[colIdx] == want {
+				filtered = append(filtered, row)
+			}
+		}
+		_ = keyFilter
+		return cols, filtered, nil
+	}
+	cols, rows := projectSpannerRows(stored, wantCols, true, nil)
+	return cols, rows, nil
+}
+
+func projectSpannerRows(stored []store.SpannerRow, wantCols []string, allKeys bool, keys [][]string) ([]string, [][]string) {
+	if len(stored) == 0 {
+		if len(wantCols) == 0 {
+			return nil, nil
+		}
+		return wantCols, nil
+	}
+	var cols []string
+	_ = json.Unmarshal([]byte(stored[0].ColumnsJSON), &cols)
+	if len(wantCols) == 0 {
+		wantCols = cols
+	}
+	keySet := map[string]bool{}
+	for _, k := range keys {
+		if len(k) > 0 {
+			keySet[k[0]] = true
+		}
+	}
+	out := make([][]string, 0, len(stored))
+	for _, r := range stored {
+		var vals []string
+		_ = json.Unmarshal([]byte(r.ValuesJSON), &vals)
+		var key []string
+		_ = json.Unmarshal([]byte(r.KeyJSON), &key)
+		if !allKeys && len(keySet) > 0 {
+			if len(key) == 0 || !keySet[key[0]] {
+				continue
+			}
+		}
+		colIdx := map[string]int{}
+		for i, c := range cols {
+			colIdx[c] = i
+		}
+		row := make([]string, 0, len(wantCols))
+		for _, c := range wantCols {
+			i, ok := colIdx[c]
+			if !ok || i >= len(vals) {
+				row = append(row, "")
+				continue
+			}
+			row = append(row, vals[i])
+		}
+		out = append(out, row)
+	}
+	return wantCols, out
+}
+
+func decodeSpannerJSONValue(raw json.RawMessage) (string, error) {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, nil
+	}
+	var n json.Number
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	if err := dec.Decode(&n); err == nil {
+		return n.String(), nil
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return fmt.Sprintf("%v", b), nil
+	}
+	return string(raw), nil
 }
 
 func (s *Service) partitionQuery(w http.ResponseWriter, r *http.Request, p authn.Principal, project, instID, dbID, sessID string) {

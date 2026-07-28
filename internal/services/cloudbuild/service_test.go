@@ -94,6 +94,33 @@ func TestCloudBuildDeepenCancelRetryTriggerRun(t *testing.T) {
 		t.Fatal("retry should allocate a new build id")
 	}
 
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/builds",
+		bytes.NewReader([]byte(`{"steps":[{"name":"gcr.io/cloud-builders/gcloud","args":["version"]},{"name":"gcr.io/cloud-builders/docker"}]}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &op)
+	meta, _ = op["metadata"].(map[string]any)
+	build, _ = meta["build"].(map[string]any)
+	stepsID, _ := build["id"].(string)
+	req = httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/builds/"+stepsID, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var success map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &success)
+	if success["status"] != "SUCCESS" {
+		t.Fatalf("getBuild=%#v", success)
+	}
+	steps, _ := success["steps"].([]any)
+	if len(steps) != 2 {
+		t.Fatalf("steps=%#v", steps)
+	}
+	for i, s := range steps {
+		sm, _ := s.(map[string]any)
+		if sm["status"] != "SUCCESS" {
+			t.Fatalf("step[%d]=%#v", i, sm)
+		}
+	}
+
 	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/triggers",
 		bytes.NewReader([]byte(`{"id":"run-me","filename":"cloudbuild.yaml"}`)))
 	rec = httptest.NewRecorder()

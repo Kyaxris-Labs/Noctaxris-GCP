@@ -135,9 +135,10 @@ func (s *Store) CancelCbBuildDeepen(name string) (CbBuild, bool, error) {
 	b.Status = "CANCELLED"
 	b.StatusDetail = "lab theatre: build cancelled"
 	b.FinishTime = now
+	b.BuildJSON = markCbBuildStepsStatus(b.BuildJSON, "CANCELLED")
 	_, err = s.db.Exec(
-		`UPDATE cb_builds SET status = ?, status_detail = ?, finish_time = ? WHERE name = ?`,
-		b.Status, b.StatusDetail, b.FinishTime, name,
+		`UPDATE cb_builds SET status = ?, status_detail = ?, finish_time = ?, build_json = ? WHERE name = ?`,
+		b.Status, b.StatusDetail, b.FinishTime, b.BuildJSON, name,
 	)
 	if err != nil {
 		return CbBuild{}, false, fmt.Errorf("cancel cb build deepen: %w", err)

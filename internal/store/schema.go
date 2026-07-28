@@ -100,6 +100,9 @@ CREATE TABLE IF NOT EXISTS pubsub_subscriptions (
   push_endpoint TEXT NOT NULL DEFAULT '',
   labels_json TEXT NOT NULL DEFAULT '{}',
   filter TEXT NOT NULL DEFAULT '',
+  dead_letter_topic TEXT NOT NULL DEFAULT '',
+  max_delivery_attempts INTEGER NOT NULL DEFAULT 0,
+  enable_exactly_once_delivery INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -112,7 +115,8 @@ CREATE TABLE IF NOT EXISTS pubsub_messages (
   publish_time TEXT NOT NULL,
   ack_id TEXT PRIMARY KEY,
   ack_deadline TEXT,
-  delivered INTEGER NOT NULL DEFAULT 0
+  delivered INTEGER NOT NULL DEFAULT 0,
+  delivery_attempts INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS pubsub_snapshots (
@@ -132,6 +136,9 @@ CREATE TABLE IF NOT EXISTS secrets (
   annotations_json TEXT NOT NULL DEFAULT '{}',
   replication_json TEXT NOT NULL DEFAULT '{}',
   cmek_kms_key_name TEXT NOT NULL DEFAULT '',
+  rotation_period TEXT NOT NULL DEFAULT '',
+  next_rotation_time TEXT NOT NULL DEFAULT '',
+  topics_json TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL
 );
 
@@ -264,6 +271,16 @@ CREATE TABLE IF NOT EXISTS cloud_functions (
   lab_response_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cloud_function_uploads (
+  upload_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  location TEXT NOT NULL,
+  bucket TEXT NOT NULL DEFAULT '',
+  object TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  accepted_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS scheduler_jobs (

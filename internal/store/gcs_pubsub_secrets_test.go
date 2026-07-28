@@ -150,12 +150,12 @@ func TestPubSubUpdateModifyPushFields(t *testing.T) {
 	if err != nil || !ok || tgot.Labels["a"] != "2" {
 		t.Fatalf("topic labels = %#v", tgot)
 	}
-	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "http://127.0.0.1:9/push", nil, ""); err != nil || !created {
+	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "http://127.0.0.1:9/push", nil, "", "", 0, false); err != nil || !created {
 		t.Fatalf("sub: %v %v", created, err)
 	}
 	ack := 30
 	ep := ""
-	updated, err := st.UpdateSubscription(sub, &ack, &ep, &map[string]string{"s": "1"}, nil)
+	updated, err := st.UpdateSubscription(sub, &ack, &ep, &map[string]string{"s": "1"}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestPubSubFilterAndSeek(t *testing.T) {
 	if _, created, err := st.CreateTopic(topic, "noctaxris-gcp-local"); err != nil || !created {
 		t.Fatalf("topic: %v %v", created, err)
 	}
-	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "", nil, `attributes.region = "us"`); err != nil || !created {
+	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "", nil, `attributes.region = "us"`, "", 0, false); err != nil || !created {
 		t.Fatalf("sub: %v %v", created, err)
 	}
 	if _, _, err := st.PublishFanout(topic, []byte("eu"), map[string]string{"region": "eu"}); err != nil {
@@ -369,6 +369,61 @@ func TestSecretReplicationCMEKAndVersionFilter(t *testing.T) {
 	disabled, err := st.ListSecretVersions(name, store.SecretVersionDisabled)
 	if err != nil || len(disabled) != 1 {
 		t.Fatalf("disabled = %#v err=%v", disabled, err)
+	}
+}
+
+
+func TestPubSubDeadLetterAndExactlyOnce(t *testing.T) {
+	st := openTestStore(t)
+	topic := "projects/noctaxris-gcp-local/topics/main"
+	dlTopic := "projects/noctaxris-gcp-local/topics/dlq"
+	sub := "projects/noctaxris-gcp-local/subscriptions/s-dl"
+	dlSub := "projects/noctaxris-gcp-local/subscriptions/s-dl-reader"
+	if _, created, err := st.CreateTopic(topic, "noctaxris-gcp-local"); err != nil || !created {
+		t.Fatalf("topic: %v %v", created, err)
+	}
+	if _, created, err := st.CreateTopic(dlTopic, "noctaxris-gcp-local"); err != nil || !created {
+		t.Fatalf("dl topic: %v %v", created, err)
+	}
+	created, ok, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 1, "", nil, "", dlTopic, 5, true)
+	if err != nil || !ok {
+		t.Fatalf("sub: ok=%v err=%v", ok, err)
+	}
+	if !created.EnableExactlyOnceDelivery || created.DeadLetterTopic != dlTopic || created.MaxDeliveryAttempts != 5 {
+		t.Fatalf("created = %#v", created)
+	}
+	if _, created, err := st.CreateSubscription(dlSub, dlTopic, "noctaxris-gcp-local", 10); err != nil || !created {
+		t.Fatalf("dl sub: %v %v", created, err)
+	}
+	if _, err := st.Publish(topic, []byte("poison"), nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		msgs, err := st.Pull(sub, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("attempt %d msgs=%d", i+1, len(msgs))
+		}
+		// Expire lease so next Pull redelivers.
+		if err := st.ModifyAckDeadline(sub, []string{msgs[0].AckID}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs, err := st.Pull(sub, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("expected dead-lettered, still have %#v", msgs)
+	}
+	dlMsgs, err := st.Pull(dlSub, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dlMsgs) != 1 || string(dlMsgs[0].Data) != "poison" {
+		t.Fatalf("dl msgs = %#v", dlMsgs)
 	}
 }
 

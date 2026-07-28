@@ -8,7 +8,41 @@
 
 ### Fixed
 
-- CI govulncheck: bump Go to 1.26.5 (clears `GO-2026-5856`); adopt Noctaxris-style `scripts/govulncheck-ci` + empty allowlist
+## [0.5.0] - 2026-07-28
+
+### Added
+
+| Area | Change |
+|------|--------|
+| Terraform | `lab-armor` (`google_compute_security_policy` via `compute_custom_endpoint`; attribution label off for missing `setLabels`); `run.sh` default set includes it; README documents Certificate Manager / Filestore LRO skips (`certificate_manager_custom_endpoint` / `filestore_custom_endpoint`) |
+| Filestore | Instances CRUD theatre under `/file/v1/projects/.../locations/.../instances` (`tier`, `fileShares`, `networks`; no NFS; path prefix avoids Memorystore `/v1/.../instances` ServeMux clash) |
+| Vertex AI | Allowlisted publisher model `:predict` / `:generateContent` canned JSON; unknown modelId fail-closed |
+| IAM | WIF pool/provider CRUD theatre (metadata only; not real federation); `generateAccessToken` impersonation theatre (`scope`/`lifetime`, registers lab Bearer) |
+| Cloud Resource Manager | TagKeys + TagBindings lite under `/v3/tagKeys` and `/v3/tagBindings` (org `organizations/noctaxris-gcp-org`) |
+| Secret Manager | Rotation config store (`rotationPeriod`/`nextRotationTime`/`topics`); lab `:rotateSecret` creates a new version |
+| Cloud Storage | V4 HMAC signed URL generate (`:generateSignedUrl`) + query-signature verify on GET/PUT media |
+| Nested compute | Opt-in DinD scaffolding: `internal/compute` allowlist + TLS dial (`NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH`); Compose `compose.engine.yaml` (restricted) + `compose.engine-privileged.yaml`; Cloud Run soft-fail nested one-shot |
+| Cloud Run | Richer `:invoke` theatre (`labStatusCode` / `labDelayMs` + env aliases); `Invoker` interface with mock default and Docker-host hooks (no host `docker.sock`; tests need no DinD) |
+| Cloud Functions | Source upload accept theatre (`PUT`/`POST` generateUploadUrl path); `storageSource` create starts `DEPLOYING` then flips `ACTIVE` on upload |
+| Cloud Build | Persist per-step status in build JSON (`WORKING` on create, `SUCCESS` on getBuild, `CANCELLED` on cancel) |
+| Compute Engine | Instance `metadata` map normalize/return on get; firewall `:validate` allow/deny eval lite + `:testIamPermissions` |
+| Pub/Sub | Subscription `deadLetterPolicy` (topic + maxDeliveryAttempts) with pull-side dead-letter fanout; `enableExactlyOnceDelivery` theatre flag stored (REST + gRPC) |
+| BigQuery | `jobs.query` GROUP BY with COUNT/SUM, UNION ALL of two SELECTs, and `dataset.INFORMATION_SCHEMA.TABLES` stub |
+| Firestore | Atomic Commit (SQLite all-or-nothing) with `current_document` exists/not-exists preconditions; BatchWrite coverage |
+| Cloud Spanner | `:commit` mutation insert theatre (SQLite-backed rows); `:executeSql` / `:read` return inserted rows |
+| Cloud Armor | Compute `securityPolicies` CRUD + `addRule`/`removeRule`; lab `byteMatchSet` + `:validate` allow/deny preview |
+| Certificate Manager | certificates + certificateMaps CRUD theatre (`/v1/projects/.../locations/...`; `global` OK) |
+| SDK smokes | Soft-skip HTTP coverage for Cloud Armor, Certificate Manager, Filestore, Vertex AI generateContent, IAM generateAccessToken, GCS generateSignedUrl (Go/Node/Python) |
+
+### Changed
+
+| Area | Change |
+|------|--------|
+| govulncheck | Allowlist Docker Engine Fixed-in-N/A IDs that appear with `github.com/docker/docker` client (`GO-2026-4883/4887/5617/5668`) |
+
+### Fixed
+
+- CI govulncheck: bump Go to 1.26.5 (clears `GO-2026-5856`); adopt Noctaxris-style `scripts/govulncheck-ci` + allowlist
 
 ## [0.4.0] - 2026-07-28
 

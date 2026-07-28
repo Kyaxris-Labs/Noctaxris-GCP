@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -95,6 +96,18 @@ func TestCloudBuildStoreTheatre(t *testing.T) {
 	}
 	if adv.FinishTime == "" {
 		t.Fatal("expected finishTime")
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(adv.BuildJSON), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	steps, _ := cfg["steps"].([]any)
+	if len(steps) != 1 {
+		t.Fatalf("steps=%#v", steps)
+	}
+	step0, _ := steps[0].(map[string]any)
+	if step0["status"] != "SUCCESS" {
+		t.Fatalf("step status=%#v", step0)
 	}
 
 	trigName := "projects/p/locations/global/triggers/t1"

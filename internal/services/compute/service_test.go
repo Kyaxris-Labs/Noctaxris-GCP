@@ -203,3 +203,87 @@ func TestComputeAuthzFailClosed(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestInstanceMetadataAndFirewallValidate(t *testing.T) {
+	mux, _, project := mountCompute(t)
+	zone := "us-central1-a"
+	base := "/compute/v1/projects/" + project + "/zones/" + zone + "/instances"
+	body := `{"name":"meta-vm","metadata":{"startup-script":"echo hi","env":"lab"}}`
+	req := httptest.NewRequest(http.MethodPost, base, bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("insert status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, base+"/meta-vm", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var inst map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &inst)
+	meta, _ := inst["metadata"].(map[string]any)
+	items, _ := meta["items"].([]any)
+	if len(items) < 2 {
+		t.Fatalf("metadata items=%#v", meta)
+	}
+
+	fwBase := "/compute/v1/projects/" + project + "/global/firewalls"
+	req = httptest.NewRequest(http.MethodPost, fwBase, bytes.NewReader([]byte(
+		`{"name":"allow-http","network":"global/networks/default","sourceRanges":["10.0.0.0/8"],"allowed":[{"IPProtocol":"tcp","ports":["80","443"]}],"denied":[{"IPProtocol":"tcp","ports":["22"]}]}`,
+	)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fw insert status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, fwBase+"/allow-http:validate",
+		bytes.NewReader([]byte(`{"sourceIp":"10.1.2.3","protocol":"tcp","port":80}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("validate allow status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var allow map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &allow)
+	if allow["allowed"] != true || allow["action"] != "ALLOW" {
+		t.Fatalf("allow result=%#v", allow)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, fwBase+"/allow-http:validate",
+		bytes.NewReader([]byte(`{"sourceIp":"10.1.2.3","protocol":"tcp","port":22}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var deny map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &deny)
+	if deny["allowed"] != false || deny["action"] != "DENY" {
+		t.Fatalf("deny result=%#v", deny)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, fwBase+"/allow-http:validate",
+		bytes.NewReader([]byte(`{"sourceIp":"203.0.113.1","protocol":"tcp","port":80}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var miss map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &miss)
+	if miss["matched"] != false {
+		t.Fatalf("miss result=%#v", miss)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, fwBase+"/allow-http:testIamPermissions",
+		bytes.NewReader([]byte(`{"permissions":["compute.firewalls.get","compute.firewalls.delete"]}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("testIam status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var iam map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &iam)
+	perms, _ := iam["permissions"].([]any)
+	if len(perms) != 2 {
+		t.Fatalf("permissions=%#v", iam)
+	}
+}
+

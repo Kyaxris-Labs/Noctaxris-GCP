@@ -1,10 +1,16 @@
 # Cloud Build
 
-Lab Cloud Build REST v1 for builds and triggers. CreateBuild is status theatre only: no container steps, no image pulls/pushes, no host `docker.sock`, no DinD.
+Lab Cloud Build REST v1 for builds and triggers. CreateBuild is status theatre
+only: no container steps, no image pulls/pushes, no host `docker.sock`, no DinD.
+Step statuses are persisted in build JSON (`WORKING` on create, `SUCCESS` on
+getBuild advance, `CANCELLED` on cancel).
 
 ## Status
 
-**lab** — createBuild returns an unfinished Operation with `WORKING` build metadata; getBuild advances to `SUCCESS`; cancelBuild / retryBuild / project-scoped trigger `:run` theatre. Triggers CRUD lite (create/get/list/delete); no webhook execution.
+**lab** — createBuild returns an unfinished Operation with `WORKING` build
+metadata and per-step status; getBuild advances to `SUCCESS` and marks steps
+`SUCCESS`; cancelBuild / retryBuild / project-scoped trigger `:run` theatre.
+Triggers CRUD lite (create/get/list/delete); no webhook execution.
 
 ## Wire protocol
 
@@ -29,10 +35,12 @@ the shared listener. Colon methods use `splitColonAction`.
 `create` / `retry` / `:run` request body yields an Operation:
 
 ```json
-{"name":"operations/...","done":false,"metadata":{"@type":"...BuildOperationMetadata","build":{"status":"WORKING",...}}}
+{"name":"operations/...","done":false,"metadata":{"@type":"...BuildOperationMetadata","build":{"status":"WORKING","steps":[{"status":"WORKING",...}],...}}}
 ```
 
-`cancel` returns the Build with `status=CANCELLED` (get does not advance cancelled builds to SUCCESS).
+`getBuild` returns the Build with `status=SUCCESS` and each step `status=SUCCESS`
+(steps are never executed). `cancel` returns `status=CANCELLED` with step
+statuses marked `CANCELLED` (get does not advance cancelled builds to SUCCESS).
 
 ## Authz
 

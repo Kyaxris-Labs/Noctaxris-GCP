@@ -413,3 +413,164 @@ func TestListDataflowJobsSmoke(t *testing.T) {
 		t.Fatalf("missing jobs field body=%s", body)
 	}
 }
+
+func TestListCloudArmorSecurityPoliciesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/compute/v1/projects/" + project + "/global/securityPolicies"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list securityPolicies status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode securityPolicies: %v body=%s", err, body)
+	}
+	if kind, _ := parsed["kind"].(string); kind != "compute#securityPolicyList" {
+		t.Fatalf("kind=%v want compute#securityPolicyList body=%s", parsed["kind"], body)
+	}
+	if _, ok := parsed["items"]; !ok {
+		t.Fatalf("missing items field body=%s", body)
+	}
+}
+
+func TestListCertificateManagerCertificatesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/locations/global/certificates"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list certificates status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode certificates: %v body=%s", err, body)
+	}
+	if _, ok := parsed["certificates"]; !ok {
+		t.Fatalf("missing certificates field body=%s", body)
+	}
+}
+
+func TestListFilestoreInstancesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/file/v1/projects/" + project + "/locations/us-central1/instances"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list filestore instances status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode filestore instances: %v body=%s", err, body)
+	}
+	if _, ok := parsed["instances"]; !ok {
+		t.Fatalf("missing instances field body=%s", body)
+	}
+}
+
+func TestVertexAIGenerateContentSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/locations/us-central1/publishers/google/models/gemini-1.5-flash:generateContent"
+	status, body := doJSON(t, http.MethodPost, path, token, map[string]any{
+		"contents": []any{
+			map[string]any{
+				"role":  "user",
+				"parts": []any{map[string]any{"text": "sdk-smoke"}},
+			},
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("generateContent status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode generateContent: %v body=%s", err, body)
+	}
+	if _, ok := parsed["candidates"]; !ok {
+		t.Fatalf("missing candidates field body=%s", body)
+	}
+}
+
+func TestIAMGenerateAccessTokenSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+	accountID := uniqueID("sdksa")
+	if len(accountID) > 30 {
+		accountID = accountID[:30]
+		accountID = strings.TrimRight(accountID, "-")
+	}
+	email := accountID + "@" + project + ".iam.gserviceaccount.com"
+	saPath := ep + "/v1/projects/" + project + "/serviceAccounts/" + email
+
+	status, body := doJSON(t, http.MethodPost, ep+"/v1/projects/"+project+"/serviceAccounts", token, map[string]any{
+		"accountId": accountID,
+		"serviceAccount": map[string]any{
+			"displayName": "sdk smoke",
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create service account status=%d body=%s", status, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = doJSONErr(http.MethodDelete, saPath, token, nil)
+	})
+
+	status, body = doJSON(t, http.MethodPost, saPath+":generateAccessToken", token, map[string]any{
+		"scope":    []string{"https://www.googleapis.com/auth/cloud-platform"},
+		"lifetime": "3600s",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("generateAccessToken status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode generateAccessToken: %v body=%s", err, body)
+	}
+	if got, _ := parsed["accessToken"].(string); got == "" {
+		t.Fatalf("missing accessToken body=%s", body)
+	}
+}
+
+func TestGCSGenerateSignedURLSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+	bucket := uniqueID("sdk-signed")
+	bucketPath := ep + "/storage/v1/b/" + url.PathEscape(bucket)
+
+	status, body := doJSON(t, http.MethodPost, ep+"/storage/v1/b?project="+url.QueryEscape(project), token, map[string]any{
+		"name": bucket,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create bucket status=%d body=%s", status, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = doJSONErr(http.MethodDelete, bucketPath, token, nil)
+	})
+
+	status, body = doJSON(t, http.MethodPost, bucketPath+"/o/smoke.txt:generateSignedUrl", token, map[string]any{
+		"method":  "GET",
+		"expires": 600,
+		"alt":     "media",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("generateSignedUrl status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode generateSignedUrl: %v body=%s", err, body)
+	}
+	if got, _ := parsed["signedUrl"].(string); got == "" {
+		t.Fatalf("missing signedUrl body=%s", body)
+	}
+}

@@ -334,3 +334,145 @@ test("list dataflow jobs smoke", async (t) => {
   const parsed = JSON.parse(body);
   assert.ok(Object.prototype.hasOwnProperty.call(parsed, "jobs"), body);
 });
+
+test("list cloud armor security policies smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+
+  const { status, body } = await doJSON(
+    "GET",
+    `${ep}/compute/v1/projects/${project}/global/securityPolicies`,
+    token,
+  );
+  assert.equal(status, 200, `list securityPolicies status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.equal(parsed.kind, "compute#securityPolicyList", body);
+  assert.ok(Object.prototype.hasOwnProperty.call(parsed, "items"), body);
+});
+
+test("list certificate manager certificates smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+
+  const { status, body } = await doJSON(
+    "GET",
+    `${ep}/v1/projects/${project}/locations/global/certificates`,
+    token,
+  );
+  assert.equal(status, 200, `list certificates status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(Object.prototype.hasOwnProperty.call(parsed, "certificates"), body);
+});
+
+test("list filestore instances smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+
+  const { status, body } = await doJSON(
+    "GET",
+    `${ep}/file/v1/projects/${project}/locations/us-central1/instances`,
+    token,
+  );
+  assert.equal(status, 200, `list filestore instances status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(Object.prototype.hasOwnProperty.call(parsed, "instances"), body);
+});
+
+test("vertex ai generateContent smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+
+  const { status, body } = await doJSON(
+    "POST",
+    `${ep}/v1/projects/${project}/locations/us-central1/publishers/google/models/gemini-1.5-flash:generateContent`,
+    token,
+    {
+      contents: [{ role: "user", parts: [{ text: "sdk-smoke" }] }],
+    },
+  );
+  assert.equal(status, 200, `generateContent status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(Object.prototype.hasOwnProperty.call(parsed, "candidates"), body);
+});
+
+test("iam generateAccessToken smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+  let accountId = uniqueID("sdksa");
+  if (accountId.length > 30) {
+    accountId = accountId.slice(0, 30).replace(/-+$/, "");
+  }
+  const email = `${accountId}@${project}.iam.gserviceaccount.com`;
+  const saPath = `${ep}/v1/projects/${project}/serviceAccounts/${email}`;
+
+  const created = await doJSON("POST", `${ep}/v1/projects/${project}/serviceAccounts`, token, {
+    accountId,
+    serviceAccount: { displayName: "sdk smoke" },
+  });
+  assert.equal(created.status, 200, `create service account status=${created.status} body=${created.body}`);
+  t.after(async () => {
+    try {
+      await doJSON("DELETE", saPath, token);
+    } catch {
+      /* best-effort cleanup */
+    }
+  });
+
+  const { status, body } = await doJSON("POST", `${saPath}:generateAccessToken`, token, {
+    scope: ["https://www.googleapis.com/auth/cloud-platform"],
+    lifetime: "3600s",
+  });
+  assert.equal(status, 200, `generateAccessToken status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(parsed.accessToken, body);
+});
+
+test("gcs generateSignedUrl smoke", async (t) => {
+  const ep = await requireReady(t);
+  if (!ep) return;
+  const token = requireToken(t);
+  if (!token) return;
+  const project = projectID();
+  const bucket = uniqueID("sdk-signed");
+  const bucketPath = `${ep}/storage/v1/b/${encodeURIComponent(bucket)}`;
+
+  const created = await doJSON(
+    "POST",
+    `${ep}/storage/v1/b?project=${encodeURIComponent(project)}`,
+    token,
+    { name: bucket },
+  );
+  assert.equal(created.status, 200, `create bucket status=${created.status} body=${created.body}`);
+  t.after(async () => {
+    try {
+      await doJSON("DELETE", bucketPath, token);
+    } catch {
+      /* best-effort cleanup */
+    }
+  });
+
+  const { status, body } = await doJSON(
+    "POST",
+    `${bucketPath}/o/smoke.txt:generateSignedUrl`,
+    token,
+    { method: "GET", expires: 600, alt: "media" },
+  );
+  assert.equal(status, 200, `generateSignedUrl status=${status} body=${body}`);
+  const parsed = JSON.parse(body);
+  assert.ok(parsed.signedUrl, body);
+});

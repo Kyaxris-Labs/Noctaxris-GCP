@@ -14,6 +14,10 @@ All settings use the `NOCTAXRIS_GCP_*` prefix.
 | `NOCTAXRIS_GCP_PROJECT` | `noctaxris-gcp-local` | Default project seeded by EnsureRoot |
 | `NOCTAXRIS_GCP_ALLOW_NONLOOPBACK_LISTEN` | unset / false | Permit non-loopback listen without TLS (Compose) |
 | `NOCTAXRIS_GCP_ALLOW_MASTER_KEY_IN_DATA_ROOT` | unset / false | Permit master key under data root |
+| `NOCTAXRIS_GCP_DOCKER_HOST` | empty | Nested DinD engine URL. Empty disables nested compute (default; unit tests need no Docker). Rejects `unix://`, `npipe://`, and `docker.sock`. Must be `tcp://noctaxris-gcp-engine:2376` or an entry in `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST`. |
+| `NOCTAXRIS_GCP_DOCKER_CERT_PATH` | empty | Directory with `ca.pem`, `cert.pem`, and `key.pem` for engine TLS. Required whenever `NOCTAXRIS_GCP_DOCKER_HOST` is set. |
+| `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST` | empty | Comma-separated exact `tcp://` URLs allowed in addition to `tcp://noctaxris-gcp-engine:2376`. |
+| `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` | empty | Comma-separated image ref prefixes. Registry hosts (dot or port in host) require `@sha256:` digests. |
 
 EnsureRoot also seeds lab organization `organizations/noctaxris-gcp-org` (folders
 CRUD lite attaches under that parent). See [services/resourcemanager.md](services/resourcemanager.md).
@@ -30,6 +34,26 @@ CRUD lite attaches under that parent). See [services/resourcemanager.md](service
 - Volumes: data + secrets
 - `read_only: true` and `tmpfs: /tmp`
 - No `docker.sock`
+- No nested engine (leave `NOCTAXRIS_GCP_DOCKER_HOST` unset)
+
+### Opt-in nested engine
+
+From `docker/`:
+
+```bash
+docker compose -f compose.yaml -f compose.engine.yaml --env-file .env up --build
+```
+
+`compose.engine.yaml` starts restricted DinD (`noctaxris-gcp-engine`, `privileged: false`)
+and sets `NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH`. The engine
+API stays on the Compose network (no host publish of 2375/2376). If nested
+containers fail on your host:
+
+```bash
+docker compose -f compose.yaml -f compose.engine.yaml -f compose.engine-privileged.yaml --env-file .env up --build
+```
+
+See [security-defaults.md](security-defaults.md).
 
 Copy `docker/.env.example` to `docker/.env` and replace the example root pair
 before starting. Startup refuses that pair on the non-loopback container bind.
@@ -53,6 +77,10 @@ before starting. Startup refuses that pair on the non-loopback container bind.
 | Dataflow | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1b3/...`; job theatre only) |
 | Cloud Bigtable Admin | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST Admin API v2; no data plane) |
 | Memorystore Redis | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/...`; no Redis process) |
+| Filestore | Base URL must include `/file/v1/` (e.g. `http://127.0.0.1:4588/file/v1/`); bare host misses the lab path prefix (no NFS) |
+| Vertex AI | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/projects/.../publishers/google/models/{id}:predict` / `:generateContent`; allowlisted model ids only) |
+| Cloud Armor | Same Compute Engine endpoint (`/compute/v1/.../global/securityPolicies`); ByteMatchSet `:validate` is lab preview only (no edge enforce) |
+| Certificate Manager | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/projects/.../locations/...`; Terraform LRO skip) |
 | Other Google clients | `option.WithEndpoint("127.0.0.1:4588")` (or language equivalent) + Bearer |
 | Terraform Google provider | Custom endpoints with versioned path suffixes (see below) |
 
@@ -77,6 +105,11 @@ provider "google" {
   cloud_run_v2_custom_endpoint   = "http://127.0.0.1:4588/v2/"
   dns_custom_endpoint            = "http://127.0.0.1:4588/dns/v1/"
   compute_custom_endpoint        = "http://127.0.0.1:4588/compute/v1/"
+  # Filestore: provider field is filestore_custom_endpoint (BaseUrl …/v1/).
+  # Lab mounts under /file/v1/ (Memorystore owns bare /v1/.../instances), so the
+  # override must be http://127.0.0.1:4588/file/v1/ — and Terraform still cannot
+  # stack today (provider waits on LRO; lab create is synchronous). See
+  # tests/terraform/README.md honest skips.
 }
 ```
 
@@ -86,10 +119,19 @@ provider "google" {
 | `tests/terraform/stacks/lab-run` | `google_cloud_run_v2_service` (metadata theatre; no containers) | `cloud_run_v2` |
 | `tests/terraform/stacks/lab-dns` | `google_dns_managed_zone` | `dns` (`…/dns/v1/`) |
 | `tests/terraform/stacks/lab-compute` | `google_compute_network` (no VMs) | `compute` (`…/compute/v1/`) |
+| `tests/terraform/stacks/lab-armor` | `google_compute_security_policy` (Cloud Armor; `SRC_IPS_V1` rules) | `compute` (`…/compute/v1/`); attribution label off |
+
+Cloud Armor is Compute-shaped (`securityPolicies` under `compute_custom_endpoint`).
+Lab `byteMatchSet` + `:validate` preview allow/deny only; no backend service attach
+or edge enforcement. Filestore Terraform must use
+`filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/"` (not bare `:4588/`
+and not Memorystore `/v1/.../instances`). Vertex AI has no Terraform stack; call
+REST `:predict` / `:generateContent` with `api_endpoint_overrides/aiplatform`.
 
 Not stacked: DNS record sets (provider `Changes.create`; lab has no Changes API),
 Compute instances (Images API / `ResolveImage`), Bigtable (provider gRPC admin
-client vs lab REST `/v2/`). See `tests/terraform/README.md`.
+client vs lab REST `/v2/`), Certificate Manager and Filestore (provider LRO wait
+on synchronous create). See `tests/terraform/README.md`.
 
 ### gcloud `api_endpoint_overrides`
 
@@ -122,6 +164,9 @@ gcloud config set api_endpoint_overrides/dns http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/dataflow http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/bigtableadmin http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/redis http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/certificatemanager http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
+# Filestore: filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/" (lab /file/v1/; Terraform LRO skip)
 gcloud projects describe noctaxris-gcp-local --format=json
 ```
 

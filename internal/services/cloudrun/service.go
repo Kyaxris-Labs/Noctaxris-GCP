@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/compute"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
@@ -18,10 +19,20 @@ import (
 // DefaultLocation is the lab default Cloud Run location.
 const DefaultLocation = "us-central1"
 
-// Service serves Cloud Run Admin API v2 REST (lab subset, no container start).
+// Service serves Cloud Run Admin API v2 REST (lab subset).
+// Invoker defaults to compute.MockInvoker; nested hooks activate when
+// NOCTAXRIS_GCP_DOCKER_HOST is set (still no host docker.sock).
 type Service struct {
-	Store *store.Store
-	Authz *authz.Evaluator
+	Store   *store.Store
+	Authz   *authz.Evaluator
+	Invoker compute.Invoker
+}
+
+func (s *Service) invoker() compute.Invoker {
+	if s.Invoker != nil {
+		return s.Invoker
+	}
+	return compute.NewInvokerFromEnv()
 }
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
@@ -540,18 +551,52 @@ func (s *Service) invoke(w http.ResponseWriter, r *http.Request, p authn.Princip
 	raw, _ := json.Marshal(rec)
 	_ = s.Store.RecordRunInvoke(name, string(raw))
 
+	env := envFromTemplateJSON(svc.TemplateJSON)
+	respBody := []byte(svc.LabResponseBody)
+	if len(respBody) == 0 {
+		defaultJSON, _ := json.Marshal(map[string]any{
+			"ok":      true,
+			"service": name,
+			"env":     env,
+		})
+		respBody = defaultJSON
+	}
+	status := labStatusFromTemplate(svc.TemplateJSON, env)
+	delay := labDelayFromTemplate(svc.TemplateJSON, env)
+	inv := s.invoker()
+	// Deterministic labResponseBody fixtures stay mock-only (no nested overwrite).
 	if svc.LabResponseBody != "" {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(svc.LabResponseBody))
+		inv = compute.MockInvoker{}
+	}
+	result, err := inv.Invoke(r.Context(), compute.InvokeRequest{
+		ServiceName:  name,
+		Method:       r.Method,
+		Path:         r.URL.Path,
+		Query:        r.URL.RawQuery,
+		Headers:      flattenHeaders(r.Header),
+		Body:         body,
+		StatusCode:   status,
+		Delay:        delay,
+		ResponseBody: respBody,
+		Image:        imageFromTemplateJSON(svc.TemplateJSON),
+		Env:          env,
+	})
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	env := envFromTemplateJSON(svc.TemplateJSON)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"service": name,
-		"env":     env,
-	})
+	for k, v := range result.Headers {
+		w.Header().Set(k, v)
+	}
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	}
+	code := result.StatusCode
+	if code == 0 {
+		code = http.StatusOK
+	}
+	w.WriteHeader(code)
+	_, _ = w.Write(result.Body)
 }
 
 func toServiceJSON(svc store.RunService) map[string]any {
@@ -618,6 +663,73 @@ func labResponseFromTemplate(template map[string]any) string {
 	env := envMapFromTemplate(template)
 	if v, ok := env["RESPONSE_BODY"]; ok && v != "" {
 		return v
+	}
+	return ""
+}
+
+func labStatusFromTemplate(templateJSON string, env map[string]string) int {
+	var tpl map[string]any
+	_ = json.Unmarshal([]byte(templateJSON), &tpl)
+	if n, ok := asInt(tpl["labStatusCode"]); ok && n >= 100 && n <= 599 {
+		return n
+	}
+	if v, ok := env["RESPONSE_STATUS"]; ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 100 && n <= 599 {
+			return n
+		}
+	}
+	return http.StatusOK
+}
+
+func labDelayFromTemplate(templateJSON string, env map[string]string) time.Duration {
+	var tpl map[string]any
+	_ = json.Unmarshal([]byte(templateJSON), &tpl)
+	ms := 0
+	if n, ok := asInt(tpl["labDelayMs"]); ok && n > 0 {
+		ms = n
+	} else if v, ok := env["RESPONSE_DELAY_MS"]; ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ms = n
+		}
+	}
+	if ms <= 0 {
+		return 0
+	}
+	// Cap theatre delay so tests stay bounded.
+	if ms > 5000 {
+		ms = 5000
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func asInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return int(i), err == nil
+	case string:
+		i, err := strconv.Atoi(n)
+		return i, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func imageFromTemplateJSON(templateJSON string) string {
+	var tpl map[string]any
+	_ = json.Unmarshal([]byte(templateJSON), &tpl)
+	containers, _ := tpl["containers"].([]any)
+	for _, c := range containers {
+		cm, _ := c.(map[string]any)
+		if img, _ := cm["image"].(string); img != "" {
+			return img
+		}
 	}
 	return ""
 }

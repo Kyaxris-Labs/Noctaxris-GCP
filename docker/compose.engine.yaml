@@ -1,0 +1,74 @@
+# Opt-in nested DinD engine for Noctaxris-GCP.
+# Default compose.yaml does NOT start an engine and leaves
+# NOCTAXRIS_GCP_DOCKER_HOST unset (unit tests need no Docker).
+#
+# Enable from docker/:
+#   docker compose -f compose.yaml -f compose.engine.yaml --env-file .env up --build
+#
+# Never mount host docker.sock. Engine TLS listens on the Compose network only
+# (no host publish of 2375/2376). Restricted DinD: privileged: false + caps.
+#
+# If nested containers fail to start on your host, also add:
+#   -f compose.engine-privileged.yaml
+
+services:
+  noctaxris-gcp:
+    environment:
+      # Nested DinD API on the Compose network only (TLS on 2376, never host docker.sock).
+      NOCTAXRIS_GCP_DOCKER_HOST: "tcp://noctaxris-gcp-engine:2376"
+      NOCTAXRIS_GCP_DOCKER_CERT_PATH: "/certs/client"
+    volumes:
+      - noctaxris-gcp-engine-certs:/certs:ro
+    depends_on:
+      noctaxris-gcp-engine:
+        condition: service_healthy
+  noctaxris-gcp-engine:
+    image: docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
+    # Restricted DinD (no privileged: true). Explicit caps/devices plus
+    # host cgroup namespace so dockerd can write /sys/fs/cgroup (cgroup v2).
+    privileged: false
+    cgroup: host
+    cap_add:
+      - AUDIT_WRITE
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - KILL
+      - MKNOD
+      - NET_ADMIN
+      - NET_BIND_SERVICE
+      - NET_RAW
+      - SETFCAP
+      - SETGID
+      - SETPCAP
+      - SETUID
+      - SYS_ADMIN
+      - SYS_CHROOT
+      - SYS_PTRACE
+      - SYS_RESOURCE
+    security_opt:
+      - apparmor:unconfined
+      - seccomp:unconfined
+      - systempaths=unconfined
+    devices:
+      - /dev/fuse
+    command: ["--ipv6=false", "--ip6tables=false"]
+    environment:
+      DOCKER_TLS_SAN: DNS:noctaxris-gcp-engine
+    volumes:
+      - noctaxris-gcp-engine-certs:/certs
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /tmp
+    # Engine API stays on the Compose network only; do not add host mappings for 2375/2376.
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 15s
+
+volumes:
+  noctaxris-gcp-engine-certs:

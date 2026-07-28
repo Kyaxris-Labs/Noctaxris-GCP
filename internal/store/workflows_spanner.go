@@ -86,6 +86,18 @@ CREATE TABLE IF NOT EXISTS spanner_sessions (
   created_at TEXT NOT NULL,
   UNIQUE (database_name, session_id)
 );
+
+CREATE TABLE IF NOT EXISTS spanner_rows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  database_name TEXT NOT NULL,
+  table_name TEXT NOT NULL,
+  key_json TEXT NOT NULL DEFAULT '[]',
+  columns_json TEXT NOT NULL DEFAULT '[]',
+  values_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_spanner_rows_db_table ON spanner_rows (database_name, table_name);
 `
 
 func (s *Store) migrateWorkflowsSpanner() error {
@@ -460,6 +472,12 @@ func (s *Store) DeleteSpannerInstance(name string) (bool, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(
+		`DELETE FROM spanner_rows WHERE database_name IN (SELECT name FROM spanner_databases WHERE instance_name = ?)`,
+		name,
+	); err != nil {
+		return false, fmt.Errorf("delete spanner rows: %w", err)
+	}
+	if _, err := tx.Exec(
 		`DELETE FROM spanner_sessions WHERE database_name IN (SELECT name FROM spanner_databases WHERE instance_name = ?)`,
 		name,
 	); err != nil {
@@ -606,6 +624,9 @@ func (s *Store) DeleteSpannerDatabase(name string) (bool, error) {
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM spanner_rows WHERE database_name = ?`, name); err != nil {
+		return false, fmt.Errorf("delete spanner rows: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM spanner_sessions WHERE database_name = ?`, name); err != nil {
 		return false, fmt.Errorf("delete spanner sessions: %w", err)
 	}
@@ -673,4 +694,89 @@ func (s *Store) GetSpannerSession(name string) (SpannerSession, bool, error) {
 		return SpannerSession{}, false, fmt.Errorf("get spanner session: %w", err)
 	}
 	return sess, true, nil
+}
+
+// SpannerRow is a SQLite-backed Spanner mutation insert theatre row.
+type SpannerRow struct {
+	ID           int64
+	DatabaseName string
+	TableName    string
+	KeyJSON      string
+	ColumnsJSON  string
+	ValuesJSON   string
+	CreatedAt    string
+}
+
+// InsertSpannerRows stores mutation insert rows for a database/table.
+func (s *Store) InsertSpannerRows(databaseName, tableName string, columns []string, valueRows [][]string) error {
+	databaseName = strings.TrimSpace(databaseName)
+	tableName = strings.TrimSpace(tableName)
+	if databaseName == "" || tableName == "" {
+		return fmt.Errorf("spanner insert requires database and table")
+	}
+	if len(columns) == 0 {
+		return fmt.Errorf("spanner insert requires columns")
+	}
+	if _, ok, err := s.GetSpannerDatabase(databaseName); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("database not found")
+	}
+	colsRaw, err := json.Marshal(columns)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, vals := range valueRows {
+		if len(vals) != len(columns) {
+			return fmt.Errorf("value count %d does not match columns %d", len(vals), len(columns))
+		}
+		keyVals := vals
+		if len(vals) > 0 {
+			keyVals = vals[:1]
+		}
+		keyRaw, err := json.Marshal(keyVals)
+		if err != nil {
+			return err
+		}
+		valRaw, err := json.Marshal(vals)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO spanner_rows (database_name, table_name, key_json, columns_json, values_json, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			databaseName, tableName, string(keyRaw), string(colsRaw), string(valRaw), now,
+		); err != nil {
+			return fmt.Errorf("insert spanner row: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// ListSpannerRows returns inserted rows for a table.
+func (s *Store) ListSpannerRows(databaseName, tableName string) ([]SpannerRow, error) {
+	rows, err := s.db.Query(
+		`SELECT id, database_name, table_name, key_json, columns_json, values_json, created_at
+		 FROM spanner_rows WHERE database_name = ? AND table_name = ? ORDER BY id`,
+		databaseName, tableName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list spanner rows: %w", err)
+	}
+	defer rows.Close()
+	var out []SpannerRow
+	for rows.Next() {
+		var r SpannerRow
+		if err := rows.Scan(&r.ID, &r.DatabaseName, &r.TableName, &r.KeyJSON, &r.ColumnsJSON, &r.ValuesJSON, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

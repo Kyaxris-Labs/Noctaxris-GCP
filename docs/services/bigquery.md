@@ -4,7 +4,7 @@ Lab BigQuery REST v2 for datasets, tables, streaming inserts, tabledata list, jo
 
 ## Status
 
-**lab** — datasets/tables CRUD, `insertAll` (max 500 rows, optional `skipInvalidRows`), `tabledata.list`, `jobs.query` / `jobs.get`, dryRun, CREATE TABLE via query, JOIN lite.
+**lab** — datasets/tables CRUD, `insertAll` (max 500 rows, optional `skipInvalidRows`), `tabledata.list`, `jobs.query` / `jobs.get`, dryRun, CREATE TABLE via query, JOIN lite, GROUP BY COUNT/SUM, UNION ALL, INFORMATION_SCHEMA.TABLES stub.
 
 ## Wire protocol
 
@@ -30,12 +30,18 @@ Rows from `insertAll` are stored as JSON in SQLite. Jobs from `jobs.query` are s
 ```sql
 SELECT col|* FROM dataset.table [WHERE col = value] [LIMIT n]
 SELECT a.x, b.y FROM dataset.t1 a JOIN dataset.t2 b ON a.id = b.id [LIMIT n]
+SELECT col, COUNT(*) AS alias FROM dataset.table GROUP BY col [LIMIT n]
+SELECT col, SUM(num) AS alias FROM dataset.table GROUP BY col [LIMIT n]
+SELECT ... FROM dataset.table UNION ALL SELECT ... FROM dataset.table
+SELECT table_name|* FROM dataset.INFORMATION_SCHEMA.TABLES
 CREATE TABLE dataset.table (col TYPE [REQUIRED|NULLABLE], ...)
 ```
 
 `dryRun: true` validates/parses and returns schema without rows (or without creating the table for CREATE TABLE).
 
 `insertAll` with `skipInvalidRows: true` skips rows missing REQUIRED schema fields and reports `insertErrors`.
+
+GROUP BY supports a single grouping column with `COUNT(*)` or `SUM(col)`. UNION ALL concatenates two simple SELECT sides (matching column counts). INFORMATION_SCHEMA.TABLES lists tables in the dataset.
 
 ## Authz
 

@@ -485,8 +485,9 @@ func (s *Service) applyWrite(projectID string, w *firestorepb.Write) (*firestore
 	}
 }
 
-// Commit applies writes. Transaction bytes from BeginTransaction are accepted and cleared,
-// but there is no isolation or conflict detection (lab single-shot token).
+// Commit applies writes atomically in one SQLite transaction.
+// Transaction bytes from BeginTransaction are accepted and cleared (single-shot token).
+// current_document exists / not-exists preconditions are enforced (fail-closed).
 func (s *Service) Commit(ctx context.Context, req *firestorepb.CommitRequest) (*firestorepb.CommitResponse, error) {
 	if req.GetDatabase() == "" {
 		return nil, status.Error(codes.InvalidArgument, "database is required")
@@ -507,15 +508,141 @@ func (s *Service) Commit(ctx context.Context, req *firestorepb.CommitRequest) (*
 			return nil, status.Error(codes.InvalidArgument, "transaction not found or already used")
 		}
 	}
+
+	now := timestamppb.Now()
+	var puts []store.FirestoreDoc
+	var deletes []string
 	results := make([]*firestorepb.WriteResult, 0, len(req.GetWrites()))
+
+	// Stage all writes in memory first; abort on any precondition / transform failure.
 	for _, w := range req.GetWrites() {
-		wr, st := s.applyWrite(projectID, w)
+		doc, delPath, wr, st := s.stageWrite(projectID, w, now)
 		if st.GetCode() != int32(codes.OK) {
 			return nil, status.Error(codes.Code(st.GetCode()), st.GetMessage())
 		}
+		if delPath != "" {
+			deletes = append(deletes, delPath)
+		}
+		if doc != nil {
+			puts = append(puts, *doc)
+		}
 		results = append(results, wr)
 	}
-	return &firestorepb.CommitResponse{WriteResults: results, CommitTime: timestamppb.Now()}, nil
+	if err := s.Store.ApplyFirestoreWritesAtomic(puts, deletes); err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return &firestorepb.CommitResponse{WriteResults: results, CommitTime: now}, nil
+}
+
+func (s *Service) stageWrite(projectID string, w *firestorepb.Write, now *timestamppb.Timestamp) (*store.FirestoreDoc, string, *firestorepb.WriteResult, *rpcstatus.Status) {
+	wr := &firestorepb.WriteResult{UpdateTime: now}
+	switch op := w.GetOperation().(type) {
+	case *firestorepb.Write_Update:
+		doc := op.Update
+		if doc == nil || doc.GetName() == "" {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: "update name required"}
+		}
+		_, coll, docID, err := parseDocPath(doc.GetName())
+		if err != nil {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
+		}
+		existing, ok, err := s.Store.GetFirestoreDoc(doc.GetName())
+		if err != nil {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.Internal), Message: err.Error()}
+		}
+		if st := checkCurrentDocument(w.GetCurrentDocument(), ok); st != nil {
+			return nil, "", wr, st
+		}
+		existingJSON := "{}"
+		createTime := now.AsTime().UTC().Format(time.RFC3339Nano)
+		if ok {
+			existingJSON = existing.FieldsJSON
+			createTime = existing.CreateTime
+		}
+		fieldsJSON, err := applyFieldMaskJSON(existingJSON, doc.GetFields(), w.GetUpdateMask())
+		if err != nil {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
+		}
+		var transformResults []*firestorepb.Value
+		if len(w.GetUpdateTransforms()) > 0 {
+			fieldsJSON, transformResults, err = applyFieldTransforms(fieldsJSON, w.GetUpdateTransforms(), now)
+			if err != nil {
+				return nil, "", wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
+			}
+			wr.TransformResults = transformResults
+		}
+		d := store.FirestoreDoc{
+			Path: doc.GetName(), ProjectID: projectID, CollectionID: coll, DocumentID: docID,
+			FieldsJSON: fieldsJSON, CreateTime: createTime, UpdateTime: now.AsTime().UTC().Format(time.RFC3339Nano),
+		}
+		return &d, "", wr, &rpcstatus.Status{Code: int32(codes.OK)}
+	case *firestorepb.Write_Delete:
+		existing, ok, err := s.Store.GetFirestoreDoc(op.Delete)
+		if err != nil {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.Internal), Message: err.Error()}
+		}
+		_ = existing
+		if st := checkCurrentDocument(w.GetCurrentDocument(), ok); st != nil {
+			return nil, "", wr, st
+		}
+		if !ok {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.NotFound), Message: "not found"}
+		}
+		return nil, op.Delete, wr, &rpcstatus.Status{Code: int32(codes.OK)}
+	case *firestorepb.Write_Transform:
+		tr := op.Transform
+		if tr == nil || tr.GetDocument() == "" {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: "transform document required"}
+		}
+		_, coll, docID, err := parseDocPath(tr.GetDocument())
+		if err != nil {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
+		}
+		existing, ok, err := s.Store.GetFirestoreDoc(tr.GetDocument())
+		if err != nil {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.Internal), Message: err.Error()}
+		}
+		if st := checkCurrentDocument(w.GetCurrentDocument(), ok); st != nil {
+			return nil, "", wr, st
+		}
+		existingJSON := "{}"
+		createTime := now.AsTime().UTC().Format(time.RFC3339Nano)
+		if ok {
+			existingJSON = existing.FieldsJSON
+			createTime = existing.CreateTime
+		}
+		fieldsJSON, transformResults, err := applyFieldTransforms(existingJSON, tr.GetFieldTransforms(), now)
+		if err != nil {
+			return nil, "", wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
+		}
+		wr.TransformResults = transformResults
+		d := store.FirestoreDoc{
+			Path: tr.GetDocument(), ProjectID: projectID, CollectionID: coll, DocumentID: docID,
+			FieldsJSON: fieldsJSON, CreateTime: createTime, UpdateTime: now.AsTime().UTC().Format(time.RFC3339Nano),
+		}
+		return &d, "", wr, &rpcstatus.Status{Code: int32(codes.OK)}
+	default:
+		return nil, "", wr, &rpcstatus.Status{Code: int32(codes.Unimplemented), Message: "write operation not supported in lab"}
+	}
+}
+
+func checkCurrentDocument(pre *firestorepb.Precondition, exists bool) *rpcstatus.Status {
+	if pre == nil {
+		return nil
+	}
+	switch c := pre.GetConditionType().(type) {
+	case *firestorepb.Precondition_Exists:
+		if c.Exists && !exists {
+			return &rpcstatus.Status{Code: int32(codes.NotFound), Message: "document does not exist"}
+		}
+		if !c.Exists && exists {
+			return &rpcstatus.Status{Code: int32(codes.AlreadyExists), Message: "document already exists"}
+		}
+	case *firestorepb.Precondition_UpdateTime:
+		// Lab: update_time precondition not evaluated beyond existence of the field.
+		_ = c
+	}
+	return nil
 }
 
 // RunQuery implements a lab subset: collection or collection-group scans with

@@ -6,8 +6,8 @@ No Spanner server binary is embedded; SQL does not run a Spanner dialect.
 ## Status
 
 **lab** — instance and database CRUD; DDL statement storage (`PATCH .../ddl`);
-session create and `sessions:batchCreate`; `:executeSql` / `:read` empty ResultSet;
-`:partitionQuery` stub; list instance configs stub.
+session create and `sessions:batchCreate`; mutation insert via `:commit` (SQLite-backed);
+`:executeSql` / `:read` return inserted rows; `:partitionQuery` stub; list instance configs stub.
 
 ## Wire protocol
 
@@ -29,6 +29,7 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 | `POST` | `.../databases/{database}/sessions:batchCreate` |
 | `POST` | `.../sessions/{session}:executeSql` |
 | `POST` | `.../sessions/{session}:read` |
+| `POST` | `.../sessions/{session}:commit` |
 | `POST` | `.../sessions/{session}:partitionQuery` |
 
 Create instance/database returns the resource in `READY` state (no LRO).
@@ -46,19 +47,22 @@ Checked on `projects/{project}`:
 - `spanner.sessions.create`
 - `spanner.databases.select` (executeSql)
 - `spanner.databases.read`
+- `spanner.databases.write` (commit mutations)
 - `spanner.databases.partitionQuery`
 
 ## Emulator limits
 
-- Control-plane + SQL theatre only; no real Spanner query engine, mutations, or transactions
-- `executeSql` / `read` return empty ResultSet-shaped JSON (no mutation insert theatre)
+- Control-plane + SQLite-backed mutation insert / SELECT / Read lite; no Spanner binary or dialect
+- `:commit` supports `insert` mutations only (no update/delete/replace)
+- `executeSql` supports `SELECT cols|* FROM Table [WHERE col = value]` over inserted rows
+- `read` returns inserted rows for `keySet.all` or key equality on the first column
 - `partitionQuery` returns a single lab partition token
 - DDL is stored metadata only (no schema apply)
 - Create / updateDdl are synchronous (completed Operation for DDL)
 
 ## Deferred depth
 
-- Backups, streaming SQL, real transactions / mutations
+- Backups, streaming SQL, full transactions / update-delete mutations
 - Official gRPC Spanner surface
 
 ## Verification / CLI smoke
@@ -72,19 +76,16 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/instances/lab/databases" \
   -d '{"createStatement":"CREATE DATABASE `app`"}'
-curl -s -H "Authorization: Bearer $TOKEN" -X PATCH \
-  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/instances/lab/databases/app/ddl" \
-  -d '{"statements":["CREATE TABLE T (id INT64) PRIMARY KEY(id)"]}'
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/instanceConfigs"
-# Session + ExecuteSql theatre (empty ResultSet-shaped reply):
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/instances/lab/databases/app/sessions" \
   -d '{}'
-# Extract session id from response name (.../sessions/{id}), then:
+# Extract session id, then commit insert + executeSql:
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/instances/lab/databases/app/sessions/$SESSION_ID:commit" \
+  -d '{"mutations":[{"insert":{"table":"Singers","columns":["SingerId","FirstName"],"values":[["1","Marc"]]}}]}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/instances/lab/databases/app/sessions/$SESSION_ID:executeSql" \
-  -d '{"sql":"SELECT 1"}'
+  -d '{"sql":"SELECT SingerId, FirstName FROM Singers"}'
 ```
 
 ```bash

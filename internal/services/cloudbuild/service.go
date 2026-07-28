@@ -125,6 +125,7 @@ func (s *Service) createBuild(w http.ResponseWriter, r *http.Request, p authn.Pr
 	}
 	buildID := store.NewCbBuildID()
 	name := buildName(project, location, buildID)
+	body["steps"] = ensureStepStatus(body["steps"], "WORKING")
 	raw, _ := json.Marshal(body)
 	created, err := s.Store.CreateCbBuild(store.CbBuild{
 		Name: name, ProjectID: project, Location: location, BuildID: buildID,
@@ -567,4 +568,24 @@ func toTriggerJSON(t store.CbTrigger) map[string]any {
 	cfg["resourceName"] = t.Name
 	cfg["createTime"] = t.CreatedAt
 	return cfg
+}
+
+func ensureStepStatus(steps any, status string) any {
+	list, ok := steps.([]any)
+	if !ok || len(list) == 0 {
+		return steps
+	}
+	out := make([]any, 0, len(list))
+	for _, step := range list {
+		sm, ok := step.(map[string]any)
+		if !ok {
+			out = append(out, step)
+			continue
+		}
+		if _, has := sm["status"]; !has {
+			sm["status"] = status
+		}
+		out = append(out, sm)
+	}
+	return out
 }

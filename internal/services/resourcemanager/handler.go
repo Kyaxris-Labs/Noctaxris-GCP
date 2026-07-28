@@ -44,6 +44,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /v3/folders/{folder}", h.handlePatchFolder)
 	mux.HandleFunc("DELETE /v3/folders/{folder}", h.handleDeleteFolder)
 	mux.HandleFunc("POST /v3/folders/{folder}", h.handleFolderPost)
+	h.MountTags(mux)
 }
 
 func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {

@@ -290,12 +290,21 @@ func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscrip
 	if sub.GetPushConfig() != nil {
 		push = sub.GetPushConfig().GetPushEndpoint()
 	}
-	created, ok, err := s.Store.CreateSubscriptionFull(sub.GetName(), sub.GetTopic(), projectID, ack, push, sub.GetLabels(), sub.GetFilter())
+	dlTopic := ""
+	maxAttempts := 0
+	if dl := sub.GetDeadLetterPolicy(); dl != nil {
+		dlTopic = dl.GetDeadLetterTopic()
+		maxAttempts = int(dl.GetMaxDeliveryAttempts())
+	}
+	created, ok, err := s.Store.CreateSubscriptionFull(
+		sub.GetName(), sub.GetTopic(), projectID, ack, push, sub.GetLabels(), sub.GetFilter(),
+		dlTopic, maxAttempts, sub.GetEnableExactlyOnceDelivery(),
+	)
 	if err != nil {
-		if strings.Contains(err.Error(), "topic not found") {
-			return nil, status.Error(codes.NotFound, "topic not found")
+		if strings.Contains(err.Error(), "topic not found") || strings.Contains(err.Error(), "dead letter topic not found") {
+			return nil, status.Error(codes.NotFound, err.Error())
 		}
-		if strings.Contains(err.Error(), "invalid filter") {
+		if strings.Contains(err.Error(), "invalid filter") || strings.Contains(err.Error(), "maxDeliveryAttempts") {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil, status.Errorf(codes.Internal, "%v", err)
@@ -378,6 +387,8 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 	var push *string
 	var labels *map[string]string
 	var filter *string
+	var deadLetter *store.PubSubDeadLetterPolicy
+	var enableExactlyOnce *bool
 	for _, p := range paths {
 		switch p {
 		case "ack_deadline_seconds":
@@ -398,14 +409,24 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 		case "filter":
 			f := req.GetSubscription().GetFilter()
 			filter = &f
+		case "dead_letter_policy":
+			dl := &store.PubSubDeadLetterPolicy{}
+			if pol := req.GetSubscription().GetDeadLetterPolicy(); pol != nil {
+				dl.DeadLetterTopic = pol.GetDeadLetterTopic()
+				dl.MaxDeliveryAttempts = int(pol.GetMaxDeliveryAttempts())
+			}
+			deadLetter = dl
+		case "enable_exactly_once_delivery":
+			v := req.GetSubscription().GetEnableExactlyOnceDelivery()
+			enableExactlyOnce = &v
 		}
 	}
-	updated, err := s.Store.UpdateSubscription(name, ack, push, labels, filter)
+	updated, err := s.Store.UpdateSubscription(name, ack, push, labels, filter, deadLetter, enableExactlyOnce)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
-			return nil, status.Error(codes.NotFound, "subscription not found")
+			return nil, status.Error(codes.NotFound, err.Error())
 		}
-		if strings.Contains(err.Error(), "invalid filter") {
+		if strings.Contains(err.Error(), "invalid filter") || strings.Contains(err.Error(), "maxDeliveryAttempts") {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil, status.Errorf(codes.Internal, "%v", err)
@@ -691,14 +712,21 @@ func snapshotPB(s *store.PubSubSnapshot) *pubsubpb.Snapshot {
 
 func subscriptionPB(sub *store.PubSubSubscription) *pubsubpb.Subscription {
 	out := &pubsubpb.Subscription{
-		Name:               sub.Name,
-		Topic:              sub.Topic,
-		AckDeadlineSeconds: int32(sub.AckDeadlineSeconds),
-		Labels:             sub.Labels,
-		Filter:             sub.Filter,
+		Name:                      sub.Name,
+		Topic:                     sub.Topic,
+		AckDeadlineSeconds:        int32(sub.AckDeadlineSeconds),
+		Labels:                    sub.Labels,
+		Filter:                    sub.Filter,
+		EnableExactlyOnceDelivery: sub.EnableExactlyOnceDelivery,
 	}
 	if sub.PushEndpoint != "" {
 		out.PushConfig = &pubsubpb.PushConfig{PushEndpoint: sub.PushEndpoint}
+	}
+	if sub.DeadLetterTopic != "" {
+		out.DeadLetterPolicy = &pubsubpb.DeadLetterPolicy{
+			DeadLetterTopic:     sub.DeadLetterTopic,
+			MaxDeliveryAttempts: int32(sub.MaxDeliveryAttempts),
+		}
 	}
 	return out
 }

@@ -16,6 +16,8 @@ There is no official Go `*_EMULATOR_HOST` for Secret Manager; point clients with
 | Secrets | Create / Get / List / Delete / Patch (Update) (REST + gRPC) |
 | Replication | Stored on create (`replication` JSON theatre; default automatic) |
 | CMEK | `customerManagedEncryption.kmsKeyName` stored; seal still uses process master key |
+| Rotation | `rotation.rotationPeriod` + `rotation.nextRotationTime` stored; optional `topics` |
+| rotateSecret (lab) | Custom REST `:rotateSecret` creates a new version (not an official RPC) |
 | Versions | AddVersion; Access including `latest`; List / Get |
 | List filter | `?filter=state:ENABLED` (or DISABLED / DESTROYED) |
 | State | Enable / Disable / Destroy (destroyed Access refused) |
@@ -26,10 +28,23 @@ REST paths (project-scoped):
 - `POST /v1/projects/{project}/secrets?secretId=`
 - `GET|PATCH|DELETE /v1/projects/{project}/secrets/{secret}`
 - `POST /v1/projects/{project}/secrets/{secret}:addVersion`
+- `POST /v1/projects/{project}/secrets/{secret}:rotateSecret`
 - `POST .../secrets/{secret}:getIamPolicy|:setIamPolicy|:testIamPermissions`
 - `GET /v1/projects/{project}/secrets/{secret}/versions?filter=state:ENABLED`
 - `GET /v1/projects/{project}/secrets/{secret}/versions/{version}:access`
 - `POST .../versions/{version}:enable|disable|destroy`
+
+Create/patch accept official-shaped `rotation` (`nextRotationTime`,
+`rotationPeriod` Duration like `86400s`) and optional `topics[{name}]`. The lab
+stores these fields; it does not schedule timers or publish Pub/Sub rotation
+notifications.
+
+`:rotateSecret` is lab-only theatre (Cloud Secret Manager has no rotate RPC;
+production rotation notifies via Pub/Sub and clients call `addVersion`). Body may
+include `payload.data` (base64); when omitted, the latest enabled payload is
+copied (or `"rotated"` if none). When both rotation fields are set,
+`nextRotationTime` advances by `rotationPeriod`. Permission:
+`secretmanager.versions.add`.
 
 ### Authz
 
@@ -40,7 +55,8 @@ REST paths (project-scoped):
 ## Emulator limits
 
 - CMEK name is stored only; encryption always uses the lab master key
-- No rotation schedules or Pub/Sub notifications
+- No automatic rotation timers or Pub/Sub notification delivery
+- `:rotateSecret` is lab theatre, not an official API method
 - Destroy clears ciphertext and refuses Access
 - Regional secrets under `projects/*/locations/*` are not modeled
 
@@ -73,27 +89,25 @@ export EP=http://127.0.0.1:4588
 export PROJECT=noctaxris-gcp-local
 
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"replication":{"automatic":{}},"customerManagedEncryption":{"kmsKeyName":"projects/p/locations/global/keyRings/r/cryptoKeys/k"}}' \
+  -d '{"replication":{"automatic":{}},"rotation":{"rotationPeriod":"86400s","nextRotationTime":"2099-01-01T00:00:00Z"},"topics":[{"name":"projects/p/topics/rot"}]}' \
   "$EP/v1/projects/$PROJECT/secrets?secretId=lab-secret"
 
-curl -sS -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"labels":{"env":"lab"}}' \
-  "$EP/v1/projects/$PROJECT/secrets/lab-secret"
-
-# payload.data is base64("hello")
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"payload":{"data":"aGVsbG8="}}' \
   "$EP/v1/projects/$PROJECT/secrets/lab-secret:addVersion"
 
-curl -sS -H "Authorization: Bearer $TOKEN" \
-  "$EP/v1/projects/$PROJECT/secrets/lab-secret/versions/latest:access"
+curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{}' \
+  "$EP/v1/projects/$PROJECT/secrets/lab-secret:rotateSecret"
 
 curl -sS -H "Authorization: Bearer $TOKEN" \
-  "$EP/v1/projects/$PROJECT/secrets/lab-secret/versions?filter=state:ENABLED"
+  "$EP/v1/projects/$PROJECT/secrets/lab-secret/versions/latest:access"
 ```
+
+Also: `go test ./internal/store/ ./internal/server/ -run 'Secret|Rotation|Rotate' -count=1`
 
 ## Deferred depth
 
 - CMEK-backed seal using Cloud KMS lab keys
 - Regional secret resources under `projects/*/locations/*`
-- Automatic rotation and Pub/Sub rotation notifications
+- Pub/Sub rotation notification delivery

@@ -157,9 +157,14 @@ func (s *Service) httpCreateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Labels                    map[string]string `json:"labels"`
-		Annotations               map[string]string `json:"annotations"`
-		Replication               map[string]any    `json:"replication"`
+		Labels      map[string]string   `json:"labels"`
+		Annotations map[string]string   `json:"annotations"`
+		Replication map[string]any      `json:"replication"`
+		Topics      []map[string]string `json:"topics"`
+		Rotation    *struct {
+			NextRotationTime string `json:"nextRotationTime"`
+			RotationPeriod   string `json:"rotationPeriod"`
+		} `json:"rotation"`
 		CustomerManagedEncryption *struct {
 			KmsKeyName string `json:"kmsKeyName"`
 		} `json:"customerManagedEncryption"`
@@ -169,8 +174,13 @@ func (s *Service) httpCreateSecret(w http.ResponseWriter, r *http.Request) {
 	if body.CustomerManagedEncryption != nil {
 		cmek = body.CustomerManagedEncryption.KmsKeyName
 	}
+	rotPeriod, nextRot := "", ""
+	if body.Rotation != nil {
+		rotPeriod = body.Rotation.RotationPeriod
+		nextRot = body.Rotation.NextRotationTime
+	}
 	name := secretResourceName(project, secretID)
-	sec, created, err := s.Store.CreateSecretWithMeta(name, project, body.Labels, body.Annotations, body.Replication, cmek)
+	sec, created, err := s.Store.CreateSecretWithRotation(name, project, body.Labels, body.Annotations, body.Replication, cmek, rotPeriod, nextRot, body.Topics)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -226,14 +236,24 @@ func (s *Service) httpPatchSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Labels      *map[string]string `json:"labels"`
-		Annotations *map[string]string `json:"annotations"`
+		Labels      *map[string]string   `json:"labels"`
+		Annotations *map[string]string   `json:"annotations"`
+		Topics      *[]map[string]string `json:"topics"`
+		Rotation    *struct {
+			NextRotationTime string `json:"nextRotationTime"`
+			RotationPeriod   string `json:"rotationPeriod"`
+		} `json:"rotation"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid secret patch body")
 		return
 	}
-	sec, err := s.Store.PatchSecret(name, body.Labels, body.Annotations)
+	var rotPeriod, nextRot *string
+	if body.Rotation != nil {
+		rotPeriod = &body.Rotation.RotationPeriod
+		nextRot = &body.Rotation.NextRotationTime
+	}
+	sec, err := s.Store.PatchSecretMeta(name, body.Labels, body.Annotations, rotPeriod, nextRot, body.Topics)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			gcperrors.NotFound(w, "secret not found")
@@ -270,6 +290,8 @@ func (s *Service) httpSecretPost(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "addVersion":
 		s.httpAddVersion(w, r)
+	case "rotateSecret":
+		s.httpRotateSecret(w, r)
 	case "getIamPolicy":
 		s.httpGetIamPolicy(w, r)
 	case "setIamPolicy":
@@ -279,6 +301,48 @@ func (s *Service) httpSecretPost(w http.ResponseWriter, r *http.Request) {
 	default:
 		gcperrors.InvalidArgument(w, "unsupported secrets custom method")
 	}
+}
+
+// httpRotateSecret is lab theatre: creates a new SecretVersion (not an official Secret Manager RPC).
+// Official Cloud rotation only publishes Pub/Sub; clients add versions themselves.
+func (s *Service) httpRotateSecret(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	secretID, _ := splitColonAction(r.PathValue("secret"))
+	name := secretResourceName(project, secretID)
+	if !s.requireSecretHTTP(w, r, "secretmanager.versions.add", name, project) {
+		return
+	}
+	var body struct {
+		Payload *struct {
+			Data string `json:"data"`
+		} `json:"payload"`
+	}
+	raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			gcperrors.InvalidArgument(w, "invalid rotateSecret body")
+			return
+		}
+	}
+	var payload []byte
+	if body.Payload != nil && body.Payload.Data != "" {
+		data, err := base64.StdEncoding.DecodeString(body.Payload.Data)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "payload.data must be base64")
+			return
+		}
+		payload = data
+	}
+	v, _, err := s.Store.RotateSecretTheatre(name, payload)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			gcperrors.NotFound(w, "secret not found")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, versionJSON(v))
 }
 
 func (s *Service) httpGetIamPolicy(w http.ResponseWriter, r *http.Request) {
@@ -559,14 +623,30 @@ func secretJSON(sec *store.Secret) map[string]any {
 		replication = map[string]any{"automatic": map[string]any{}}
 	}
 	out := map[string]any{
-		"name":         sec.Name,
-		"createTime":   sec.CreatedAt,
-		"labels":       labels,
-		"annotations":  annotations,
-		"replication":  replication,
+		"name":        sec.Name,
+		"createTime":  sec.CreatedAt,
+		"labels":      labels,
+		"annotations": annotations,
+		"replication": replication,
 	}
 	if sec.CMEKKmsKeyName != "" {
 		out["customerManagedEncryption"] = map[string]any{"kmsKeyName": sec.CMEKKmsKeyName}
+	}
+	if sec.RotationPeriod != "" || sec.NextRotationTime != "" {
+		rot := map[string]any{}
+		if sec.NextRotationTime != "" {
+			rot["nextRotationTime"] = sec.NextRotationTime
+		}
+		if sec.RotationPeriod != "" {
+			rot["rotationPeriod"] = sec.RotationPeriod
+		}
+		out["rotation"] = rot
+	}
+	if sec.TopicsJSON != "" && sec.TopicsJSON != "[]" {
+		var topics []map[string]string
+		if err := json.Unmarshal([]byte(sec.TopicsJSON), &topics); err == nil {
+			out["topics"] = topics
+		}
 	}
 	return out
 }

@@ -40,14 +40,14 @@ const (
 
 // Server is the combined REST + gRPC (h2c) listener.
 type Server struct {
-	cfg    config.Config
-	store  *store.Store
-	audit  *audit.Writer
-	authn  *authn.Authenticator
-	authz  *authz.Evaluator
-	grpc   *grpc.Server
-	mux    *http.ServeMux
-	now    func() time.Time
+	cfg   config.Config
+	store *store.Store
+	audit *audit.Writer
+	authn *authn.Authenticator
+	authz *authz.Evaluator
+	grpc  *grpc.Server
+	mux   *http.ServeMux
+	now   func() time.Time
 }
 
 // New builds a Server with health routes, identity REST, and gRPC Bearer auth.
@@ -73,6 +73,8 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 	s.registerAnalytics()
 	s.registerAppsBuild()
 	s.registerComputeData()
+	s.registerSecurity()
+	s.registerStorageAI()
 	return s
 }
 
@@ -154,6 +156,12 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 
 		// gRPC auth is enforced by interceptors once services register; REST requires Bearer now.
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		// Lab GCS V4 signed URLs authenticate via query signature (verified in the GCS handler).
+		if store.HasV4Signature(r.URL.Query()) && r.Header.Get("Authorization") == "" {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}

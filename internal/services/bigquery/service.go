@@ -537,6 +537,9 @@ var (
 	reSelect = regexp.MustCompile(`(?is)^\s*SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)(?:\s+WHERE\s+([a-zA-Z0-9_]+)\s*=\s*(.+?))?(?:\s+LIMIT\s+(\d+))?\s*$`)
 	reJoin   = regexp.MustCompile(`(?is)^\s*SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s+(?:AS\s+)?([a-zA-Z0-9_]+)\s+JOIN\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s+(?:AS\s+)?([a-zA-Z0-9_]+)\s+ON\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)(?:\s+LIMIT\s+(\d+))?\s*$`)
 	reCreate = regexp.MustCompile(`(?is)^\s*CREATE\s+TABLE\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\((.+)\)\s*$`)
+	reGroup  = regexp.MustCompile(`(?is)^\s*SELECT\s+([a-zA-Z0-9_]+)\s*,\s*(COUNT\s*\(\s*\*\s*\)|SUM\s*\(\s*([a-zA-Z0-9_]+)\s*\))(?:\s+AS\s+([a-zA-Z0-9_]+))?\s+FROM\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s+GROUP\s+BY\s+([a-zA-Z0-9_]+)(?:\s+LIMIT\s+(\d+))?\s*$`)
+	reInfo   = regexp.MustCompile(`(?is)^\s*SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)\.INFORMATION_SCHEMA\.TABLES\s*$`)
+	reUnion  = regexp.MustCompile(`(?is)^(.+?)\s+UNION\s+ALL\s+(.+)$`)
 )
 
 func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -659,9 +662,152 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 		return
 	}
 
+	if m := reInfo.FindStringSubmatch(q); m != nil {
+		selectCols, datasetID := m[1], m[2]
+		tables, err := s.Store.ListBQTables(project, datasetID)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		rows := make([]map[string]any, 0, len(tables))
+		for _, t := range tables {
+			rows = append(rows, map[string]any{
+				"table_catalog": project,
+				"table_schema":  datasetID,
+				"table_name":    t.TableID,
+				"table_type":    "BASE TABLE",
+			})
+		}
+		cols := parseSelectCols(selectCols, rows)
+		if strings.TrimSpace(selectCols) == "*" {
+			cols = []string{"table_catalog", "table_schema", "table_name", "table_type"}
+		}
+		resp := buildQueryResponse(project, jobID, cols, rows)
+		if body.DryRun {
+			resp["dryRun"] = true
+			resp["rows"] = []any{}
+			resp["totalRows"] = "0"
+		}
+		raw, _ := json.Marshal(resp)
+		_ = s.Store.PutBQJob(store.BQJob{
+			ProjectID: project, JobID: jobID, Query: q, DryRun: body.DryRun, State: "DONE",
+			ResultJSON: string(raw), CreatedAt: now,
+		})
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	if m := reGroup.FindStringSubmatch(q); m != nil {
+		groupCol := m[1]
+		aggExpr := strings.ToUpper(strings.ReplaceAll(m[2], " ", ""))
+		sumCol := m[3]
+		alias := m[4]
+		datasetID, tableID := m[5], m[6]
+		groupByCol := m[7]
+		limitStr := m[8]
+		if !strings.EqualFold(groupCol, groupByCol) {
+			gcperrors.InvalidArgument(w, "GROUP BY column must match the selected grouping column")
+			return
+		}
+		if alias == "" {
+			if strings.HasPrefix(aggExpr, "COUNT") {
+				alias = "f0_"
+			} else {
+				alias = "f0_"
+			}
+		}
+		srcRows, err := s.Store.ListBQRows(project, datasetID, tableID)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		type agg struct {
+			count int64
+			sum   float64
+		}
+		buckets := map[string]*agg{}
+		var order []string
+		for _, row := range srcRows {
+			key := fmt.Sprint(row[groupByCol])
+			a, ok := buckets[key]
+			if !ok {
+				a = &agg{}
+				buckets[key] = a
+				order = append(order, key)
+			}
+			a.count++
+			if strings.HasPrefix(aggExpr, "SUM") {
+				v, _ := strconv.ParseFloat(fmt.Sprint(row[sumCol]), 64)
+				a.sum += v
+			}
+		}
+		outRows := make([]map[string]any, 0, len(order))
+		for _, key := range order {
+			a := buckets[key]
+			val := any(a.count)
+			if strings.HasPrefix(aggExpr, "SUM") {
+				val = a.sum
+			}
+			outRows = append(outRows, map[string]any{groupByCol: key, alias: val})
+		}
+		if limitStr != "" {
+			lim, _ := strconv.Atoi(limitStr)
+			if lim >= 0 && lim < len(outRows) {
+				outRows = outRows[:lim]
+			}
+		}
+		cols := []string{groupByCol, alias}
+		resp := buildQueryResponse(project, jobID, cols, outRows)
+		if body.DryRun {
+			resp["dryRun"] = true
+			resp["rows"] = []any{}
+			resp["totalRows"] = "0"
+		}
+		raw, _ := json.Marshal(resp)
+		_ = s.Store.PutBQJob(store.BQJob{
+			ProjectID: project, JobID: jobID, Query: q, DryRun: body.DryRun, State: "DONE",
+			ResultJSON: string(raw), CreatedAt: now,
+		})
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	if m := reUnion.FindStringSubmatch(q); m != nil {
+		leftQ := strings.TrimSpace(m[1])
+		rightQ := strings.TrimSpace(m[2])
+		leftCols, leftRows, err := s.evalSimpleSelect(project, leftQ)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "UNION ALL left side: "+err.Error())
+			return
+		}
+		rightCols, rightRows, err := s.evalSimpleSelect(project, rightQ)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "UNION ALL right side: "+err.Error())
+			return
+		}
+		if len(leftCols) != len(rightCols) {
+			gcperrors.InvalidArgument(w, "UNION ALL requires matching column counts")
+			return
+		}
+		combined := append(leftRows, rightRows...)
+		resp := buildQueryResponse(project, jobID, leftCols, combined)
+		if body.DryRun {
+			resp["dryRun"] = true
+			resp["rows"] = []any{}
+			resp["totalRows"] = "0"
+		}
+		raw, _ := json.Marshal(resp)
+		_ = s.Store.PutBQJob(store.BQJob{
+			ProjectID: project, JobID: jobID, Query: q, DryRun: body.DryRun, State: "DONE",
+			ResultJSON: string(raw), CreatedAt: now,
+		})
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	m := reSelect.FindStringSubmatch(q)
 	if m == nil {
-		gcperrors.InvalidArgument(w, "lab query engine supports: SELECT ... FROM dataset.table [WHERE col = value] [LIMIT n]; JOIN lite; CREATE TABLE dataset.table (cols)")
+		gcperrors.InvalidArgument(w, "lab query engine supports: SELECT ... FROM dataset.table [WHERE col = value] [LIMIT n]; JOIN lite; GROUP BY COUNT/SUM; UNION ALL; INFORMATION_SCHEMA.TABLES; CREATE TABLE dataset.table (cols)")
 		return
 	}
 	selectCols, datasetID, tableID := m[1], m[2], m[3]
@@ -705,6 +851,51 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 		ResultJSON: string(raw), CreatedAt: now,
 	})
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// evalSimpleSelect runs a lab SELECT (no JOIN/GROUP/UNION) and returns columns + rows.
+func (s *Service) evalSimpleSelect(project, q string) ([]string, []map[string]any, error) {
+	m := reSelect.FindStringSubmatch(strings.TrimSpace(q))
+	if m == nil {
+		return nil, nil, fmt.Errorf("unsupported SELECT")
+	}
+	selectCols, datasetID, tableID := m[1], m[2], m[3]
+	whereCol, whereRaw, limitStr := m[4], m[5], m[6]
+	rows, err := s.Store.ListBQRows(project, datasetID, tableID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if whereCol != "" {
+		want := strings.TrimSpace(whereRaw)
+		want = strings.Trim(want, `"'`)
+		filtered := rows[:0]
+		for _, row := range rows {
+			got, ok := row[whereCol]
+			if !ok {
+				continue
+			}
+			if fmt.Sprint(got) == want {
+				filtered = append(filtered, row)
+			}
+		}
+		rows = filtered
+	}
+	if limitStr != "" {
+		lim, _ := strconv.Atoi(limitStr)
+		if lim >= 0 && lim < len(rows) {
+			rows = rows[:lim]
+		}
+	}
+	cols := parseSelectCols(selectCols, rows)
+	projected := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out := map[string]any{}
+		for _, c := range cols {
+			out[c] = row[c]
+		}
+		projected = append(projected, out)
+	}
+	return cols, projected, nil
 }
 
 func parseCreateColumns(raw string) ([]map[string]any, error) {

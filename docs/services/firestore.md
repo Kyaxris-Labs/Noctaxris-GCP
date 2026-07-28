@@ -4,7 +4,7 @@ Lab-complete Firestore v1 gRPC on the shared Noctaxris-GCP port (`127.0.0.1:4588
 
 ## Status
 
-**lab** — document CRUD with field masks, list, batch get, batch write, commit with lab transaction tokens and FieldTransforms, collection-group `RunQuery` with ORDER BY / LIMIT / inequality, and PartitionQuery stub.
+**lab** — document CRUD with field masks, list, batch get, batch write, atomic Commit with lab transaction tokens / FieldTransforms / `current_document` exists preconditions, collection-group `RunQuery` with ORDER BY / LIMIT / inequality, and PartitionQuery stub.
 
 ## Wire protocol
 
@@ -29,8 +29,8 @@ projects/{project}/databases/(default)/documents/{collection}/{docId}
 | `DeleteDocument` | Delete by name |
 | `ListDocuments` | Immediate child docs in a collection |
 | `BatchGetDocuments` | Server stream; missing names reported |
-| `BatchWrite` | Non-transactional update/delete writes; honors `update_mask` |
-| `Commit` | Applies writes; `serverTimestamp` / `increment` FieldTransforms; accepts BeginTransaction UUID token (consumed once); no isolation |
+| `BatchWrite` | Non-transactional update/delete writes; honors `update_mask`; per-write status |
+| `Commit` | Applies writes atomically (SQLite all-or-nothing); `serverTimestamp` / `increment` FieldTransforms; `current_document` exists / not-exists; accepts BeginTransaction UUID token (consumed once) |
 | `BeginTransaction` | Returns a lab UUID token for the database |
 | `Rollback` | Clears a lab transaction token |
 | `RunQuery` | Collection or collection-group (`all_descendants`); `EQUAL` / `IN` / `ARRAY_CONTAINS` / single-field inequality; `ORDER BY` + `LIMIT` |
@@ -72,7 +72,7 @@ Bearer token required (root or registered access token). Cleartext h2c on the sh
 ## Deferred depth
 
 - Multi-database ids beyond `(default)`
-- Real transaction isolation, conflict detection, and snapshot listeners (`Listen`)
+- Real conflict detection / snapshot listeners (`Listen`) beyond atomic Commit
 - Composite indexes, nested field-path masks, multi-field inequalities
 - Additional transforms (`arrayUnion`, `maximum` / `minimum`)
 

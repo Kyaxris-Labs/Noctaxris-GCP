@@ -14,6 +14,8 @@ address; Terraform typically uses the REST surface.
 | Topics | Create / Get / List / Delete / Update (gRPC + REST); Publish |
 | Subscriptions | Create / Get / List / Delete / Update (gRPC + REST); Pull; Acknowledge; ModifyAckDeadline |
 | Snapshots | Create / Get / List / Delete (gRPC + REST); metadata only |
+| Dead letter | `deadLetterPolicy.deadLetterTopic` + `maxDeliveryAttempts` (5–100); after max pulls without ack, message is published to the DL topic and removed |
+| Exactly-once | `enableExactlyOnceDelivery` stored and returned (theatre flag; no ordering/EOS lease semantics beyond storage) |
 | Filters | Attribute equality: `attributes.key = "value"` (AND-combined terms); non-matching messages are not delivered |
 | Seek | Seek to time (gRPC + REST `:seek`); clears ack state for later messages, deletes earlier backlog |
 | StreamingPull | Long-lived loop: recv acks/modacks, send messages until client cancels |
@@ -48,11 +50,12 @@ re-check IAM when a principal is present.
 
 ## Emulator limits
 
-- No ordering keys, exactly-once delivery, or schemas
+- No ordering keys or schemas; exactly-once is a stored flag only (no EOS ack semantics)
 - Snapshots are metadata-only (no backlog retention); seek-to-snapshot returns invalid argument
 - Filter language is attribute equality only (no HAS, OR, NOT)
 - Message retention and backlog quotas are not enforced
 - Push has no OIDC / auth header injection
+- Dead-letter publishes on pull attempt count only (no separate deliveryAttempt metric API)
 
 ## Pointing clients
 
@@ -86,7 +89,10 @@ curl -sS -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   -d '{}' "$EP/v1/projects/$PROJECT/topics/lab-topic"
 
 curl -sS -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d "{\"topic\":\"projects/$PROJECT/topics/lab-topic\",\"filter\":\"attributes.region = \\\"us\\\"\"}" \
+  -d '{}' "$EP/v1/projects/$PROJECT/topics/lab-dlq"
+
+curl -sS -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"topic\":\"projects/$PROJECT/topics/lab-topic\",\"filter\":\"attributes.region = \\\"us\\\"\",\"deadLetterPolicy\":{\"deadLetterTopic\":\"projects/$PROJECT/topics/lab-dlq\",\"maxDeliveryAttempts\":5},\"enableExactlyOnceDelivery\":true}" \
   "$EP/v1/projects/$PROJECT/subscriptions/lab-sub"
 
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -106,12 +112,12 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   "$EP/v1/projects/$PROJECT/subscriptions/lab-sub:modifyPushConfig"
 ```
 
-Also: `go test ./internal/server/ -run 'TestPubSub'`
+Also: `go test ./internal/store/ ./internal/server/ -run 'PubSub|DeadLetter' -count=1`
+(DLQ redelivery needs repeated pull + `modifyAckDeadline` 0 or expired lease; see store test.)
 
 ## Deferred depth
 
-- Ordering keys / exactly-once / schemas
+- Ordering keys / full exactly-once ack semantics / schemas
 - Snapshot backlog retention and seek-to-snapshot
-- Dead-letter policies
 - Full filter language (OR / NOT / HAS)
 - Authenticated push (OIDC)

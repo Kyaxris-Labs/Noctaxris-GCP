@@ -20,27 +20,31 @@ type PubSubTopic struct {
 
 // PubSubSubscription is a Pub/Sub subscription row.
 type PubSubSubscription struct {
-	Name               string
-	Topic              string
-	ProjectID          string
-	AckDeadlineSeconds int
-	PushEndpoint       string
-	Labels             map[string]string
-	Filter             string
-	CreatedAt          string
+	Name                        string
+	Topic                       string
+	ProjectID                   string
+	AckDeadlineSeconds          int
+	PushEndpoint                string
+	Labels                      map[string]string
+	Filter                      string
+	DeadLetterTopic             string
+	MaxDeliveryAttempts         int
+	EnableExactlyOnceDelivery   bool
+	CreatedAt                   string
 }
 
 // PubSubMessage is a queued message for a subscription.
 type PubSubMessage struct {
-	ID             string
-	Subscription   string
-	Topic          string
-	Data           []byte
-	AttributesJSON string
-	PublishTime    string
-	AckID          string
-	AckDeadline    string
-	Delivered      bool
+	ID               string
+	Subscription     string
+	Topic            string
+	Data             []byte
+	AttributesJSON   string
+	PublishTime      string
+	AckID            string
+	AckDeadline      string
+	Delivered        bool
+	DeliveryAttempts int
 }
 
 // CreateTopic inserts a topic. created=false means already exists.
@@ -151,11 +155,11 @@ func (s *Store) DeleteTopic(name string) (bool, error) {
 
 // CreateSubscription inserts a subscription. created=false means already exists.
 func (s *Store) CreateSubscription(name, topic, projectID string, ackDeadlineSeconds int) (*PubSubSubscription, bool, error) {
-	return s.CreateSubscriptionFull(name, topic, projectID, ackDeadlineSeconds, "", nil, "")
+	return s.CreateSubscriptionFull(name, topic, projectID, ackDeadlineSeconds, "", nil, "", "", 0, false)
 }
 
-// CreateSubscriptionFull inserts a subscription with push endpoint, labels, and optional filter.
-func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlineSeconds int, pushEndpoint string, labels map[string]string, filter string) (*PubSubSubscription, bool, error) {
+// CreateSubscriptionFull inserts a subscription with push, labels, filter, dead-letter, and exactly-once theatre fields.
+func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlineSeconds int, pushEndpoint string, labels map[string]string, filter, deadLetterTopic string, maxDeliveryAttempts int, enableExactlyOnce bool) (*PubSubSubscription, bool, error) {
 	name = strings.TrimSpace(name)
 	topic = strings.TrimSpace(topic)
 	projectID = strings.TrimSpace(projectID)
@@ -174,16 +178,39 @@ func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlin
 			return nil, false, fmt.Errorf("invalid filter: %w", err)
 		}
 	}
+	deadLetterTopic = strings.TrimSpace(deadLetterTopic)
+	if deadLetterTopic != "" {
+		if _, ok, err := s.GetTopic(deadLetterTopic); err != nil {
+			return nil, false, err
+		} else if !ok {
+			return nil, false, fmt.Errorf("dead letter topic not found")
+		}
+		if maxDeliveryAttempts == 0 {
+			maxDeliveryAttempts = 5
+		}
+		if maxDeliveryAttempts < 5 || maxDeliveryAttempts > 100 {
+			return nil, false, fmt.Errorf("maxDeliveryAttempts must be between 5 and 100")
+		}
+	} else {
+		maxDeliveryAttempts = 0
+	}
 	if _, ok, err := s.GetTopic(topic); err != nil {
 		return nil, false, err
 	} else if !ok {
 		return nil, false, fmt.Errorf("topic not found")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	eos := 0
+	if enableExactlyOnce {
+		eos = 1
+	}
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO pubsub_subscriptions (name, topic, project_id, ack_deadline_seconds, push_endpoint, labels_json, filter, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		name, topic, projectID, ackDeadlineSeconds, strings.TrimSpace(pushEndpoint), encodeStringMap(labels), filter, now,
+		`INSERT OR IGNORE INTO pubsub_subscriptions
+		 (name, topic, project_id, ack_deadline_seconds, push_endpoint, labels_json, filter,
+		  dead_letter_topic, max_delivery_attempts, enable_exactly_once_delivery, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		name, topic, projectID, ackDeadlineSeconds, strings.TrimSpace(pushEndpoint), encodeStringMap(labels), filter,
+		deadLetterTopic, maxDeliveryAttempts, eos, now,
 	)
 	if err != nil {
 		return nil, false, err
@@ -198,7 +225,9 @@ func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlin
 	return &PubSubSubscription{
 		Name: name, Topic: topic, ProjectID: projectID,
 		AckDeadlineSeconds: ackDeadlineSeconds, PushEndpoint: strings.TrimSpace(pushEndpoint),
-		Labels: labels, Filter: filter, CreatedAt: now,
+		Labels: labels, Filter: filter, DeadLetterTopic: deadLetterTopic,
+		MaxDeliveryAttempts: maxDeliveryAttempts, EnableExactlyOnceDelivery: enableExactlyOnce,
+		CreatedAt: now,
 	}, true, nil
 }
 
@@ -206,11 +235,15 @@ func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlin
 func (s *Store) GetSubscription(name string) (*PubSubSubscription, bool, error) {
 	var sub PubSubSubscription
 	var labelsJSON string
+	var eos int
 	err := s.db.QueryRow(
-		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'), COALESCE(filter, ''), created_at
+		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'),
+		        COALESCE(filter, ''), COALESCE(dead_letter_topic, ''), COALESCE(max_delivery_attempts, 0),
+		        COALESCE(enable_exactly_once_delivery, 0), created_at
 		 FROM pubsub_subscriptions WHERE name = ?`,
 		name,
-	).Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON, &sub.Filter, &sub.CreatedAt)
+	).Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON,
+		&sub.Filter, &sub.DeadLetterTopic, &sub.MaxDeliveryAttempts, &eos, &sub.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
@@ -218,11 +251,18 @@ func (s *Store) GetSubscription(name string) (*PubSubSubscription, bool, error) 
 		return nil, false, err
 	}
 	sub.Labels = decodeStringMap(labelsJSON)
+	sub.EnableExactlyOnceDelivery = eos != 0
 	return &sub, true, nil
 }
 
+// PubSubDeadLetterPolicy is the stored dead-letter configuration for a subscription.
+type PubSubDeadLetterPolicy struct {
+	DeadLetterTopic     string
+	MaxDeliveryAttempts int
+}
+
 // UpdateSubscription applies mutable subscription fields. Nil pointers leave fields unchanged.
-func (s *Store) UpdateSubscription(name string, ackDeadline *int, pushEndpoint *string, labels *map[string]string, filter *string) (*PubSubSubscription, error) {
+func (s *Store) UpdateSubscription(name string, ackDeadline *int, pushEndpoint *string, labels *map[string]string, filter *string, deadLetter *PubSubDeadLetterPolicy, enableExactlyOnce *bool) (*PubSubSubscription, error) {
 	sub, ok, err := s.GetSubscription(name)
 	if err != nil {
 		return nil, err
@@ -255,9 +295,40 @@ func (s *Store) UpdateSubscription(name string, ackDeadline *int, pushEndpoint *
 		}
 		sub.Filter = f
 	}
+	if deadLetter != nil {
+		topic := strings.TrimSpace(deadLetter.DeadLetterTopic)
+		if topic == "" {
+			sub.DeadLetterTopic = ""
+			sub.MaxDeliveryAttempts = 0
+		} else {
+			if _, ok, err := s.GetTopic(topic); err != nil {
+				return nil, err
+			} else if !ok {
+				return nil, fmt.Errorf("dead letter topic not found")
+			}
+			attempts := deadLetter.MaxDeliveryAttempts
+			if attempts == 0 {
+				attempts = 5
+			}
+			if attempts < 5 || attempts > 100 {
+				return nil, fmt.Errorf("maxDeliveryAttempts must be between 5 and 100")
+			}
+			sub.DeadLetterTopic = topic
+			sub.MaxDeliveryAttempts = attempts
+		}
+	}
+	if enableExactlyOnce != nil {
+		sub.EnableExactlyOnceDelivery = *enableExactlyOnce
+	}
+	eos := 0
+	if sub.EnableExactlyOnceDelivery {
+		eos = 1
+	}
 	_, err = s.db.Exec(
-		`UPDATE pubsub_subscriptions SET ack_deadline_seconds = ?, push_endpoint = ?, labels_json = ?, filter = ? WHERE name = ?`,
-		sub.AckDeadlineSeconds, sub.PushEndpoint, encodeStringMap(sub.Labels), sub.Filter, name,
+		`UPDATE pubsub_subscriptions SET ack_deadline_seconds = ?, push_endpoint = ?, labels_json = ?, filter = ?,
+		 dead_letter_topic = ?, max_delivery_attempts = ?, enable_exactly_once_delivery = ? WHERE name = ?`,
+		sub.AckDeadlineSeconds, sub.PushEndpoint, encodeStringMap(sub.Labels), sub.Filter,
+		sub.DeadLetterTopic, sub.MaxDeliveryAttempts, eos, name,
 	)
 	if err != nil {
 		return nil, err
@@ -268,7 +339,9 @@ func (s *Store) UpdateSubscription(name string, ackDeadline *int, pushEndpoint *
 // ListSubscriptions lists subscriptions for a project id.
 func (s *Store) ListSubscriptions(projectID string) ([]PubSubSubscription, error) {
 	rows, err := s.db.Query(
-		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'), COALESCE(filter, ''), created_at
+		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'),
+		        COALESCE(filter, ''), COALESCE(dead_letter_topic, ''), COALESCE(max_delivery_attempts, 0),
+		        COALESCE(enable_exactly_once_delivery, 0), created_at
 		 FROM pubsub_subscriptions WHERE project_id = ? ORDER BY name`,
 		projectID,
 	)
@@ -280,10 +353,13 @@ func (s *Store) ListSubscriptions(projectID string) ([]PubSubSubscription, error
 	for rows.Next() {
 		var sub PubSubSubscription
 		var labelsJSON string
-		if err := rows.Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON, &sub.Filter, &sub.CreatedAt); err != nil {
+		var eos int
+		if err := rows.Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON,
+			&sub.Filter, &sub.DeadLetterTopic, &sub.MaxDeliveryAttempts, &eos, &sub.CreatedAt); err != nil {
 			return nil, err
 		}
 		sub.Labels = decodeStringMap(labelsJSON)
+		sub.EnableExactlyOnceDelivery = eos != 0
 		out = append(out, sub)
 	}
 	return out, rows.Err()
@@ -292,7 +368,9 @@ func (s *Store) ListSubscriptions(projectID string) ([]PubSubSubscription, error
 // ListSubscriptionsForTopic lists all subscriptions attached to a topic.
 func (s *Store) ListSubscriptionsForTopic(topic string) ([]PubSubSubscription, error) {
 	rows, err := s.db.Query(
-		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'), COALESCE(filter, ''), created_at
+		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'),
+		        COALESCE(filter, ''), COALESCE(dead_letter_topic, ''), COALESCE(max_delivery_attempts, 0),
+		        COALESCE(enable_exactly_once_delivery, 0), created_at
 		 FROM pubsub_subscriptions WHERE topic = ? ORDER BY name`,
 		topic,
 	)
@@ -304,10 +382,13 @@ func (s *Store) ListSubscriptionsForTopic(topic string) ([]PubSubSubscription, e
 	for rows.Next() {
 		var sub PubSubSubscription
 		var labelsJSON string
-		if err := rows.Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON, &sub.Filter, &sub.CreatedAt); err != nil {
+		var eos int
+		if err := rows.Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON,
+			&sub.Filter, &sub.DeadLetterTopic, &sub.MaxDeliveryAttempts, &eos, &sub.CreatedAt); err != nil {
 			return nil, err
 		}
 		sub.Labels = decodeStringMap(labelsJSON)
+		sub.EnableExactlyOnceDelivery = eos != 0
 		out = append(out, sub)
 	}
 	return out, rows.Err()
@@ -396,6 +477,8 @@ func (s *Store) Publish(topic string, data []byte, attributes map[string]string)
 }
 
 // Pull returns up to maxMessages undelivered-or-expired messages and leases them.
+// When a dead-letter policy is set and delivery attempts reach the max, the message
+// is published to the dead-letter topic and removed from this subscription.
 func (s *Store) Pull(subscription string, maxMessages int) ([]PubSubMessage, error) {
 	if maxMessages <= 0 {
 		maxMessages = 1
@@ -409,42 +492,70 @@ func (s *Store) Pull(subscription string, maxMessages int) ([]PubSubMessage, err
 	}
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)
+	// Over-fetch so dead-lettered messages do not starve the pull window.
+	fetchN := maxMessages * 4
+	if fetchN < maxMessages {
+		fetchN = maxMessages
+	}
 	rows, err := s.db.Query(
-		`SELECT id, subscription, topic, data, attributes_json, publish_time, ack_id, COALESCE(ack_deadline, ''), delivered
+		`SELECT id, subscription, topic, data, attributes_json, publish_time, ack_id, COALESCE(ack_deadline, ''), delivered,
+		        COALESCE(delivery_attempts, 0)
 		 FROM pubsub_messages
 		 WHERE subscription = ?
 		   AND (delivered = 0 OR ack_deadline IS NULL OR ack_deadline < ?)
 		 ORDER BY publish_time
 		 LIMIT ?`,
-		subscription, nowStr, maxMessages,
+		subscription, nowStr, fetchN,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var msgs []PubSubMessage
+	var candidates []PubSubMessage
 	for rows.Next() {
 		var m PubSubMessage
 		var delivered int
-		if err := rows.Scan(&m.ID, &m.Subscription, &m.Topic, &m.Data, &m.AttributesJSON, &m.PublishTime, &m.AckID, &m.AckDeadline, &delivered); err != nil {
+		if err := rows.Scan(&m.ID, &m.Subscription, &m.Topic, &m.Data, &m.AttributesJSON, &m.PublishTime, &m.AckID, &m.AckDeadline, &delivered, &m.DeliveryAttempts); err != nil {
 			return nil, err
 		}
 		m.Delivered = delivered != 0
-		msgs = append(msgs, m)
+		candidates = append(candidates, m)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	deadline := now.Add(time.Duration(sub.AckDeadlineSeconds) * time.Second).UTC().Format(time.RFC3339Nano)
-	for i := range msgs {
+	var msgs []PubSubMessage
+	for i := range candidates {
+		if len(msgs) >= maxMessages {
+			break
+		}
+		m := candidates[i]
+		attempts := m.DeliveryAttempts + 1
+		if sub.DeadLetterTopic != "" && sub.MaxDeliveryAttempts > 0 && attempts >= sub.MaxDeliveryAttempts {
+			attrs := map[string]string{}
+			if m.AttributesJSON != "" && m.AttributesJSON != "{}" {
+				_ = json.Unmarshal([]byte(m.AttributesJSON), &attrs)
+			}
+			attrs["CloudPubSubDeadLetterSourceSubscription"] = subscription
+			if _, err := s.Publish(sub.DeadLetterTopic, m.Data, attrs); err != nil {
+				return nil, fmt.Errorf("dead letter publish: %w", err)
+			}
+			if _, err := s.db.Exec(`DELETE FROM pubsub_messages WHERE ack_id = ?`, m.AckID); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if _, err := s.db.Exec(
-			`UPDATE pubsub_messages SET delivered = 1, ack_deadline = ? WHERE ack_id = ?`,
-			deadline, msgs[i].AckID,
+			`UPDATE pubsub_messages SET delivered = 1, ack_deadline = ?, delivery_attempts = ? WHERE ack_id = ?`,
+			deadline, attempts, m.AckID,
 		); err != nil {
 			return nil, err
 		}
-		msgs[i].Delivered = true
-		msgs[i].AckDeadline = deadline
+		m.Delivered = true
+		m.AckDeadline = deadline
+		m.DeliveryAttempts = attempts
+		msgs = append(msgs, m)
 	}
 	return msgs, nil
 }
@@ -482,6 +593,10 @@ func (s *Store) ModifyAckDeadline(subscription string, ackIDs []string, ackDeadl
 		ackDeadlineSeconds = 600
 	}
 	deadline := time.Now().UTC().Add(time.Duration(ackDeadlineSeconds) * time.Second).Format(time.RFC3339Nano)
+	if ackDeadlineSeconds == 0 {
+		// Immediate redelivery (lease expired).
+		deadline = time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano)
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err

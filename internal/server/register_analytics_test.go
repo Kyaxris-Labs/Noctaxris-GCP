@@ -573,6 +573,54 @@ func TestBigQueryCreateJoinDryRunJobsAndSkipInvalid(t *testing.T) {
 	if joinResp.TotalRows != "1" {
 		t.Fatalf("join totalRows=%s body=%s", joinResp.TotalRows, rec.Body.String())
 	}
+
+	groupQ := `{"query":"SELECT name, COUNT(*) AS cnt FROM joinlab.users GROUP BY name"}`
+	req = httptest.NewRequest(http.MethodPost, "/bigquery/v2/projects/"+project+"/queries", strings.NewReader(groupQ))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("groupBy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var groupResp struct {
+		TotalRows string `json:"totalRows"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &groupResp)
+	if groupResp.TotalRows == "0" {
+		t.Fatalf("groupBy empty body=%s", rec.Body.String())
+	}
+
+	infoQ := `{"query":"SELECT table_name FROM joinlab.INFORMATION_SCHEMA.TABLES"}`
+	req = httptest.NewRequest(http.MethodPost, "/bigquery/v2/projects/"+project+"/queries", strings.NewReader(infoQ))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("infoSchema status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var infoResp struct {
+		TotalRows string `json:"totalRows"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &infoResp)
+	if infoResp.TotalRows != "2" {
+		t.Fatalf("infoSchema totalRows=%s body=%s", infoResp.TotalRows, rec.Body.String())
+	}
+
+	unionQ := `{"query":"SELECT name FROM joinlab.users WHERE name = 'Ada' UNION ALL SELECT name FROM joinlab.users WHERE name = 'Ada'"}`
+	req = httptest.NewRequest(http.MethodPost, "/bigquery/v2/projects/"+project+"/queries", strings.NewReader(unionQ))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("union status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var unionResp struct {
+		TotalRows string `json:"totalRows"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &unionResp)
+	if unionResp.TotalRows != "2" {
+		t.Fatalf("union totalRows=%s body=%s", unionResp.TotalRows, rec.Body.String())
+	}
 }
 
 func TestEventarcTriggerAndPubSubDelivery(t *testing.T) {

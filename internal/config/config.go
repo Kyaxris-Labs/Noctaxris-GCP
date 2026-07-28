@@ -5,6 +5,8 @@ import (
 	"net"
 	"os"
 	"strings"
+
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/compute"
 )
 
 const (
@@ -25,15 +27,20 @@ const (
 
 // Config holds process configuration loaded from NOCTAXRIS_GCP_* environment variables.
 type Config struct {
-	ListenAddr           string
-	DataRoot             string
-	MasterKeyPath        string
-	TLSCertFile          string
-	TLSKeyFile           string
-	RootServiceAccount   string
-	RootAccessToken      string
-	ProjectID            string
+	ListenAddr             string
+	DataRoot               string
+	MasterKeyPath          string
+	TLSCertFile            string
+	TLSKeyFile             string
+	RootServiceAccount     string
+	RootAccessToken        string
+	ProjectID              string
 	AllowNonLoopbackListen bool
+	// DockerHost is the nested DinD engine URL (NOCTAXRIS_GCP_DOCKER_HOST).
+	// Empty disables nested compute so unit tests run without Docker.
+	DockerHost string
+	// DockerTLSCertPath is the directory with ca.pem, cert.pem, key.pem for engine TLS.
+	DockerTLSCertPath string
 }
 
 // LoadFromEnv reads configuration from the process environment.
@@ -48,6 +55,11 @@ func LoadFromEnv() (Config, error) {
 		RootAccessToken:        getenv("NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN", ""),
 		ProjectID:              getenv("NOCTAXRIS_GCP_PROJECT", DefaultProjectID),
 		AllowNonLoopbackListen: envTruthy(EnvAllowNonLoopbackListen),
+		DockerHost:             getenv("NOCTAXRIS_GCP_DOCKER_HOST", ""),
+		DockerTLSCertPath:      getenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", ""),
+	}
+	if err := compute.ValidateDockerHost(cfg.DockerHost, cfg.DockerTLSCertPath); err != nil {
+		return Config{}, err
 	}
 	if err := ValidateListenSecurity(cfg); err != nil {
 		return Config{}, err

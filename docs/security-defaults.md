@@ -8,7 +8,27 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 |---------|---------|-------|
 | Listen | `127.0.0.1:4588` | Non-loopback without TLS requires `NOCTAXRIS_GCP_ALLOW_NONLOOPBACK_LISTEN=1` |
 | Compose publish | `127.0.0.1:4588` | Container bind is `0.0.0.0:4588` with the opt-in above |
-| Host Docker socket | never mounted | No DinD engine in this product |
+| Host Docker socket | never mounted | Nested DinD is opt-in only via `docker/compose.engine.yaml` |
+
+## Nested engine (opt-in)
+
+- Empty `NOCTAXRIS_GCP_DOCKER_HOST` disables nested compute. Unit tests and default
+  Compose stay green without Docker / DinD.
+- Never mount host `/var/run/docker.sock` on the API service. Runtime rejects
+  `unix://`, `npipe://`, and any host string containing `docker.sock`.
+- Opt-in overlay `docker/compose.engine.yaml` starts `noctaxris-gcp-engine`
+  (digest-pinned `docker:27-dind`) as restricted DinD (`privileged: false` +
+  caps / devices / `cgroup: host` / writable `/sys/fs/cgroup`) and sets
+  `NOCTAXRIS_GCP_DOCKER_HOST=tcp://noctaxris-gcp-engine:2376` plus
+  `NOCTAXRIS_GCP_DOCKER_CERT_PATH=/certs/client`. The engine API is not published
+  to the host.
+- Non-default engine URLs require `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST`. TLS
+  client PEMs are required whenever Docker host is set.
+- Image pulls fail closed: pinned lab bases (`alpine:3.20`, …) only, unless
+  extended with `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` (digest required for registry
+  hosts).
+- If nested containers fail on Desktop/WSL2, add `compose.engine-privileged.yaml`
+  (`privileged: true`). Keep host publish on `127.0.0.1:4588`.
 
 ## Authentication
 
@@ -53,5 +73,15 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
   whose OSV ID is not listed in `scripts/govulncheck-allowlist.txt`.
 - Prefer toolchain and dependency upgrades over allowlisting. The allowlist is
   only for residuals with no module-path fix (documented when an ID is added).
+- Adding `github.com/docker/docker` (Engine client SDK) surfaces Docker Engine
+  CVEs with Fixed in: N/A on that module path (`GO-2026-4883`, `GO-2026-4887`,
+  `GO-2026-5617`, `GO-2026-5668`). CI allowlists those IDs in
+  `scripts/govulncheck-allowlist.txt` so new app vulns still fail the job.
+  Noctaxris-GCP does not call `CopyToContainer` / `CopyFromContainer`; nested
+  one-shots use create/start/wait/logs only. AuthZ-plugin bypass findings do not
+  apply to the packaged engine path (no AuthZ plugins). Residual is still the
+  nested engine binary version and who can talk to it over TLS on the Compose
+  network. Re-run `go run ./scripts/govulncheck-ci` after bumps; add only new
+  Fixed N/A IDs that appear locally.
 - Go toolchain tracks a current patch (see `go.mod`); API image build stage uses
   a digest-pinned `golang` bookworm base matching that version.

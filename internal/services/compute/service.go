@@ -52,7 +52,8 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	// Global firewalls
 	mux.HandleFunc("GET /compute/v1/projects/{project}/global/firewalls", s.wrap(principalFrom, s.listFirewalls))
 	mux.HandleFunc("POST /compute/v1/projects/{project}/global/firewalls", s.wrap(principalFrom, s.insertFirewall))
-	mux.HandleFunc("GET /compute/v1/projects/{project}/global/firewalls/{firewall}", s.wrap(principalFrom, s.getFirewall))
+	mux.HandleFunc("GET /compute/v1/projects/{project}/global/firewalls/{firewall}", s.wrap(principalFrom, s.getFirewallOrValidate))
+	mux.HandleFunc("POST /compute/v1/projects/{project}/global/firewalls/{firewall}", s.wrap(principalFrom, s.getFirewallOrValidate))
 	mux.HandleFunc("DELETE /compute/v1/projects/{project}/global/firewalls/{firewall}", s.wrap(principalFrom, s.deleteFirewall))
 	mux.HandleFunc("PATCH /compute/v1/projects/{project}/global/firewalls/{firewall}", s.wrap(principalFrom, s.patchFirewall))
 }
@@ -236,6 +237,9 @@ func (s *Service) insertInstance(w http.ResponseWriter, r *http.Request, p authn
 		niJSON = `[{"kind":"compute#networkInterface","name":"nic0","network":"` +
 			selfLink("projects", project, "global", "networks", "default") + `"}]`
 	}
+	if meta, ok := body["metadata"]; ok {
+		body["metadata"] = normalizeInstanceMetadata(meta)
+	}
 	name := instanceResourceName(project, zone, id)
 	extras := marshalBodyExtras(body, "name", "machineType", "networkInterfaces", "status", "zone", "selfLink", "kind", "id", "creationTimestamp")
 	created, err := s.Store.CreateGCEInstance(store.GCEInstance{
@@ -346,6 +350,9 @@ func (s *Service) patchInstance(w http.ResponseWriter, r *http.Request, p authn.
 	if ni, ok := body["networkInterfaces"]; ok {
 		raw, _ := json.Marshal(ni)
 		niJSON = string(raw)
+	}
+	if meta, ok := body["metadata"]; ok {
+		body["metadata"] = normalizeInstanceMetadata(meta)
 	}
 	extras := mergeJSON(cur.BodyJSON, map[string]any{})
 	for k, v := range body {
@@ -830,9 +837,22 @@ func (s *Service) listFirewalls(w http.ResponseWriter, r *http.Request, p authn.
 	})
 }
 
-func (s *Service) getFirewall(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+func (s *Service) getFirewallOrValidate(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
-	id := r.PathValue("firewall")
+	seg := r.PathValue("firewall")
+	id, action := splitColonAction(seg)
+	if action == "validate" {
+		s.validateFirewall(w, r, p, project, id)
+		return
+	}
+	if action == "testIamPermissions" {
+		s.testFirewallIamPermissions(w, r, p, project, id)
+		return
+	}
+	if r.Method != http.MethodGet {
+		gcperrors.NotFound(w, "unknown Compute Engine method")
+		return
+	}
 	if err := s.require(p, "compute.firewalls.get", project); err != nil {
 		writeAuthzErr(w, err)
 		return
@@ -847,6 +867,65 @@ func (s *Service) getFirewall(w http.ResponseWriter, r *http.Request, p authn.Pr
 		return
 	}
 	writeJSON(w, http.StatusOK, toFirewallJSON(fw))
+}
+
+func (s *Service) validateFirewall(w http.ResponseWriter, r *http.Request, p authn.Principal, project, id string) {
+	if err := s.require(p, "compute.firewalls.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	fw, ok, err := s.Store.GetGCEFirewall(firewallResourceName(project, id))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Firewall not found")
+		return
+	}
+	body, err := decodeBody(r)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	result := evalFirewallLite(toFirewallJSON(fw), body)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Service) testFirewallIamPermissions(w http.ResponseWriter, r *http.Request, p authn.Principal, project, id string) {
+	if err := s.require(p, "compute.firewalls.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	if _, ok, err := s.Store.GetGCEFirewall(firewallResourceName(project, id)); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Firewall not found")
+		return
+	}
+	body, err := decodeBody(r)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	perms, _ := body["permissions"].([]any)
+	out := make([]string, 0, len(perms))
+	for _, pRaw := range perms {
+		perm, _ := pRaw.(string)
+		if perm == "" {
+			continue
+		}
+		ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, perm, "projects/"+project)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if ok {
+			out = append(out, perm)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"permissions": out})
 }
 
 func (s *Service) deleteFirewall(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -918,4 +997,219 @@ func toFirewallJSON(fw store.GCEFirewall) map[string]any {
 	out["selfLink"] = selfLink("projects", fw.ProjectID, "global", "firewalls", fw.FirewallID)
 	out["creationTimestamp"] = fw.CreatedAt
 	return out
+}
+
+// normalizeInstanceMetadata accepts either a string map or Compute items[] form
+// and stores the googleapis-shaped metadata object for get.
+func normalizeInstanceMetadata(raw any) map[string]any {
+	switch m := raw.(type) {
+	case map[string]any:
+		if items, ok := m["items"].([]any); ok {
+			return map[string]any{"kind": "compute#metadata", "items": items}
+		}
+		items := make([]any, 0, len(m))
+		for k, v := range m {
+			if k == "kind" || k == "fingerprint" {
+				continue
+			}
+			items = append(items, map[string]any{"key": k, "value": fmt.Sprint(v)})
+		}
+		return map[string]any{"kind": "compute#metadata", "items": items}
+	default:
+		return map[string]any{"kind": "compute#metadata", "items": []any{}}
+	}
+}
+
+// evalFirewallLite evaluates a single firewall rule against a probe request.
+// Body fields: sourceIp, protocol, port (number or string). Fail-closed on miss.
+func evalFirewallLite(fw map[string]any, probe map[string]any) map[string]any {
+	srcIP, _ := probe["sourceIp"].(string)
+	proto, _ := probe["protocol"].(string)
+	proto = strings.ToLower(strings.TrimSpace(proto))
+	port := probePort(probe["port"])
+
+	direction, _ := fw["direction"].(string)
+	if direction == "" {
+		direction = "INGRESS"
+	}
+	disabled, _ := fw["disabled"].(bool)
+	if disabled {
+		return map[string]any{
+			"matched": false, "allowed": false, "action": "NONE",
+			"reason": "firewall disabled", "direction": direction,
+		}
+	}
+
+	if !sourceRangeMatches(fw, srcIP) {
+		return map[string]any{
+			"matched": false, "allowed": false, "action": "NONE",
+			"reason": "sourceIp not in sourceRanges", "direction": direction,
+		}
+	}
+
+	if denied := matchL4(fw["denied"], proto, port); denied {
+		return map[string]any{
+			"matched": true, "allowed": false, "action": "DENY",
+			"reason": "matched denied", "direction": direction,
+		}
+	}
+	if allowed := matchL4(fw["allowed"], proto, port); allowed {
+		return map[string]any{
+			"matched": true, "allowed": true, "action": "ALLOW",
+			"reason": "matched allowed", "direction": direction,
+		}
+	}
+	return map[string]any{
+		"matched": false, "allowed": false, "action": "NONE",
+		"reason": "protocol/port not matched", "direction": direction,
+	}
+}
+
+func probePort(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case string:
+		var p int
+		_, _ = fmt.Sscanf(n, "%d", &p)
+		return p
+	default:
+		return 0
+	}
+}
+
+func sourceRangeMatches(fw map[string]any, srcIP string) bool {
+	ranges, _ := fw["sourceRanges"].([]any)
+	if len(ranges) == 0 {
+		// GCP default when omitted is 0.0.0.0/0 for ingress allow rules.
+		return srcIP != ""
+	}
+	if srcIP == "" {
+		return false
+	}
+	for _, r := range ranges {
+		cidr, _ := r.(string)
+		if cidrMatches(cidr, srcIP) {
+			return true
+		}
+	}
+	return false
+}
+
+func cidrMatches(cidr, ip string) bool {
+	cidr = strings.TrimSpace(cidr)
+	ip = strings.TrimSpace(ip)
+	if cidr == "" || ip == "" {
+		return false
+	}
+	if cidr == "0.0.0.0/0" || cidr == "::/0" || cidr == "*" {
+		return true
+	}
+	if !strings.Contains(cidr, "/") {
+		return cidr == ip
+	}
+	_, network, err := parseCIDRLite(cidr)
+	if err != nil {
+		return false
+	}
+	return network.contains(ip)
+}
+
+type ipNetLite struct {
+	ones int
+	mask uint32
+	net  uint32
+}
+
+func parseCIDRLite(cidr string) (string, ipNetLite, error) {
+	parts := strings.Split(cidr, "/")
+	if len(parts) != 2 {
+		return "", ipNetLite{}, fmt.Errorf("bad cidr")
+	}
+	ip := parseIPv4(parts[0])
+	if ip == 0 && parts[0] != "0.0.0.0" {
+		return "", ipNetLite{}, fmt.Errorf("bad ip")
+	}
+	var ones int
+	if _, err := fmt.Sscanf(parts[1], "%d", &ones); err != nil || ones < 0 || ones > 32 {
+		return "", ipNetLite{}, fmt.Errorf("bad prefix")
+	}
+	var mask uint32
+	if ones == 0 {
+		mask = 0
+	} else {
+		mask = ^uint32(0) << (32 - ones)
+	}
+	return parts[0], ipNetLite{ones: ones, mask: mask, net: ip & mask}, nil
+}
+
+func (n ipNetLite) contains(ipStr string) bool {
+	ip := parseIPv4(ipStr)
+	return ip&n.mask == n.net
+}
+
+func parseIPv4(s string) uint32 {
+	var a, b, c, d uint32
+	n, err := fmt.Sscanf(s, "%d.%d.%d.%d", &a, &b, &c, &d)
+	if err != nil || n != 4 || a > 255 || b > 255 || c > 255 || d > 255 {
+		return 0
+	}
+	return a<<24 | b<<16 | c<<8 | d
+}
+
+func matchL4(rules any, proto string, port int) bool {
+	list, _ := rules.([]any)
+	if len(list) == 0 {
+		return false
+	}
+	for _, item := range list {
+		rm, _ := item.(map[string]any)
+		if rm == nil {
+			continue
+		}
+		ipProto, _ := rm["IPProtocol"].(string)
+		ipProto = strings.ToLower(strings.TrimSpace(ipProto))
+		if ipProto == "" {
+			ipProto = "all"
+		}
+		if ipProto != "all" && proto != "" && ipProto != proto {
+			continue
+		}
+		ports, _ := rm["ports"].([]any)
+		if len(ports) == 0 {
+			// No ports means all ports for this protocol.
+			return true
+		}
+		if port == 0 {
+			return true
+		}
+		for _, p := range ports {
+			ps := fmt.Sprint(p)
+			if portInSpec(ps, port) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func portInSpec(spec string, port int) bool {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return false
+	}
+	if strings.Contains(spec, "-") {
+		var lo, hi int
+		n, _ := fmt.Sscanf(spec, "%d-%d", &lo, &hi)
+		if n == 2 {
+			return port >= lo && port <= hi
+		}
+	}
+	var p int
+	_, _ = fmt.Sscanf(spec, "%d", &p)
+	return p == port
 }

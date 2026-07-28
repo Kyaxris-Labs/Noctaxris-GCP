@@ -1,10 +1,21 @@
 # Cloud Run
 
-Lab Cloud Run Admin API v2 REST for services, revisions, and jobs. Invoke is an in-process mock (no container start, no host `docker.sock`, no DinD). Service create/update returns a completed Operation (`done: true` + `response`); GET returns the service. Terraform: `cloud_run_v2_custom_endpoint = "http://127.0.0.1:4588/v2/"` (see `tests/terraform/stacks/lab-run`).
+Lab Cloud Run Admin API v2 REST for services, revisions, and jobs. Invoke is an
+in-process mock by default (no container start, no host `docker.sock`). When
+`NOCTAXRIS_GCP_DOCKER_HOST` is set (with `NOCTAXRIS_GCP_DOCKER_CERT_PATH`),
+`:invoke` uses `DockerInvoker` for a nested one-shot; dial/run failures soft-fail
+to mock with an `engine` detail field. Host `docker.sock` is refused. Services
+with `template.labResponseBody` stay mock-only (nested path skipped). Service
+create/update returns a completed Operation (`done: true` + `response`); GET
+returns the service. Terraform:
+`cloud_run_v2_custom_endpoint = "http://127.0.0.1:4588/v2/"` (see
+`tests/terraform/stacks/lab-run`).
 
 ## Status
 
-**lab** — services CRUD with traffic metadata, jobs CRUD theatre, revision list, service IAM get/set, `:invoke` mock (headers recorded).
+**lab** — services CRUD with traffic metadata, jobs CRUD theatre, revision list,
+service IAM get/set, `:invoke` mock with status/delay theatre and opt-in nested
+DinD one-shot (`NOCTAXRIS_GCP_DOCKER_HOST`).
 
 ## Wire protocol
 
@@ -26,8 +37,14 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 
 Create/patch may include `traffic` (percent allocation to latest/revision). Optional lab fields:
 
-- `template.labResponseBody` — static JSON string returned on invoke
-- env `RESPONSE_BODY` — same, if `labResponseBody` unset
+| Field | Effect on `:invoke` |
+|-------|---------------------|
+| `template.labResponseBody` | Static JSON body |
+| env `RESPONSE_BODY` | Same, if `labResponseBody` unset |
+| `template.labStatusCode` | HTTP status (default 200) |
+| env `RESPONSE_STATUS` | Same as `labStatusCode` |
+| `template.labDelayMs` | Sleep theatre before respond (capped at 5000) |
+| env `RESPONSE_DELAY_MS` | Same as `labDelayMs` |
 
 Otherwise invoke returns `{"ok":true,"service":"...","env":{...}}`. Last invoke stores method, path, query, headers (Authorization omitted), and body.
 
@@ -41,21 +58,31 @@ Checked on `projects/{project}`:
 - `run.routes.invoke`
 - `run.jobs.create|get|list|update|delete`
 
+## Emulator limits
+
+- Default invoke never starts a container (`NOCTAXRIS_GCP_DOCKER_HOST` empty)
+- Nested DinD is opt-in via allowlisted `tcp://` host + TLS cert dir only; host
+  `docker.sock` / `unix://` / `npipe://` are rejected
+- Nested dial/run failures soft-fail to mock (response includes `engine.detail`)
+- `template.labResponseBody` forces mock even when the engine is configured
+- Domain mappings and worker pools are not implemented
+
 ## Deferred depth
 
-- Nested container / DinD invoke
-- Domain mappings, worker pools
+- Traffic percent enforcement beyond stored metadata
 - Official gRPC `run.googleapis.com` surface
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ -run CloudRun -count=1
+go test ./internal/server/ ./internal/compute/ -run 'CloudRun|MockInvoker|DockerInvoker' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
+# Mock path (labResponseBody skips nested even if DOCKER_HOST is set):
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/services?serviceId=demo" \
-  -d '{"template":{"containers":[{"image":"demo"}],"labResponseBody":"{\"ok\":true}"},"traffic":[{"type":"TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST","percent":100}]}'
+  -d '{"template":{"containers":[{"image":"demo"}],"labResponseBody":"{\"ok\":true}","labStatusCode":200},"traffic":[{"type":"TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST","percent":100}]}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/services/demo:invoke" \
   -d '{}'
+# Nested path: compose.engine.yaml + service without labResponseBody; see docs/configuration.md
 ```

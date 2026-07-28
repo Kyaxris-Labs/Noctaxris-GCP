@@ -293,6 +293,131 @@ func TestCloudFunctionsUploadUrlPatchIAM(t *testing.T) {
 	}
 }
 
+func TestCloudFunctionsSourceUploadActivates(t *testing.T) {
+	srv, cfg := testServer(t)
+	token := cfg.RootAccessToken
+	loc := cloudfunctions.DefaultLocation
+	base := "/v2/projects/" + cfg.ProjectID + "/locations/" + loc + "/functions"
+
+	req := httptest.NewRequest(http.MethodPost, base+":generateUploadUrl", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("generateUploadUrl status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var up map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &up)
+	ss, _ := up["storageSource"].(map[string]any)
+	uploadURL, _ := up["uploadUrl"].(string)
+	if uploadURL == "" || ss["object"] == nil {
+		t.Fatalf("upload response=%#v", up)
+	}
+	// Path only (httptest).
+	path := uploadURL
+	if i := bytes.IndexByte([]byte(uploadURL), byte('/')); i >= 0 {
+		// strip scheme+host
+		u := uploadURL
+		if idx := len("http://127.0.0.1:4588"); len(u) > idx {
+			path = u[idx:]
+		}
+	}
+
+	createBody, _ := json.Marshal(map[string]any{
+		"buildConfig": map[string]any{
+			"runtime": "nodejs20",
+			"source":  map[string]any{"storageSource": ss},
+		},
+		"labResponse": map[string]any{"ready": true},
+	})
+	req = httptest.NewRequest(http.MethodPost, base+"?functionId=src1", bytes.NewReader(createBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if created["state"] != "DEPLOYING" {
+		t.Fatalf("expected DEPLOYING before upload, got %#v", created["state"])
+	}
+
+	req = httptest.NewRequest(http.MethodPut, path, bytes.NewReader([]byte("PK\x03\x04fake-zip")))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base+"/src1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if created["state"] != "ACTIVE" {
+		t.Fatalf("expected ACTIVE after upload, got %#v body=%s", created["state"], rec.Body.String())
+	}
+}
+
+func TestCloudRunInvokeStatusAndDelay(t *testing.T) {
+	srv, cfg := testServer(t)
+	loc := cloudrun.DefaultLocation
+	base := "/v2/projects/" + cfg.ProjectID + "/locations/" + loc + "/services"
+	body := `{"template":{"containers":[{"image":"demo"}],"labResponseBody":"{\"slow\":true}","labStatusCode":418,"labDelayMs":25}}`
+	req := httptest.NewRequest(http.MethodPost, base+"?serviceId=teapot", bytes.NewReader([]byte(body)))
+	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, base+"/teapot:invoke", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != 418 {
+		t.Fatalf("invoke status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"slow"`)) {
+		t.Fatalf("invoke body=%s", rec.Body.String())
+	}
+}
+
+func TestCloudRunInvokeMockWhenDockerHostEmpty(t *testing.T) {
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", "")
+
+	srv, cfg := testServer(t)
+	if cfg.DockerHost != "" {
+		t.Fatalf("expected empty DockerHost, got %q", cfg.DockerHost)
+	}
+
+	loc := cloudrun.DefaultLocation
+	base := "/v2/projects/" + cfg.ProjectID + "/locations/" + loc + "/services"
+	body := `{"template":{"containers":[{"image":"demo"}],"labResponseBody":"{\"mock\":\"ok\"}"}}`
+	req := httptest.NewRequest(http.MethodPost, base+"?serviceId=mock-host", bytes.NewReader([]byte(body)))
+	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, base+"/mock-host:invoke", bytes.NewReader([]byte(`{"n":1}`)))
+	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("invoke status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"mock"`)) {
+		t.Fatalf("invoke body=%s", rec.Body.String())
+	}
+}
+
 func TestSchedulerOIDCAndNextRun(t *testing.T) {
 	srv, cfg := testServer(t)
 	loc := scheduler.DefaultLocation

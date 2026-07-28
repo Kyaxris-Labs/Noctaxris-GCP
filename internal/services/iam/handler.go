@@ -44,6 +44,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/projects/{project}/serviceAccounts/{account}/keys", h.createKey)
 	mux.HandleFunc("GET /v1/projects/{project}/serviceAccounts/{account}/keys/{key}", h.getKey)
 	mux.HandleFunc("DELETE /v1/projects/{project}/serviceAccounts/{account}/keys/{key}", h.deleteKey)
+	h.MountWIF(mux)
 }
 
 func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {
@@ -250,7 +251,7 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 	raw := decodeAccount(r.PathValue("account"))
 	account, action := splitColonAction(raw)
 	if account == "" || action == "" {
-		gcperrors.InvalidArgument(w, "expected serviceAccounts/{account}:enable|disable|undelete|signBlob|signJwt|getIamPolicy|setIamPolicy|testIamPermissions")
+		gcperrors.InvalidArgument(w, "expected serviceAccounts/{account}:enable|disable|undelete|signBlob|signJwt|generateAccessToken|getIamPolicy|setIamPolicy|testIamPermissions")
 		return
 	}
 	projectResource := "projects/" + projectID
@@ -260,7 +261,7 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sa, ok, err := h.Store.GetServiceAccountInProject(projectID, account)
+	sa, ok, err := h.resolveServiceAccount(projectID, account)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -269,7 +270,10 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 		gcperrors.NotFound(w, "Service account does not exist.")
 		return
 	}
-	saResource := fmt.Sprintf("projects/%s/serviceAccounts/%s", projectID, sa.Email)
+	if projectID == "-" {
+		projectResource = "projects/" + sa.ProjectID
+	}
+	saResource := fmt.Sprintf("projects/%s/serviceAccounts/%s", sa.ProjectID, sa.Email)
 
 	switch action {
 	case "enable":
@@ -306,6 +310,8 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 		h.signBlob(w, r, projectResource, sa)
 	case "signJwt":
 		h.signJwt(w, r, projectResource, sa)
+	case "generateAccessToken":
+		h.generateAccessToken(w, r, projectResource, sa)
 	case "getIamPolicy":
 		h.getIamPolicy(w, r, projectResource, saResource)
 	case "setIamPolicy":
@@ -315,6 +321,77 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 	default:
 		gcperrors.InvalidArgument(w, "unknown method on service account")
 	}
+}
+
+func (h *Handler) resolveServiceAccount(projectID, account string) (store.ServiceAccount, bool, error) {
+	if projectID == "-" {
+		return h.Store.GetServiceAccount(account)
+	}
+	return h.Store.GetServiceAccountInProject(projectID, account)
+}
+
+// generateAccessToken mints a lab Bearer token for the target SA (impersonation theatre).
+// Shape matches IAM Credentials generateAccessToken (accessToken + expireTime).
+func (h *Handler) generateAccessToken(w http.ResponseWriter, r *http.Request, projectResource string, sa store.ServiceAccount) {
+	if _, ok := h.require(w, r, "iam.serviceAccounts.getAccessToken", projectResource); !ok {
+		return
+	}
+	if sa.Disabled {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "service account is disabled")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		Delegates []string `json:"delegates"`
+		Scope     []string `json:"scope"`
+		Lifetime  string   `json:"lifetime"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			gcperrors.InvalidArgument(w, "invalid JSON body")
+			return
+		}
+	}
+	if len(req.Scope) == 0 {
+		gcperrors.InvalidArgument(w, "scope is required")
+		return
+	}
+	_ = req.Delegates // accepted, not enforced (lab theatre)
+	lifetime := time.Hour
+	if req.Lifetime != "" {
+		secs, ok := parseDurationSeconds(req.Lifetime)
+		if !ok || secs <= 0 || secs > 12*3600 {
+			gcperrors.InvalidArgument(w, "lifetime must be a Duration ending in s, between 1s and 43200s")
+			return
+		}
+		lifetime = time.Duration(secs) * time.Second
+	}
+	token := newAccessToken()
+	expire := h.now().Add(lifetime)
+	if err := h.Store.PutAccessToken(authn.HashToken(token), sa.Email, expire); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accessToken": token,
+		"expireTime":  expire.UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func parseDurationSeconds(v string) (int64, bool) {
+	v = strings.TrimSpace(v)
+	if !strings.HasSuffix(v, "s") {
+		return 0, false
+	}
+	n, err := strconv.ParseFloat(strings.TrimSuffix(v, "s"), 64)
+	if err != nil {
+		return 0, false
+	}
+	return int64(n), true
 }
 
 func (h *Handler) undeleteServiceAccount(w http.ResponseWriter, r *http.Request, projectID, projectResource, account string) {

@@ -69,6 +69,18 @@ func (s *Store) migrate() error {
 	if err := s.migrateBigtableMemorystore(); err != nil {
 		return err
 	}
+	if err := s.migrateSecurity(); err != nil {
+		return err
+	}
+	if err := s.migrateFilestore(); err != nil {
+		return err
+	}
+	if err := s.migrateWIF(); err != nil {
+		return err
+	}
+	if err := s.migrateCRMTags(); err != nil {
+		return err
+	}
 	if err := s.ensureDataColumns(); err != nil {
 		return err
 	}
@@ -100,10 +112,17 @@ func (s *Store) ensureDataColumns() error {
 		`ALTER TABLE pubsub_subscriptions ADD COLUMN push_endpoint TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE pubsub_subscriptions ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE pubsub_subscriptions ADD COLUMN filter TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pubsub_subscriptions ADD COLUMN dead_letter_topic TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pubsub_subscriptions ADD COLUMN max_delivery_attempts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE pubsub_subscriptions ADD COLUMN enable_exactly_once_delivery INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE pubsub_messages ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE secrets ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE secrets ADD COLUMN annotations_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE secrets ADD COLUMN replication_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE secrets ADD COLUMN cmek_kms_key_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE secrets ADD COLUMN rotation_period TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE secrets ADD COLUMN next_rotation_time TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE secrets ADD COLUMN topics_json TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE run_services ADD COLUMN traffic_json TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE scheduler_jobs ADD COLUMN oidc_audience TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE scheduler_jobs ADD COLUMN next_run_time TEXT NOT NULL DEFAULT ''`,
@@ -258,6 +277,9 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 		"compute.googleapis.com",
 		"bigtableadmin.googleapis.com",
 		"redis.googleapis.com",
+		"certificatemanager.googleapis.com",
+		"file.googleapis.com",
+		"aiplatform.googleapis.com",
 	}
 	for _, svc := range wave1 {
 		if _, err := tx.Exec(

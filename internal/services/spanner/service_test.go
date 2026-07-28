@@ -233,3 +233,83 @@ func TestSpannerFailClosedWithoutPrincipal(t *testing.T) {
 		t.Fatalf("status=%d", rec.Code)
 	}
 }
+
+func TestSpannerMutationInsertReadExecuteSql(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureRoot("noctaxris-gcp-local", "root@noctaxris-gcp-local.iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	svc := &spanner.Service{Store: st, Authz: &authz.Evaluator{Policies: st}}
+	svc.Mount(mux, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "root@noctaxris-gcp-local.iam.gserviceaccount.com", IsRoot: true}, true
+	})
+	instBase := "/v1/projects/noctaxris-gcp-local/instances"
+	dbBase := instBase + "/lab/databases"
+	body := `{"instanceId":"lab","instance":{"config":"projects/noctaxris-gcp-local/instanceConfigs/regional-us-central1","displayName":"Lab","nodeCount":1}}`
+	req := httptest.NewRequest(http.MethodPost, instBase, bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create instance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, dbBase, bytes.NewReader([]byte(`{"createStatement":"CREATE DATABASE `+"`"+`app`+"`"+`"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create db status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, dbBase+"/app/sessions", bytes.NewReader([]byte("{}")))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("session status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var sess map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &sess)
+	sessName, _ := sess["name"].(string)
+	parts := bytes.Split([]byte(sessName), []byte("/"))
+	sessID := string(parts[len(parts)-1])
+
+	commitBody := `{"singleUseTransaction":{"readWrite":{}},"mutations":[{"insert":{"table":"Singers","columns":["SingerId","FirstName"],"values":[["1","Marc"],["2","Catalina"]]}}]}`
+	req = httptest.NewRequest(http.MethodPost, dbBase+"/app/sessions/"+sessID+":commit", bytes.NewReader([]byte(commitBody)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("commit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, dbBase+"/app/sessions/"+sessID+":executeSql", bytes.NewReader([]byte(`{"sql":"SELECT SingerId, FirstName FROM Singers"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("executeSql status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var rs map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &rs)
+	rows, _ := rs["rows"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("executeSql rows=%#v body=%s", rs, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, dbBase+"/app/sessions/"+sessID+":read", bytes.NewReader([]byte(`{"table":"Singers","columns":["FirstName"],"keySet":{"all":true}}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &rs)
+	rows, _ = rs["rows"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("read rows=%#v", rs)
+	}
+}

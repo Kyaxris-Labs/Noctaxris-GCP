@@ -7,8 +7,10 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -69,29 +71,41 @@ func (h *Handler) authProject(known string) string {
 }
 
 // requireStorage evaluates permission against bucket IAM and/or project IAM.
+// When the request carries a lab V4 signed URL query (and no principal), signature
+// verification substitutes for Bearer + IAM for the requested method.
 func (h *Handler) requireStorage(w http.ResponseWriter, r *http.Request, permission, bucketName, projectID string) (authn.Principal, bool) {
-	p, ok := h.principal(r)
-	if !ok {
-		gcperrors.Unauthenticated(w, "")
-		return authn.Principal{}, false
+	if p, ok := h.principal(r); ok {
+		var resources []string
+		if bucketName != "" {
+			resources = append(resources, store.BucketIAMResource(bucketName))
+		}
+		if projectID != "" {
+			resources = append(resources, projectResource(projectID))
+		}
+		allowed, err := h.Authz.EvaluateAny(p.Email, p.IsRoot, permission, resources...)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return authn.Principal{}, false
+		}
+		if !allowed {
+			gcperrors.PermissionDenied(w, "")
+			return authn.Principal{}, false
+		}
+		return p, true
 	}
-	var resources []string
-	if bucketName != "" {
-		resources = append(resources, store.BucketIAMResource(bucketName))
+	if store.HasV4Signature(r.URL.Query()) {
+		host := r.Host
+		if host == "" {
+			host = "127.0.0.1:4588"
+		}
+		if err := store.VerifyV4SignedRequest(r.Method, host, r.URL.Path, r.URL.Query(), time.Time{}); err != nil {
+			gcperrors.Unauthenticated(w, "invalid signed URL: "+err.Error())
+			return authn.Principal{}, false
+		}
+		return authn.Principal{Email: store.LabGCSHMACAccessID + "@lab.local", IsRoot: false}, true
 	}
-	if projectID != "" {
-		resources = append(resources, projectResource(projectID))
-	}
-	allowed, err := h.Authz.EvaluateAny(p.Email, p.IsRoot, permission, resources...)
-	if err != nil {
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return authn.Principal{}, false
-	}
-	if !allowed {
-		gcperrors.PermissionDenied(w, "")
-		return authn.Principal{}, false
-	}
-	return p, true
+	gcperrors.Unauthenticated(w, "")
+	return authn.Principal{}, false
 }
 
 func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
@@ -583,7 +597,89 @@ func (h *Handler) postObjectAction(w http.ResponseWriter, r *http.Request) {
 		h.rewriteObject(w, r, srcObject, dstBucket, dstObject)
 		return
 	}
+	if obj, action, ok := strings.Cut(objectPath, ":"); ok && action == "generateSignedUrl" {
+		h.generateSignedURL(w, r, obj)
+		return
+	}
 	gcperrors.InvalidArgument(w, "unsupported object POST action")
+}
+
+// generateSignedURL mints a lab V4 HMAC signed URL for GET/PUT against the JSON API path.
+func (h *Handler) generateSignedURL(w http.ResponseWriter, r *http.Request, object string) {
+	bucket := r.PathValue("bucket")
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.get", bucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.get", b.Name, b.ProjectID); !aok {
+		return
+	}
+	var body struct {
+		Method  string `json:"method"`
+		Expires int    `json:"expires"`
+		Alt     string `json:"alt"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body)
+	method := strings.ToUpper(strings.TrimSpace(body.Method))
+	if method == "" {
+		method = "GET"
+	}
+	if method != "GET" && method != "PUT" {
+		gcperrors.InvalidArgument(w, "method must be GET or PUT")
+		return
+	}
+	host := r.Host
+	if host == "" {
+		host = "127.0.0.1:4588"
+	}
+	var path string
+	q := url.Values{}
+	if method == "PUT" {
+		path = "/upload/storage/v1/b/" + url.PathEscape(bucket) + "/o"
+		q.Set("uploadType", "media")
+		q.Set("name", object)
+	} else {
+		path = "/storage/v1/b/" + url.PathEscape(bucket) + "/o/" + objectPathEscape(object)
+		alt := body.Alt
+		if alt == "" {
+			alt = "media"
+		}
+		if alt != "" {
+			q.Set("alt", alt)
+		}
+	}
+	signed, err := store.GenerateV4SignedURL(store.SignedURLRequest{
+		Method:  method,
+		Host:    host,
+		Path:    path,
+		Expires: body.Expires,
+		Query:   q,
+	})
+	if err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"signedUrl": signed,
+		"algorithm": store.LabGCSSignAlgo,
+		"accessId":  store.LabGCSHMACAccessID,
+	})
+}
+
+func objectPathEscape(object string) string {
+	parts := strings.Split(object, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
 }
 
 func (h *Handler) composeObject(w http.ResponseWriter, r *http.Request, dest string) {
@@ -893,6 +989,11 @@ func (h *Handler) initiateResumable(w http.ResponseWriter, r *http.Request, buck
 
 func (h *Handler) putResumableUpload(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
+	// Lab media PUT theatre (signed URL uploads): uploadType=media&name=...
+	if r.URL.Query().Get("uploadType") == "media" {
+		h.putMediaUpload(w, r, bucket)
+		return
+	}
 	uploadID := r.URL.Query().Get("upload_id")
 	if uploadID == "" {
 		gcperrors.InvalidArgument(w, "upload_id is required")
@@ -925,6 +1026,44 @@ func (h *Handler) putResumableUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	obj, err := h.Store.CompleteUploadSession(uploadID, data)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, objectJSON(obj))
+}
+
+func (h *Handler) putMediaUpload(w http.ResponseWriter, r *http.Request, bucket string) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		gcperrors.InvalidArgument(w, "name query parameter is required for media upload")
+		return
+	}
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.create", bucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.create", b.Name, b.ProjectID); !aok {
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	obj, err := h.Store.PutObjectBytes(bucket, name, contentType, data)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return

@@ -3,6 +3,7 @@ package cloudfunctions
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ import (
 // DefaultLocation is the lab default Functions location.
 const DefaultLocation = "us-central1"
 
+const functionsUploadBucket = "noctaxris-gcp-functions-lab"
+
 // Service serves Cloud Functions v2 REST (control plane + HTTP invoke stub).
 type Service struct {
 	Store *store.Store
@@ -30,6 +33,9 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/functions", s.wrap(principalFrom, s.listFunctions))
 	mux.HandleFunc("POST /v2/projects/{project}/locations/{location}/functions", s.wrap(principalFrom, s.createFunction))
 	mux.HandleFunc("POST /v2/projects/{project}/locations/{location}/functions:generateUploadUrl", s.wrap(principalFrom, s.generateUploadUrl))
+	// Source upload accept theatre (signed-URL shaped path from generateUploadUrl).
+	mux.HandleFunc("PUT /v2/projects/{project}/locations/{location}/functions:upload/{uploadId}", s.wrap(principalFrom, s.acceptUpload))
+	mux.HandleFunc("POST /v2/projects/{project}/locations/{location}/functions:upload/{uploadId}", s.wrap(principalFrom, s.acceptUpload))
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/functions/{function}", s.wrap(principalFrom, s.getOrInvoke))
 	mux.HandleFunc("PATCH /v2/projects/{project}/locations/{location}/functions/{function}", s.wrap(principalFrom, s.patchFunction))
 	mux.HandleFunc("DELETE /v2/projects/{project}/locations/{location}/functions/{function}", s.wrap(principalFrom, s.deleteFunction))
@@ -112,6 +118,17 @@ func (s *Service) createFunction(w http.ResponseWriter, r *http.Request, p authn
 		labResp = v
 	}
 	cfgRaw, _ := json.Marshal(body)
+	state := "ACTIVE"
+	if bucket, object, hasSrc := storageSourceFromBody(body); hasSrc {
+		uploaded, err := s.Store.HasCloudFunctionUploadObject(project, bucket, object)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !uploaded {
+			state = "DEPLOYING"
+		}
+	}
 	name := functionName(project, location, functionID)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	created, err := s.Store.CreateCloudFunction(store.CloudFunction{
@@ -119,7 +136,7 @@ func (s *Service) createFunction(w http.ResponseWriter, r *http.Request, p authn
 		ProjectID:       project,
 		Location:        location,
 		FunctionID:      functionID,
-		State:           "ACTIVE",
+		State:           state,
 		ConfigJSON:      string(cfgRaw),
 		LabResponseJSON: labResp,
 		CreatedAt:       now,
@@ -149,12 +166,54 @@ func (s *Service) generateUploadUrl(w http.ResponseWriter, r *http.Request, p au
 		return
 	}
 	id := uuid.NewString()
+	object := fmt.Sprintf("uploads/%s/%s.zip", project, id)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"uploadUrl": fmt.Sprintf("http://127.0.0.1:4588/v2/projects/%s/locations/%s/functions:upload/%s", project, location, id),
 		"storageSource": map[string]any{
-			"bucket": "noctaxris-gcp-functions-lab",
-			"object": fmt.Sprintf("uploads/%s/%s.zip", project, id),
+			"bucket": functionsUploadBucket,
+			"object": object,
 		},
+	})
+}
+
+func (s *Service) acceptUpload(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	uploadID := r.PathValue("uploadId")
+	if err := s.require(p, "cloudfunctions.functions.create", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	if uploadID == "" {
+		gcperrors.InvalidArgument(w, "upload id is required")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "failed to read upload body")
+		return
+	}
+	object := fmt.Sprintf("uploads/%s/%s.zip", project, uploadID)
+	if err := s.Store.AcceptCloudFunctionUpload(store.CloudFunctionUpload{
+		UploadID:  uploadID,
+		ProjectID: project,
+		Location:  location,
+		Bucket:    functionsUploadBucket,
+		Object:    object,
+		SizeBytes: int64(len(body)),
+	}); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if _, err := s.Store.ActivateCloudFunctionsForStorageSource(project, location, functionsUploadBucket, object); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"bucket": functionsUploadBucket,
+		"object": object,
+		"size":   len(body),
 	})
 }
 
@@ -262,6 +321,25 @@ func (s *Service) patchFunction(w http.ResponseWriter, r *http.Request, p authn.
 	if !ok {
 		gcperrors.NotFound(w, "Function not found")
 		return
+	}
+	// When patch supplies storageSource that was already uploaded, promote to ACTIVE.
+	if bucket, object, hasSrc := storageSourceFromConfigJSON(fn.ConfigJSON); hasSrc {
+		uploaded, err := s.Store.HasCloudFunctionUploadObject(project, bucket, object)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if uploaded && fn.State != "ACTIVE" {
+			fn, ok, err = s.Store.SetCloudFunctionState(name, "ACTIVE")
+			if err != nil {
+				gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+				return
+			}
+			if !ok {
+				gcperrors.NotFound(w, "Function not found")
+				return
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, toFunctionJSON(fn))
 }
@@ -391,4 +469,35 @@ func toFunctionJSON(fn store.CloudFunction) map[string]any {
 		}
 	}
 	return out
+}
+
+func storageSourceFromBody(body map[string]any) (bucket, object string, ok bool) {
+	return storageSourceFromConfigJSON(mustJSON(body))
+}
+
+func mustJSON(body map[string]any) string {
+	raw, _ := json.Marshal(body)
+	return string(raw)
+}
+
+func storageSourceFromConfigJSON(configJSON string) (bucket, object string, ok bool) {
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		return "", "", false
+	}
+	bc, _ := cfg["buildConfig"].(map[string]any)
+	if bc == nil {
+		return "", "", false
+	}
+	src, _ := bc["source"].(map[string]any)
+	if src == nil {
+		return "", "", false
+	}
+	ss, _ := src["storageSource"].(map[string]any)
+	if ss == nil {
+		return "", "", false
+	}
+	bucket, _ = ss["bucket"].(string)
+	object, _ = ss["object"].(string)
+	return bucket, object, bucket != "" && object != ""
 }

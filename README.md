@@ -35,7 +35,7 @@ Go module: [`github.com/Kyaxris-Labs/Noctaxris-GCP`](https://github.com/Kyaxris-
 | Lab fidelity | Google IAM allow policies, service accounts, and Bearer auth on a single port |
 | Secure defaults | Loopback publish only. No host `docker.sock`. Master key outside the data root |
 | REST + gRPC | Cleartext HTTP/2 (h2c) multiplexes both on `:4588` |
-| Compose simple | Single service image (no nested engine) |
+| Compose | Default single API service; opt-in nested DinD via `compose.engine.yaml` |
 
 ## Quick start
 
@@ -72,15 +72,17 @@ Default host publish is `127.0.0.1:4588` only. Default project id is `noctaxris-
 |------|----------|
 | Identity | Cloud Resource Manager (orgs/folders), IAM, Service Usage |
 | Crypto | Secret Manager, Cloud KMS |
-| Data | Cloud Storage, Pub/Sub, Firestore, Datastore, Cloud Bigtable, Memorystore Redis |
+| Data | Cloud Storage, Pub/Sub, Firestore, Datastore, Cloud Bigtable, Memorystore Redis, Filestore |
 | Audit/logs | Cloud Logging |
-| Compute | Compute Engine (VPC/firewall), Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks, Cloud Build, App Engine |
+| Compute | Compute Engine (VPC/firewall), Cloud Run (mock `:invoke`; opt-in DinD via `compose.engine.yaml`), Cloud Functions, Cloud Scheduler, Cloud Tasks, Cloud Build, App Engine |
 | Registry | Artifact Registry |
-| Networking | Cloud DNS |
+| Networking | Cloud DNS, Cloud Armor, Certificate Manager |
 | Analytics | BigQuery, Firebase Auth, Eventarc, Workflows, Cloud Spanner, Dataflow |
+| AI | Vertex AI (canned predict / generateContent) |
 | Observability | Cloud Monitoring |
 
 Per-service lab actions, emulator limits, and smoke notes: [docs/services/](docs/services/index.md).
+Cloud Run nested invoke stays off unless you overlay `docker/compose.engine.yaml` (never mounts host `docker.sock`).
 
 ## Security defaults
 

@@ -279,3 +279,134 @@ def test_list_dataflow_jobs_smoke() -> None:
     assert status == 200, body
     parsed = json.loads(body)
     assert "jobs" in parsed, body
+
+
+def test_list_cloud_armor_security_policies_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+
+    status, body = do_json(
+        "GET",
+        f"{ep}/compute/v1/projects/{project}/global/securityPolicies",
+        token,
+    )
+    assert status == 200, body
+    parsed = json.loads(body)
+    assert parsed.get("kind") == "compute#securityPolicyList", body
+    assert "items" in parsed, body
+
+
+def test_list_certificate_manager_certificates_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+
+    status, body = do_json(
+        "GET",
+        f"{ep}/v1/projects/{project}/locations/global/certificates",
+        token,
+    )
+    assert status == 200, body
+    parsed = json.loads(body)
+    assert "certificates" in parsed, body
+
+
+def test_list_filestore_instances_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+
+    status, body = do_json(
+        "GET",
+        f"{ep}/file/v1/projects/{project}/locations/us-central1/instances",
+        token,
+    )
+    assert status == 200, body
+    parsed = json.loads(body)
+    assert "instances" in parsed, body
+
+
+def test_vertex_ai_generate_content_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+
+    status, body = do_json(
+        "POST",
+        f"{ep}/v1/projects/{project}/locations/us-central1/publishers/google/models/gemini-1.5-flash:generateContent",
+        token,
+        {
+            "contents": [
+                {"role": "user", "parts": [{"text": "sdk-smoke"}]},
+            ],
+        },
+    )
+    assert status == 200, body
+    parsed = json.loads(body)
+    assert "candidates" in parsed, body
+
+
+def test_iam_generate_access_token_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+    account_id = unique_id("sdksa")
+    if len(account_id) > 30:
+        account_id = account_id[:30].rstrip("-")
+    email = f"{account_id}@{project}.iam.gserviceaccount.com"
+    sa_path = f"{ep}/v1/projects/{project}/serviceAccounts/{email}"
+
+    status, body = do_json(
+        "POST",
+        f"{ep}/v1/projects/{project}/serviceAccounts",
+        token,
+        {
+            "accountId": account_id,
+            "serviceAccount": {"displayName": "sdk smoke"},
+        },
+    )
+    assert status == 200, body
+    try:
+        status, body = do_json(
+            "POST",
+            f"{sa_path}:generateAccessToken",
+            token,
+            {
+                "scope": ["https://www.googleapis.com/auth/cloud-platform"],
+                "lifetime": "3600s",
+            },
+        )
+        assert status == 200, body
+        parsed = json.loads(body)
+        assert parsed.get("accessToken"), body
+    finally:
+        do_json("DELETE", sa_path, token)
+
+
+def test_gcs_generate_signed_url_smoke() -> None:
+    ep = require_ready()
+    token = require_token()
+    project = project_id()
+    bucket = unique_id("sdk-signed")
+    bucket_path = f"{ep}/storage/v1/b/{urllib.parse.quote(bucket, safe='')}"
+
+    status, body = do_json(
+        "POST",
+        f"{ep}/storage/v1/b?project={urllib.parse.quote(project)}",
+        token,
+        {"name": bucket},
+    )
+    assert status == 200, body
+    try:
+        status, body = do_json(
+            "POST",
+            f"{bucket_path}/o/smoke.txt:generateSignedUrl",
+            token,
+            {"method": "GET", "expires": 600, "alt": "media"},
+        )
+        assert status == 200, body
+        parsed = json.loads(body)
+        assert parsed.get("signedUrl"), body
+    finally:
+        do_json("DELETE", bucket_path, token)

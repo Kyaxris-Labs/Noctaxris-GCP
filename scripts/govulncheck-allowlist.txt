@@ -3,6 +3,10 @@
 # only when there is no module-path fix and the residual is documented in
 # docs/security-defaults.md. Keep this file empty when none apply.
 #
-# Example (AWS sibling Noctaxris): Docker Engine CVEs reported against
-# github.com/docker/docker with Fixed in: N/A. Noctaxris-GCP does not depend on
-# that client today, so no IDs are listed.
+# Daemon-side Docker Engine issues reported against github.com/docker/docker with
+# Fixed in: N/A (no client-module fix). Verified via local govulncheck after
+# adding github.com/docker/docker v28.5.2. Do not copy IDs from Noctaxris blindly.
+GO-2026-4883
+GO-2026-4887
+GO-2026-5617
+GO-2026-5668

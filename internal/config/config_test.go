@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/config"
@@ -10,6 +12,8 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("NOCTAXRIS_GCP_LISTEN", "")
 	t.Setenv("NOCTAXRIS_GCP_DATA_ROOT", "")
 	t.Setenv("NOCTAXRIS_GCP_PROJECT", "")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", "")
 	t.Setenv(config.EnvAllowNonLoopbackListen, "")
 
 	cfg, err := config.LoadFromEnv()
@@ -24,6 +28,48 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.ProjectID != config.DefaultProjectID {
 		t.Fatalf("ProjectID = %q, want %q", cfg.ProjectID, config.DefaultProjectID)
+	}
+	if cfg.DockerHost != "" {
+		t.Fatalf("DockerHost = %q, want empty (compute disabled)", cfg.DockerHost)
+	}
+}
+
+func TestLoadFromEnvDockerHost(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"ca.pem", "cert.pem", "key.pem"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("lab-pem"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NOCTAXRIS_GCP_LISTEN", "127.0.0.1:4588")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "tcp://noctaxris-gcp-engine:2376")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", dir)
+
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DockerHost != "tcp://noctaxris-gcp-engine:2376" {
+		t.Fatalf("DockerHost = %q", cfg.DockerHost)
+	}
+	if cfg.DockerTLSCertPath != dir {
+		t.Fatalf("DockerTLSCertPath = %q", cfg.DockerTLSCertPath)
+	}
+}
+
+func TestLoadFromEnvDockerHostRejectsSock(t *testing.T) {
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "unix:///var/run/docker.sock")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", t.TempDir())
+	if _, err := config.LoadFromEnv(); err == nil {
+		t.Fatal("expected reject for docker.sock")
+	}
+}
+
+func TestLoadFromEnvDockerHostRequiresCertPath(t *testing.T) {
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "tcp://noctaxris-gcp-engine:2376")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", "")
+	if _, err := config.LoadFromEnv(); err == nil {
+		t.Fatal("expected reject when cert path empty")
 	}
 }
 

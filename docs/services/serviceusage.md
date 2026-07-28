@@ -38,7 +38,7 @@ EnsureRoot seeds known lab APIs as `ENABLED` for the default project
 Logging, Run, Functions, Scheduler, Tasks, BigQuery, Identity Toolkit,
 Monitoring, Datastore, Eventarc, App Engine, Artifact Registry, Cloud Build,
 Workflows, Spanner, Compute Engine, Cloud DNS, Dataflow, Bigtable Admin,
-Memorystore Redis).
+Memorystore Redis, Certificate Manager, Filestore, Vertex AI).
 
 IAM create service account refuses with `FAILED_PRECONDITION` when
 `iam.googleapis.com` is DISABLED (example Service Usage gate).

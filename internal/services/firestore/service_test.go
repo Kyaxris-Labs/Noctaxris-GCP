@@ -456,3 +456,129 @@ func TestCommitFieldTransformAndPartitionQuery(t *testing.T) {
 	}
 }
 
+
+func TestCommitAtomicWithPreconditions(t *testing.T) {
+	client, _, cleanup := startFirestore(t)
+	defer cleanup()
+	ctx := authCtx("test-root-token")
+	db := "projects/noctaxris-gcp-local/databases/(default)"
+	parent := db + "/documents"
+
+	begun, err := client.BeginTransaction(ctx, &firestorepb.BeginTransactionRequest{Database: db})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Commit(ctx, &firestorepb.CommitRequest{
+		Database:    db,
+		Transaction: begun.GetTransaction(),
+		Writes: []*firestorepb.Write{
+			{
+				Operation: &firestorepb.Write_Update{
+					Update: &firestorepb.Document{
+						Name: parent + "/acct/a",
+						Fields: map[string]*firestorepb.Value{
+							"bal": {ValueType: &firestorepb.Value_IntegerValue{IntegerValue: 10}},
+						},
+					},
+				},
+				UpdateMask:       &firestorepb.DocumentMask{FieldPaths: []string{"bal"}},
+				CurrentDocument: &firestorepb.Precondition{ConditionType: &firestorepb.Precondition_Exists{Exists: false}},
+			},
+			{
+				Operation: &firestorepb.Write_Update{
+					Update: &firestorepb.Document{
+						Name: parent + "/acct/b",
+						Fields: map[string]*firestorepb.Value{
+							"bal": {ValueType: &firestorepb.Value_IntegerValue{IntegerValue: 20}},
+						},
+					},
+				},
+				UpdateMask:       &firestorepb.DocumentMask{FieldPaths: []string{"bal"}},
+				CurrentDocument: &firestorepb.Precondition{ConditionType: &firestorepb.Precondition_Exists{Exists: false}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second create of acct/a must fail with AlreadyExists precondition.
+	begun2, err := client.BeginTransaction(ctx, &firestorepb.BeginTransactionRequest{Database: db})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Commit(ctx, &firestorepb.CommitRequest{
+		Database:    db,
+		Transaction: begun2.GetTransaction(),
+		Writes: []*firestorepb.Write{{
+			Operation: &firestorepb.Write_Update{
+				Update: &firestorepb.Document{
+					Name: parent + "/acct/a",
+					Fields: map[string]*firestorepb.Value{
+						"bal": {ValueType: &firestorepb.Value_IntegerValue{IntegerValue: 99}},
+					},
+				},
+			},
+			UpdateMask:       &firestorepb.DocumentMask{FieldPaths: []string{"bal"}},
+			CurrentDocument: &firestorepb.Precondition{ConditionType: &firestorepb.Precondition_Exists{Exists: false}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected AlreadyExists precondition failure")
+	}
+	got, err := client.GetDocument(ctx, &firestorepb.GetDocumentRequest{Name: parent + "/acct/a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetFields()["bal"].GetIntegerValue() != 10 {
+		t.Fatalf("atomic rollback expected bal=10, got %#v", got.GetFields())
+	}
+}
+
+func TestBatchWriteMultiple(t *testing.T) {
+	client, _, cleanup := startFirestore(t)
+	defer cleanup()
+	ctx := authCtx("test-root-token")
+	db := "projects/noctaxris-gcp-local/databases/(default)"
+	parent := db + "/documents"
+	resp, err := client.BatchWrite(ctx, &firestorepb.BatchWriteRequest{
+		Database: db,
+		Writes: []*firestorepb.Write{
+			{
+				Operation: &firestorepb.Write_Update{
+					Update: &firestorepb.Document{
+						Name: parent + "/batch/d1",
+						Fields: map[string]*firestorepb.Value{
+							"x": {ValueType: &firestorepb.Value_StringValue{StringValue: "one"}},
+						},
+					},
+				},
+				UpdateMask: &firestorepb.DocumentMask{FieldPaths: []string{"x"}},
+			},
+			{
+				Operation: &firestorepb.Write_Update{
+					Update: &firestorepb.Document{
+						Name: parent + "/batch/d2",
+						Fields: map[string]*firestorepb.Value{
+							"x": {ValueType: &firestorepb.Value_StringValue{StringValue: "two"}},
+						},
+					},
+				},
+				UpdateMask: &firestorepb.DocumentMask{FieldPaths: []string{"x"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.GetWriteResults()) != 2 {
+		t.Fatalf("writeResults=%d", len(resp.GetWriteResults()))
+	}
+	got, err := client.GetDocument(ctx, &firestorepb.GetDocumentRequest{Name: parent + "/batch/d2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetFields()["x"].GetStringValue() != "two" {
+		t.Fatalf("fields=%#v", got.GetFields())
+	}
+}
