@@ -1,0 +1,11 @@
+{
+  "name": "noctaxris-gcp-sdk-nodejs-tests",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test smoke.test.mjs"
+  }
+}

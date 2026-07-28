@@ -1,0 +1,55 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+
+# Editor/IDE
+# .idea/
+# .vscode/
+.cursor/
+.local/
+.superpowers/
+
+# Local files
+bin/
+.DS_Store
+HANDOFF.md
+.build/
+.gocache/
+
+# Integration suite local artifacts
+tests/**/node_modules/
+tests/**/.pytest_cache/
+tests/**/.terraform/
+tests/**/*.tfstate
+tests/**/*.tfstate.*
+tests/**/.terraform.lock.hcl
+
+# Python
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+
+.worktrees/
