@@ -36,13 +36,12 @@ provider "google" {
   # Lab Bearer is supplied via GOOGLE_OAUTH_ACCESS_TOKEN by run.sh.
   user_project_override = false
 
+  # Defaults match hashicorp/google product BaseUrl path suffixes
+  # (storage/v1/, v1/ for Pub/Sub and Secret Manager).
   storage_custom_endpoint        = "${local.ep}/storage/v1/"
-  pubsub_custom_endpoint         = "${local.ep}/"
-  secret_manager_custom_endpoint = "${local.ep}/"
+  pubsub_custom_endpoint         = "${local.ep}/v1/"
+  secret_manager_custom_endpoint = "${local.ep}/v1/"
 }
-
-# Pub/Sub lab surface is gRPC-only today; google_pubsub_* resources need REST
-# and are omitted until that mirror exists.
 
 resource "google_storage_bucket" "lab" {
   name                        = "${var.name_prefix}-bucket"
@@ -58,10 +57,18 @@ resource "google_secret_manager_secret" "lab" {
   }
 }
 
+resource "google_pubsub_topic" "lab" {
+  name = "${var.name_prefix}-topic"
+}
+
 output "bucket_name" {
   value = google_storage_bucket.lab.name
 }
 
 output "secret_id" {
   value = google_secret_manager_secret.lab.secret_id
+}
+
+output "topic_name" {
+  value = google_pubsub_topic.lab.name
 }

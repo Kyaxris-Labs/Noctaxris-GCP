@@ -23,6 +23,7 @@ type RunService struct {
 	LatestRevision  string
 	LabResponseBody string
 	LastInvokeJSON  string
+	TrafficJSON     string
 	CreatedAt       string
 	UpdatedAt       string
 }
@@ -34,6 +35,19 @@ type RunRevision struct {
 	Generation   int64
 	TemplateJSON string
 	CreatedAt    string
+}
+
+// RunJob is a Cloud Run v2 job row (control-plane theatre, no container start).
+type RunJob struct {
+	Name         string
+	ProjectID    string
+	Location     string
+	JobID        string
+	UID          string
+	Generation   int64
+	TemplateJSON string
+	CreatedAt    string
+	UpdatedAt    string
 }
 
 // CloudFunction is a Cloud Functions v2 function row.
@@ -61,6 +75,8 @@ type SchedulerJob struct {
 	State            string
 	HTTPTargetJSON   string
 	PubsubTargetJSON string
+	OIDCAudience     string
+	NextRunTime      string
 	LastAttemptTime  string
 	CreatedAt        string
 	UpdatedAt        string
@@ -68,22 +84,27 @@ type SchedulerJob struct {
 
 // CloudTasksQueue is a Cloud Tasks queue row.
 type CloudTasksQueue struct {
-	Name      string
-	ProjectID string
-	Location  string
-	QueueID   string
-	State     string
-	CreatedAt string
+	Name                         string
+	ProjectID                    string
+	Location                     string
+	QueueID                      string
+	State                        string
+	RateLimitsJSON               string
+	RetryConfigJSON              string
+	AppEngineRoutingOverrideJSON string
+	CreatedAt                    string
 }
 
 // CloudTask is a Cloud Tasks task row (OIDC/OAuth tokens stripped from http_request_json).
 type CloudTask struct {
-	Name            string
-	QueueName       string
-	ScheduleTime    string
-	CreateTime      string
-	HTTPRequestJSON string
-	DispatchCount   int
+	Name                      string
+	QueueName                 string
+	ScheduleTime              string
+	CreateTime                string
+	HTTPRequestJSON           string
+	AppEngineHTTPRequestJSON  string
+	DispatchCount             int
+	ResponseCount             int
 }
 
 // CreateRunService inserts a service and its first revision.
@@ -114,6 +135,9 @@ func (s *Store) CreateRunService(svc RunService) (created bool, err error) {
 	if svc.URI == "" {
 		svc.URI = fmt.Sprintf("http://127.0.0.1:4588/v2/%s:invoke", svc.Name)
 	}
+	if svc.TrafficJSON == "" {
+		svc.TrafficJSON = fmt.Sprintf(`[{"type":"TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST","percent":100,"revision":%q}]`, svc.LatestRevision)
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -123,10 +147,10 @@ func (s *Store) CreateRunService(svc RunService) (created bool, err error) {
 
 	res, err := tx.Exec(
 		`INSERT OR IGNORE INTO run_services
-		 (name, project_id, location, service_id, uid, generation, template_json, uri, latest_revision, lab_response_body, last_invoke_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (name, project_id, location, service_id, uid, generation, template_json, uri, latest_revision, lab_response_body, last_invoke_json, traffic_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		svc.Name, svc.ProjectID, svc.Location, svc.ServiceID, svc.UID, svc.Generation,
-		svc.TemplateJSON, svc.URI, svc.LatestRevision, svc.LabResponseBody, svc.LastInvokeJSON,
+		svc.TemplateJSON, svc.URI, svc.LatestRevision, svc.LabResponseBody, svc.LastInvokeJSON, svc.TrafficJSON,
 		svc.CreatedAt, svc.UpdatedAt,
 	)
 	if err != nil {
@@ -156,12 +180,12 @@ func (s *Store) GetRunService(name string) (RunService, bool, error) {
 	var svc RunService
 	err := s.db.QueryRow(
 		`SELECT name, project_id, location, service_id, uid, generation, template_json, uri, latest_revision,
-		        lab_response_body, last_invoke_json, created_at, updated_at
+		        lab_response_body, last_invoke_json, traffic_json, created_at, updated_at
 		 FROM run_services WHERE name = ?`, name,
 	).Scan(
 		&svc.Name, &svc.ProjectID, &svc.Location, &svc.ServiceID, &svc.UID, &svc.Generation,
 		&svc.TemplateJSON, &svc.URI, &svc.LatestRevision, &svc.LabResponseBody, &svc.LastInvokeJSON,
-		&svc.CreatedAt, &svc.UpdatedAt,
+		&svc.TrafficJSON, &svc.CreatedAt, &svc.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return RunService{}, false, nil
@@ -176,7 +200,7 @@ func (s *Store) GetRunService(name string) (RunService, bool, error) {
 func (s *Store) ListRunServices(projectID, location string) ([]RunService, error) {
 	rows, err := s.db.Query(
 		`SELECT name, project_id, location, service_id, uid, generation, template_json, uri, latest_revision,
-		        lab_response_body, last_invoke_json, created_at, updated_at
+		        lab_response_body, last_invoke_json, traffic_json, created_at, updated_at
 		 FROM run_services WHERE project_id = ? AND location = ? ORDER BY name`,
 		projectID, location,
 	)
@@ -190,7 +214,7 @@ func (s *Store) ListRunServices(projectID, location string) ([]RunService, error
 		if err := rows.Scan(
 			&svc.Name, &svc.ProjectID, &svc.Location, &svc.ServiceID, &svc.UID, &svc.Generation,
 			&svc.TemplateJSON, &svc.URI, &svc.LatestRevision, &svc.LabResponseBody, &svc.LastInvokeJSON,
-			&svc.CreatedAt, &svc.UpdatedAt,
+			&svc.TrafficJSON, &svc.CreatedAt, &svc.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -199,8 +223,8 @@ func (s *Store) ListRunServices(projectID, location string) ([]RunService, error
 	return out, rows.Err()
 }
 
-// UpdateRunService patches template/lab body and bumps generation with a new revision.
-func (s *Store) UpdateRunService(name, templateJSON, labResponseBody string) (RunService, bool, error) {
+// UpdateRunService patches template/lab body/traffic and bumps generation with a new revision.
+func (s *Store) UpdateRunService(name, templateJSON, labResponseBody, trafficJSON string) (RunService, bool, error) {
 	svc, ok, err := s.GetRunService(name)
 	if err != nil || !ok {
 		return RunService{}, ok, err
@@ -215,6 +239,11 @@ func (s *Store) UpdateRunService(name, templateJSON, labResponseBody string) (Ru
 	svc.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	revName := fmt.Sprintf("%s/revisions/%s-%05d", svc.Name, svc.ServiceID, svc.Generation)
 	svc.LatestRevision = revName
+	if trafficJSON != "" {
+		svc.TrafficJSON = trafficJSON
+	} else {
+		svc.TrafficJSON = fmt.Sprintf(`[{"type":"TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST","percent":100,"revision":%q}]`, revName)
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -223,9 +252,9 @@ func (s *Store) UpdateRunService(name, templateJSON, labResponseBody string) (Ru
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(
-		`UPDATE run_services SET generation = ?, template_json = ?, latest_revision = ?, lab_response_body = ?, updated_at = ?
+		`UPDATE run_services SET generation = ?, template_json = ?, latest_revision = ?, lab_response_body = ?, traffic_json = ?, updated_at = ?
 		 WHERE name = ?`,
-		svc.Generation, svc.TemplateJSON, svc.LatestRevision, svc.LabResponseBody, svc.UpdatedAt, name,
+		svc.Generation, svc.TemplateJSON, svc.LatestRevision, svc.LabResponseBody, svc.TrafficJSON, svc.UpdatedAt, name,
 	); err != nil {
 		return RunService{}, false, fmt.Errorf("update run service: %w", err)
 	}
@@ -260,6 +289,134 @@ func (s *Store) DeleteRunService(name string) (bool, error) {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// SetRunServiceTraffic updates traffic allocation without bumping generation.
+func (s *Store) SetRunServiceTraffic(name, trafficJSON string) (RunService, bool, error) {
+	svc, ok, err := s.GetRunService(name)
+	if err != nil || !ok {
+		return RunService{}, ok, err
+	}
+	if trafficJSON == "" {
+		trafficJSON = "[]"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.Exec(`UPDATE run_services SET traffic_json = ?, updated_at = ? WHERE name = ?`, trafficJSON, now, name)
+	if err != nil {
+		return RunService{}, false, fmt.Errorf("set run traffic: %w", err)
+	}
+	svc.TrafficJSON = trafficJSON
+	svc.UpdatedAt = now
+	return svc, true, nil
+}
+
+// CreateRunJob inserts a Cloud Run job. created=false means already exists.
+func (s *Store) CreateRunJob(job RunJob) (created bool, err error) {
+	if job.Name == "" || job.ProjectID == "" || job.Location == "" || job.JobID == "" {
+		return false, fmt.Errorf("run job requires name, project, location, and job id")
+	}
+	if job.UID == "" {
+		job.UID = uuid.NewString()
+	}
+	if job.Generation == 0 {
+		job.Generation = 1
+	}
+	if job.TemplateJSON == "" {
+		job.TemplateJSON = "{}"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if job.CreatedAt == "" {
+		job.CreatedAt = now
+	}
+	if job.UpdatedAt == "" {
+		job.UpdatedAt = job.CreatedAt
+	}
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO run_jobs
+		 (name, project_id, location, job_id, uid, generation, template_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		job.Name, job.ProjectID, job.Location, job.JobID, job.UID, job.Generation, job.TemplateJSON, job.CreatedAt, job.UpdatedAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("create run job: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// GetRunJob loads a job by name.
+func (s *Store) GetRunJob(name string) (RunJob, bool, error) {
+	var job RunJob
+	err := s.db.QueryRow(
+		`SELECT name, project_id, location, job_id, uid, generation, template_json, created_at, updated_at
+		 FROM run_jobs WHERE name = ?`, name,
+	).Scan(&job.Name, &job.ProjectID, &job.Location, &job.JobID, &job.UID, &job.Generation, &job.TemplateJSON, &job.CreatedAt, &job.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return RunJob{}, false, nil
+	}
+	if err != nil {
+		return RunJob{}, false, fmt.Errorf("get run job: %w", err)
+	}
+	return job, true, nil
+}
+
+// ListRunJobs lists jobs under project/location.
+func (s *Store) ListRunJobs(projectID, location string) ([]RunJob, error) {
+	rows, err := s.db.Query(
+		`SELECT name, project_id, location, job_id, uid, generation, template_json, created_at, updated_at
+		 FROM run_jobs WHERE project_id = ? AND location = ? ORDER BY name`,
+		projectID, location,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list run jobs: %w", err)
+	}
+	defer rows.Close()
+	var out []RunJob
+	for rows.Next() {
+		var job RunJob
+		if err := rows.Scan(&job.Name, &job.ProjectID, &job.Location, &job.JobID, &job.UID, &job.Generation, &job.TemplateJSON, &job.CreatedAt, &job.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, job)
+	}
+	return out, rows.Err()
+}
+
+// UpdateRunJob patches template and bumps generation.
+func (s *Store) UpdateRunJob(name, templateJSON string) (RunJob, bool, error) {
+	job, ok, err := s.GetRunJob(name)
+	if err != nil || !ok {
+		return RunJob{}, ok, err
+	}
+	if templateJSON != "" {
+		job.TemplateJSON = templateJSON
+	}
+	job.Generation++
+	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.Exec(
+		`UPDATE run_jobs SET generation = ?, template_json = ?, updated_at = ? WHERE name = ?`,
+		job.Generation, job.TemplateJSON, job.UpdatedAt, name,
+	)
+	if err != nil {
+		return RunJob{}, false, fmt.Errorf("update run job: %w", err)
+	}
+	return job, true, nil
+}
+
+// DeleteRunJob removes a job.
+func (s *Store) DeleteRunJob(name string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM run_jobs WHERE name = ?`, name)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
 		return false, err
 	}
 	return n > 0, nil
@@ -435,12 +592,15 @@ func (s *Store) CreateSchedulerJob(job SchedulerJob) (created bool, err error) {
 	if job.UpdatedAt == "" {
 		job.UpdatedAt = job.CreatedAt
 	}
+	if job.NextRunTime == "" {
+		job.NextRunTime = NextCronRunRFC3339(job.Schedule, job.TimeZone, time.Now().UTC())
+	}
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO scheduler_jobs
-		 (name, project_id, location, job_id, schedule, time_zone, state, http_target_json, pubsub_target_json, last_attempt_time, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (name, project_id, location, job_id, schedule, time_zone, state, http_target_json, pubsub_target_json, oidc_audience, next_run_time, last_attempt_time, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.Name, job.ProjectID, job.Location, job.JobID, job.Schedule, job.TimeZone, job.State,
-		job.HTTPTargetJSON, job.PubsubTargetJSON, job.LastAttemptTime, job.CreatedAt, job.UpdatedAt,
+		job.HTTPTargetJSON, job.PubsubTargetJSON, job.OIDCAudience, job.NextRunTime, job.LastAttemptTime, job.CreatedAt, job.UpdatedAt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("create scheduler job: %w", err)
@@ -457,11 +617,11 @@ func (s *Store) GetSchedulerJob(name string) (SchedulerJob, bool, error) {
 	var job SchedulerJob
 	err := s.db.QueryRow(
 		`SELECT name, project_id, location, job_id, schedule, time_zone, state, http_target_json, pubsub_target_json,
-		        last_attempt_time, created_at, updated_at
+		        oidc_audience, next_run_time, last_attempt_time, created_at, updated_at
 		 FROM scheduler_jobs WHERE name = ?`, name,
 	).Scan(
 		&job.Name, &job.ProjectID, &job.Location, &job.JobID, &job.Schedule, &job.TimeZone, &job.State,
-		&job.HTTPTargetJSON, &job.PubsubTargetJSON, &job.LastAttemptTime, &job.CreatedAt, &job.UpdatedAt,
+		&job.HTTPTargetJSON, &job.PubsubTargetJSON, &job.OIDCAudience, &job.NextRunTime, &job.LastAttemptTime, &job.CreatedAt, &job.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return SchedulerJob{}, false, nil
@@ -476,7 +636,7 @@ func (s *Store) GetSchedulerJob(name string) (SchedulerJob, bool, error) {
 func (s *Store) ListSchedulerJobs(projectID, location string) ([]SchedulerJob, error) {
 	rows, err := s.db.Query(
 		`SELECT name, project_id, location, job_id, schedule, time_zone, state, http_target_json, pubsub_target_json,
-		        last_attempt_time, created_at, updated_at
+		        oidc_audience, next_run_time, last_attempt_time, created_at, updated_at
 		 FROM scheduler_jobs WHERE project_id = ? AND location = ? ORDER BY name`,
 		projectID, location,
 	)
@@ -489,7 +649,7 @@ func (s *Store) ListSchedulerJobs(projectID, location string) ([]SchedulerJob, e
 		var job SchedulerJob
 		if err := rows.Scan(
 			&job.Name, &job.ProjectID, &job.Location, &job.JobID, &job.Schedule, &job.TimeZone, &job.State,
-			&job.HTTPTargetJSON, &job.PubsubTargetJSON, &job.LastAttemptTime, &job.CreatedAt, &job.UpdatedAt,
+			&job.HTTPTargetJSON, &job.PubsubTargetJSON, &job.OIDCAudience, &job.NextRunTime, &job.LastAttemptTime, &job.CreatedAt, &job.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -501,11 +661,14 @@ func (s *Store) ListSchedulerJobs(projectID, location string) ([]SchedulerJob, e
 // UpdateSchedulerJob replaces mutable job fields.
 func (s *Store) UpdateSchedulerJob(job SchedulerJob) (bool, error) {
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if job.NextRunTime == "" {
+		job.NextRunTime = NextCronRunRFC3339(job.Schedule, job.TimeZone, time.Now().UTC())
+	}
 	res, err := s.db.Exec(
 		`UPDATE scheduler_jobs SET schedule = ?, time_zone = ?, state = ?, http_target_json = ?, pubsub_target_json = ?,
-		 last_attempt_time = ?, updated_at = ? WHERE name = ?`,
+		 oidc_audience = ?, next_run_time = ?, last_attempt_time = ?, updated_at = ? WHERE name = ?`,
 		job.Schedule, job.TimeZone, job.State, job.HTTPTargetJSON, job.PubsubTargetJSON,
-		job.LastAttemptTime, job.UpdatedAt, job.Name,
+		job.OIDCAudience, job.NextRunTime, job.LastAttemptTime, job.UpdatedAt, job.Name,
 	)
 	if err != nil {
 		return false, fmt.Errorf("update scheduler job: %w", err)
@@ -530,12 +693,20 @@ func (s *Store) DeleteSchedulerJob(name string) (bool, error) {
 	return n > 0, nil
 }
 
-// MarkSchedulerJobAttempt sets last_attempt_time.
+// MarkSchedulerJobAttempt sets last_attempt_time and refreshes next_run_time.
 func (s *Store) MarkSchedulerJobAttempt(name string) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(
-		`UPDATE scheduler_jobs SET last_attempt_time = ?, updated_at = ? WHERE name = ?`,
-		now, now, name,
+	job, ok, err := s.GetSchedulerJob(name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	next := NextCronRunRFC3339(job.Schedule, job.TimeZone, now)
+	_, err = s.db.Exec(
+		`UPDATE scheduler_jobs SET last_attempt_time = ?, next_run_time = ?, updated_at = ? WHERE name = ?`,
+		now.Format(time.RFC3339Nano), next, now.Format(time.RFC3339Nano), name,
 	)
 	if err != nil {
 		return fmt.Errorf("mark scheduler attempt: %w", err)
@@ -551,13 +722,20 @@ func (s *Store) CreateCloudTasksQueue(q CloudTasksQueue) (created bool, err erro
 	if q.State == "" {
 		q.State = "RUNNING"
 	}
+	if q.RateLimitsJSON == "" {
+		q.RateLimitsJSON = `{"maxDispatchesPerSecond":500,"maxBurstSize":100,"maxConcurrentDispatches":1000}`
+	}
+	if q.RetryConfigJSON == "" {
+		q.RetryConfigJSON = `{"maxAttempts":100,"maxRetryDuration":"0s","minBackoff":"0.100s","maxBackoff":"3600s","maxDoublings":16}`
+	}
 	if q.CreatedAt == "" {
 		q.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO cloud_tasks_queues (name, project_id, location, queue_id, state, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		q.Name, q.ProjectID, q.Location, q.QueueID, q.State, q.CreatedAt,
+		`INSERT OR IGNORE INTO cloud_tasks_queues
+		 (name, project_id, location, queue_id, state, rate_limits_json, retry_config_json, app_engine_routing_override_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		q.Name, q.ProjectID, q.Location, q.QueueID, q.State, q.RateLimitsJSON, q.RetryConfigJSON, q.AppEngineRoutingOverrideJSON, q.CreatedAt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("create cloud tasks queue: %w", err)
@@ -573,8 +751,9 @@ func (s *Store) CreateCloudTasksQueue(q CloudTasksQueue) (created bool, err erro
 func (s *Store) GetCloudTasksQueue(name string) (CloudTasksQueue, bool, error) {
 	var q CloudTasksQueue
 	err := s.db.QueryRow(
-		`SELECT name, project_id, location, queue_id, state, created_at FROM cloud_tasks_queues WHERE name = ?`, name,
-	).Scan(&q.Name, &q.ProjectID, &q.Location, &q.QueueID, &q.State, &q.CreatedAt)
+		`SELECT name, project_id, location, queue_id, state, rate_limits_json, retry_config_json, app_engine_routing_override_json, created_at
+		 FROM cloud_tasks_queues WHERE name = ?`, name,
+	).Scan(&q.Name, &q.ProjectID, &q.Location, &q.QueueID, &q.State, &q.RateLimitsJSON, &q.RetryConfigJSON, &q.AppEngineRoutingOverrideJSON, &q.CreatedAt)
 	if err == sql.ErrNoRows {
 		return CloudTasksQueue{}, false, nil
 	}
@@ -587,7 +766,7 @@ func (s *Store) GetCloudTasksQueue(name string) (CloudTasksQueue, bool, error) {
 // ListCloudTasksQueues lists queues under project/location.
 func (s *Store) ListCloudTasksQueues(projectID, location string) ([]CloudTasksQueue, error) {
 	rows, err := s.db.Query(
-		`SELECT name, project_id, location, queue_id, state, created_at
+		`SELECT name, project_id, location, queue_id, state, rate_limits_json, retry_config_json, app_engine_routing_override_json, created_at
 		 FROM cloud_tasks_queues WHERE project_id = ? AND location = ? ORDER BY name`,
 		projectID, location,
 	)
@@ -598,12 +777,29 @@ func (s *Store) ListCloudTasksQueues(projectID, location string) ([]CloudTasksQu
 	var out []CloudTasksQueue
 	for rows.Next() {
 		var q CloudTasksQueue
-		if err := rows.Scan(&q.Name, &q.ProjectID, &q.Location, &q.QueueID, &q.State, &q.CreatedAt); err != nil {
+		if err := rows.Scan(&q.Name, &q.ProjectID, &q.Location, &q.QueueID, &q.State, &q.RateLimitsJSON, &q.RetryConfigJSON, &q.AppEngineRoutingOverrideJSON, &q.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, q)
 	}
 	return out, rows.Err()
+}
+
+// UpdateCloudTasksQueue patches rate limits, retry config, routing override, and state.
+func (s *Store) UpdateCloudTasksQueue(q CloudTasksQueue) (bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE cloud_tasks_queues SET state = ?, rate_limits_json = ?, retry_config_json = ?, app_engine_routing_override_json = ?
+		 WHERE name = ?`,
+		q.State, q.RateLimitsJSON, q.RetryConfigJSON, q.AppEngineRoutingOverrideJSON, q.Name,
+	)
+	if err != nil {
+		return false, fmt.Errorf("update cloud tasks queue: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // DeleteCloudTasksQueue removes a queue and its tasks.
@@ -661,9 +857,10 @@ func (s *Store) CreateCloudTask(task CloudTask) (created bool, err error) {
 	}
 	task.HTTPRequestJSON = StripTaskAuthTokens(task.HTTPRequestJSON)
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO cloud_tasks (name, queue_name, schedule_time, create_time, http_request_json, dispatch_count)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		task.Name, task.QueueName, task.ScheduleTime, task.CreateTime, task.HTTPRequestJSON, task.DispatchCount,
+		`INSERT OR IGNORE INTO cloud_tasks
+		 (name, queue_name, schedule_time, create_time, http_request_json, app_engine_http_request_json, dispatch_count, response_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.Name, task.QueueName, task.ScheduleTime, task.CreateTime, task.HTTPRequestJSON, task.AppEngineHTTPRequestJSON, task.DispatchCount, task.ResponseCount,
 	)
 	if err != nil {
 		return false, fmt.Errorf("create cloud task: %w", err)
@@ -679,9 +876,9 @@ func (s *Store) CreateCloudTask(task CloudTask) (created bool, err error) {
 func (s *Store) GetCloudTask(name string) (CloudTask, bool, error) {
 	var t CloudTask
 	err := s.db.QueryRow(
-		`SELECT name, queue_name, schedule_time, create_time, http_request_json, dispatch_count
+		`SELECT name, queue_name, schedule_time, create_time, http_request_json, app_engine_http_request_json, dispatch_count, response_count
 		 FROM cloud_tasks WHERE name = ?`, name,
-	).Scan(&t.Name, &t.QueueName, &t.ScheduleTime, &t.CreateTime, &t.HTTPRequestJSON, &t.DispatchCount)
+	).Scan(&t.Name, &t.QueueName, &t.ScheduleTime, &t.CreateTime, &t.HTTPRequestJSON, &t.AppEngineHTTPRequestJSON, &t.DispatchCount, &t.ResponseCount)
 	if err == sql.ErrNoRows {
 		return CloudTask{}, false, nil
 	}
@@ -694,7 +891,7 @@ func (s *Store) GetCloudTask(name string) (CloudTask, bool, error) {
 // ListCloudTasks lists tasks in a queue.
 func (s *Store) ListCloudTasks(queueName string) ([]CloudTask, error) {
 	rows, err := s.db.Query(
-		`SELECT name, queue_name, schedule_time, create_time, http_request_json, dispatch_count
+		`SELECT name, queue_name, schedule_time, create_time, http_request_json, app_engine_http_request_json, dispatch_count, response_count
 		 FROM cloud_tasks WHERE queue_name = ? ORDER BY create_time`,
 		queueName,
 	)
@@ -705,7 +902,7 @@ func (s *Store) ListCloudTasks(queueName string) ([]CloudTask, error) {
 	var out []CloudTask
 	for rows.Next() {
 		var t CloudTask
-		if err := rows.Scan(&t.Name, &t.QueueName, &t.ScheduleTime, &t.CreateTime, &t.HTTPRequestJSON, &t.DispatchCount); err != nil {
+		if err := rows.Scan(&t.Name, &t.QueueName, &t.ScheduleTime, &t.CreateTime, &t.HTTPRequestJSON, &t.AppEngineHTTPRequestJSON, &t.DispatchCount, &t.ResponseCount); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -740,4 +937,123 @@ func (s *Store) IncrementCloudTaskDispatch(name string) (CloudTask, bool, error)
 		return CloudTask{}, false, nil
 	}
 	return s.GetCloudTask(name)
+}
+
+// IncrementCloudTaskResponse bumps response_count after a dispatch attempt completes.
+func (s *Store) IncrementCloudTaskResponse(name string) error {
+	_, err := s.db.Exec(`UPDATE cloud_tasks SET response_count = response_count + 1 WHERE name = ?`, name)
+	if err != nil {
+		return fmt.Errorf("increment task response: %w", err)
+	}
+	return nil
+}
+
+// StripSchedulerOIDC removes oidcToken from httpTarget JSON and returns audience if present.
+func StripSchedulerOIDC(httpTargetJSON string) (cleaned string, audience string) {
+	if strings.TrimSpace(httpTargetJSON) == "" {
+		return "", ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(httpTargetJSON), &m); err != nil {
+		return httpTargetJSON, ""
+	}
+	if oidc, ok := m["oidcToken"].(map[string]any); ok {
+		if aud, ok := oidc["audience"].(string); ok {
+			audience = aud
+		}
+		delete(m, "oidcToken")
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return httpTargetJSON, audience
+	}
+	return string(raw), audience
+}
+
+// NextCronRunRFC3339 best-effort next run for a 5-field cron (minute hour dom mon dow).
+// Returns empty string when the expression cannot be evaluated.
+func NextCronRunRFC3339(schedule, timeZone string, from time.Time) string {
+	next, ok := nextCronRun(schedule, timeZone, from)
+	if !ok {
+		return ""
+	}
+	return next.UTC().Format(time.RFC3339Nano)
+}
+
+func nextCronRun(schedule, timeZone string, from time.Time) (time.Time, bool) {
+	fields := strings.Fields(strings.TrimSpace(schedule))
+	if len(fields) != 5 {
+		return time.Time{}, false
+	}
+	loc := time.UTC
+	if timeZone != "" && !strings.EqualFold(timeZone, "UTC") {
+		if l, err := time.LoadLocation(timeZone); err == nil {
+			loc = l
+		}
+	}
+	t := from.In(loc).Add(time.Minute).Truncate(time.Minute)
+	// Scan up to ~2 years of minutes.
+	for i := 0; i < 60*24*366*2; i++ {
+		if cronFieldMatch(fields[0], t.Minute(), 0, 59) &&
+			cronFieldMatch(fields[1], t.Hour(), 0, 23) &&
+			cronFieldMatch(fields[2], t.Day(), 1, 31) &&
+			cronFieldMatch(fields[3], int(t.Month()), 1, 12) &&
+			cronFieldMatch(fields[4], int(t.Weekday()), 0, 6) {
+			return t, true
+		}
+		t = t.Add(time.Minute)
+	}
+	return time.Time{}, false
+}
+
+func cronFieldMatch(field string, value, min, max int) bool {
+	field = strings.TrimSpace(field)
+	if field == "*" || field == "?" {
+		return true
+	}
+	for _, part := range strings.Split(field, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		step := 1
+		base := part
+		if strings.Contains(part, "/") {
+			bits := strings.SplitN(part, "/", 2)
+			base = bits[0]
+			if _, err := fmt.Sscanf(bits[1], "%d", &step); err != nil || step < 1 {
+				return false
+			}
+		}
+		if base == "*" {
+			if (value-min)%step == 0 {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(base, "-") {
+			var a, b int
+			if _, err := fmt.Sscanf(base, "%d-%d", &a, &b); err != nil {
+				return false
+			}
+			if value >= a && value <= b && (value-a)%step == 0 {
+				return true
+			}
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(base, "%d", &n); err != nil {
+			return false
+		}
+		if step > 1 {
+			if value >= n && (value-n)%step == 0 && value <= max {
+				return true
+			}
+			continue
+		}
+		if n == value {
+			return true
+		}
+	}
+	return false
 }

@@ -53,6 +53,15 @@ func (s *Store) migrate() error {
 	if err := s.migrateExpandAnalytics(); err != nil {
 		return err
 	}
+	if err := s.migrateExpandStage2ArCb(); err != nil {
+		return err
+	}
+	if err := s.migrateExpandStage2AppEngineCRM(); err != nil {
+		return err
+	}
+	if err := s.migrateExpandStage2WorkflowsSpanner(); err != nil {
+		return err
+	}
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(1) FROM schema_version`).Scan(&n)
 	if err != nil {
@@ -80,8 +89,21 @@ func (s *Store) ensureDataColumns() error {
 		`ALTER TABLE pubsub_topics ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE pubsub_subscriptions ADD COLUMN push_endpoint TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE pubsub_subscriptions ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE pubsub_subscriptions ADD COLUMN filter TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE secrets ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE secrets ADD COLUMN annotations_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE secrets ADD COLUMN replication_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE secrets ADD COLUMN cmek_kms_key_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE run_services ADD COLUMN traffic_json TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE scheduler_jobs ADD COLUMN oidc_audience TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE scheduler_jobs ADD COLUMN next_run_time TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_tasks_queues ADD COLUMN rate_limits_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE cloud_tasks_queues ADD COLUMN retry_config_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE cloud_tasks_queues ADD COLUMN app_engine_routing_override_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_tasks ADD COLUMN app_engine_http_request_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_tasks ADD COLUMN response_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE service_accounts ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE kms_keys ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}'`,
 	}
 	for _, stmt := range alters {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -90,6 +112,15 @@ func (s *Store) ensureDataColumns() error {
 				return fmt.Errorf("migrate column: %w", err)
 			}
 		}
+	}
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS gcs_upload_sessions (
+  upload_id TEXT PRIMARY KEY,
+  bucket TEXT NOT NULL,
+  name TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  created_at TEXT NOT NULL
+)`); err != nil {
+		return fmt.Errorf("migrate upload sessions: %w", err)
 	}
 	return nil
 }
@@ -191,6 +222,11 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 		"monitoring.googleapis.com",
 		"datastore.googleapis.com",
 		"eventarc.googleapis.com",
+		"appengine.googleapis.com",
+		"artifactregistry.googleapis.com",
+		"cloudbuild.googleapis.com",
+		"workflows.googleapis.com",
+		"spanner.googleapis.com",
 	}
 	for _, svc := range wave1 {
 		if _, err := tx.Exec(
@@ -201,7 +237,12 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Lab org is outside the project seed transaction so concurrent Stage 2
+	// schema work can own the organizations table without fighting this tx.
+	return s.EnsureLabOrganization()
 }
 
 // LookupAccessToken resolves a token hash to a principal when not expired.

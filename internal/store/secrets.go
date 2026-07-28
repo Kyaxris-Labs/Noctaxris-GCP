@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,11 +17,13 @@ const (
 
 // Secret is Secret Manager secret metadata.
 type Secret struct {
-	Name        string
-	ProjectID   string
-	Labels      map[string]string
-	Annotations map[string]string
-	CreatedAt   string
+	Name           string
+	ProjectID      string
+	Labels         map[string]string
+	Annotations    map[string]string
+	Replication    map[string]any
+	CMEKKmsKeyName string
+	CreatedAt      string
 }
 
 // SecretVersion is a sealed secret version row.
@@ -35,11 +38,12 @@ type SecretVersion struct {
 
 // CreateSecret inserts a secret. created=false means already exists.
 func (s *Store) CreateSecret(name, projectID string) (*Secret, bool, error) {
-	return s.CreateSecretWithMeta(name, projectID, nil, nil)
+	return s.CreateSecretWithMeta(name, projectID, nil, nil, nil, "")
 }
 
-// CreateSecretWithMeta inserts a secret with optional labels/annotations.
-func (s *Store) CreateSecretWithMeta(name, projectID string, labels, annotations map[string]string) (*Secret, bool, error) {
+// CreateSecretWithMeta inserts a secret with optional labels/annotations/replication/CMEK name.
+// replication is stored as JSON theatre; CMEK key name is stored but not enforced for seal/unseal.
+func (s *Store) CreateSecretWithMeta(name, projectID string, labels, annotations map[string]string, replication map[string]any, cmekKmsKeyName string) (*Secret, bool, error) {
 	name = strings.TrimSpace(name)
 	projectID = strings.TrimSpace(projectID)
 	if name == "" || projectID == "" {
@@ -51,10 +55,14 @@ func (s *Store) CreateSecretWithMeta(name, projectID string, labels, annotations
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
+	if replication == nil {
+		replication = map[string]any{"automatic": map[string]any{}}
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO secrets (name, project_id, labels_json, annotations_json, created_at) VALUES (?, ?, ?, ?, ?)`,
-		name, projectID, encodeStringMap(labels), encodeStringMap(annotations), now,
+		`INSERT OR IGNORE INTO secrets (name, project_id, labels_json, annotations_json, replication_json, cmek_kms_key_name, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		name, projectID, encodeStringMap(labels), encodeStringMap(annotations), encodeAnyMap(replication), strings.TrimSpace(cmekKmsKeyName), now,
 	)
 	if err != nil {
 		return nil, false, err
@@ -66,16 +74,20 @@ func (s *Store) CreateSecretWithMeta(name, projectID string, labels, annotations
 	if n == 0 {
 		return nil, false, nil
 	}
-	return &Secret{Name: name, ProjectID: projectID, Labels: labels, Annotations: annotations, CreatedAt: now}, true, nil
+	return &Secret{
+		Name: name, ProjectID: projectID, Labels: labels, Annotations: annotations,
+		Replication: replication, CMEKKmsKeyName: strings.TrimSpace(cmekKmsKeyName), CreatedAt: now,
+	}, true, nil
 }
 
 // GetSecret loads secret metadata.
 func (s *Store) GetSecret(name string) (*Secret, bool, error) {
 	var sec Secret
-	var labelsJSON, annotationsJSON string
+	var labelsJSON, annotationsJSON, replicationJSON string
 	err := s.db.QueryRow(
-		`SELECT name, project_id, COALESCE(labels_json, '{}'), COALESCE(annotations_json, '{}'), created_at FROM secrets WHERE name = ?`, name,
-	).Scan(&sec.Name, &sec.ProjectID, &labelsJSON, &annotationsJSON, &sec.CreatedAt)
+		`SELECT name, project_id, COALESCE(labels_json, '{}'), COALESCE(annotations_json, '{}'),
+		 COALESCE(replication_json, '{}'), COALESCE(cmek_kms_key_name, ''), created_at FROM secrets WHERE name = ?`, name,
+	).Scan(&sec.Name, &sec.ProjectID, &labelsJSON, &annotationsJSON, &replicationJSON, &sec.CMEKKmsKeyName, &sec.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
@@ -84,6 +96,7 @@ func (s *Store) GetSecret(name string) (*Secret, bool, error) {
 	}
 	sec.Labels = decodeStringMap(labelsJSON)
 	sec.Annotations = decodeStringMap(annotationsJSON)
+	sec.Replication = decodeAnyMap(replicationJSON)
 	return &sec, true, nil
 }
 
@@ -121,7 +134,8 @@ func (s *Store) PatchSecret(name string, labels, annotations *map[string]string)
 // ListSecrets lists secrets for a project id.
 func (s *Store) ListSecrets(projectID string) ([]Secret, error) {
 	rows, err := s.db.Query(
-		`SELECT name, project_id, COALESCE(labels_json, '{}'), COALESCE(annotations_json, '{}'), created_at
+		`SELECT name, project_id, COALESCE(labels_json, '{}'), COALESCE(annotations_json, '{}'),
+		 COALESCE(replication_json, '{}'), COALESCE(cmek_kms_key_name, ''), created_at
 		 FROM secrets WHERE project_id = ? ORDER BY name`,
 		projectID,
 	)
@@ -132,12 +146,13 @@ func (s *Store) ListSecrets(projectID string) ([]Secret, error) {
 	var out []Secret
 	for rows.Next() {
 		var sec Secret
-		var labelsJSON, annotationsJSON string
-		if err := rows.Scan(&sec.Name, &sec.ProjectID, &labelsJSON, &annotationsJSON, &sec.CreatedAt); err != nil {
+		var labelsJSON, annotationsJSON, replicationJSON string
+		if err := rows.Scan(&sec.Name, &sec.ProjectID, &labelsJSON, &annotationsJSON, &replicationJSON, &sec.CMEKKmsKeyName, &sec.CreatedAt); err != nil {
 			return nil, err
 		}
 		sec.Labels = decodeStringMap(labelsJSON)
 		sec.Annotations = decodeStringMap(annotationsJSON)
+		sec.Replication = decodeAnyMap(replicationJSON)
 		out = append(out, sec)
 	}
 	return out, rows.Err()
@@ -298,12 +313,24 @@ func (s *Store) SetSecretVersionState(secretName, versionID, state string) (*Sec
 }
 
 // ListSecretVersions lists versions for a secret.
-func (s *Store) ListSecretVersions(secretName string) ([]SecretVersion, error) {
-	rows, err := s.db.Query(
-		`SELECT name, secret_name, version_id, payload_ciphertext, state, created_at
-		 FROM secret_versions WHERE secret_name = ? ORDER BY CAST(version_id AS INTEGER)`,
-		secretName,
-	)
+// stateFilter may be empty (all) or ENABLED / DISABLED / DESTROYED.
+func (s *Store) ListSecretVersions(secretName, stateFilter string) ([]SecretVersion, error) {
+	stateFilter = strings.ToUpper(strings.TrimSpace(stateFilter))
+	var rows *sql.Rows
+	var err error
+	if stateFilter == "" {
+		rows, err = s.db.Query(
+			`SELECT name, secret_name, version_id, payload_ciphertext, state, created_at
+			 FROM secret_versions WHERE secret_name = ? ORDER BY CAST(version_id AS INTEGER)`,
+			secretName,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT name, secret_name, version_id, payload_ciphertext, state, created_at
+			 FROM secret_versions WHERE secret_name = ? AND state = ? ORDER BY CAST(version_id AS INTEGER)`,
+			secretName, stateFilter,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -317,6 +344,29 @@ func (s *Store) ListSecretVersions(secretName string) ([]SecretVersion, error) {
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+func encodeAnyMap(m map[string]any) string {
+	if m == nil {
+		return "{}"
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
+func decodeAnyMap(raw string) map[string]any {
+	out := map[string]any{}
+	if raw == "" || raw == "{}" {
+		return out
+	}
+	_ = json.Unmarshal([]byte(raw), &out)
+	if out == nil {
+		out = map[string]any{}
+	}
+	return out
 }
 
 // ParseSecretVersionName splits projects/.../secrets/.../versions/... or .../secrets/... + version.

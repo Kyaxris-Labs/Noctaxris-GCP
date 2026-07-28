@@ -48,6 +48,19 @@ CREATE TABLE IF NOT EXISTS bq_rows (
 
 CREATE INDEX IF NOT EXISTS idx_bq_rows_table ON bq_rows (project_id, dataset_id, table_id);
 
+CREATE TABLE IF NOT EXISTS bq_jobs (
+  project_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  location TEXT NOT NULL DEFAULT 'US',
+  state TEXT NOT NULL DEFAULT 'DONE',
+  query TEXT NOT NULL DEFAULT '',
+  dry_run INTEGER NOT NULL DEFAULT 0,
+  error_json TEXT NOT NULL DEFAULT '',
+  result_json TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, job_id)
+);
+
 CREATE TABLE IF NOT EXISTS firebase_users (
   local_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -88,6 +101,21 @@ CREATE TABLE IF NOT EXISTS time_series_points (
 
 CREATE INDEX IF NOT EXISTS idx_ts_points ON time_series_points (project_id, metric_type, end_time);
 
+CREATE TABLE IF NOT EXISTS alert_policies (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  policy_id TEXT NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  combiner TEXT NOT NULL DEFAULT 'OR',
+  conditions_json TEXT NOT NULL DEFAULT '[]',
+  documentation_json TEXT NOT NULL DEFAULT '{}',
+  user_labels_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, policy_id)
+);
+
 CREATE TABLE IF NOT EXISTS datastore_entities (
   project_id TEXT NOT NULL,
   namespace TEXT NOT NULL DEFAULT '',
@@ -100,6 +128,13 @@ CREATE TABLE IF NOT EXISTS datastore_entities (
   PRIMARY KEY (project_id, namespace, key_path)
 );
 
+CREATE TABLE IF NOT EXISTS datastore_transactions (
+  token TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  database_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS eventarc_triggers (
   name TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -108,14 +143,49 @@ CREATE TABLE IF NOT EXISTS eventarc_triggers (
   filters_json TEXT NOT NULL DEFAULT '[]',
   destination_json TEXT NOT NULL DEFAULT '{}',
   transport_json TEXT NOT NULL DEFAULT '{}',
+  channel TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   UNIQUE (project_id, location, trigger_id)
+);
+
+CREATE TABLE IF NOT EXISTS eventarc_channels (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  location TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  uid TEXT NOT NULL DEFAULT '',
+  provider TEXT NOT NULL DEFAULT '',
+  pubsub_topic TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at TEXT NOT NULL,
+  UNIQUE (project_id, location, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS firebase_oob_codes (
+  oob_code TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  request_type TEXT NOT NULL,
+  local_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0
 );
 `
 
 func (s *Store) migrateExpandAnalytics() error {
 	if _, err := s.db.Exec(expandAnalyticsSchema); err != nil {
 		return fmt.Errorf("apply expand analytics schema: %w", err)
+	}
+	alters := []string{
+		`ALTER TABLE eventarc_triggers ADD COLUMN channel TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range alters {
+		if _, err := s.db.Exec(stmt); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return fmt.Errorf("migrate expand analytics column: %w", err)
+			}
+		}
 	}
 	return nil
 }
@@ -379,10 +449,21 @@ func (s *Store) InsertBQRows(projectID, datasetID, tableID string, rows []map[st
 
 // ListBQRows returns all rows for a table as JSON objects.
 func (s *Store) ListBQRows(projectID, datasetID, tableID string) ([]map[string]any, error) {
-	rows, err := s.db.Query(
-		`SELECT row_json FROM bq_rows WHERE project_id = ? AND dataset_id = ? AND table_id = ? ORDER BY created_at`,
-		projectID, datasetID, tableID,
-	)
+	return s.ListBQRowsPage(projectID, datasetID, tableID, 0, 0)
+}
+
+// ListBQRowsPage returns rows with optional start offset and maxRows (0 = no cap after offset).
+func (s *Store) ListBQRowsPage(projectID, datasetID, tableID string, startIndex, maxRows int) ([]map[string]any, error) {
+	q := `SELECT row_json FROM bq_rows WHERE project_id = ? AND dataset_id = ? AND table_id = ? ORDER BY created_at, id`
+	args := []any{projectID, datasetID, tableID}
+	if maxRows > 0 {
+		q += ` LIMIT ? OFFSET ?`
+		args = append(args, maxRows, startIndex)
+	} else if startIndex > 0 {
+		q += ` LIMIT -1 OFFSET ?`
+		args = append(args, startIndex)
+	}
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -400,6 +481,82 @@ func (s *Store) ListBQRows(projectID, datasetID, tableID string) ([]map[string]a
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// CountBQRows returns the number of stored rows for a table.
+func (s *Store) CountBQRows(projectID, datasetID, tableID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM bq_rows WHERE project_id = ? AND dataset_id = ? AND table_id = ?`,
+		projectID, datasetID, tableID,
+	).Scan(&n)
+	return n, err
+}
+
+// BQJob is a stored BigQuery job row.
+type BQJob struct {
+	ProjectID  string
+	JobID      string
+	Location   string
+	State      string
+	Query      string
+	DryRun     bool
+	ErrorJSON  string
+	ResultJSON string
+	CreatedAt  string
+}
+
+// PutBQJob upserts a job.
+func (s *Store) PutBQJob(j BQJob) error {
+	j.ProjectID = strings.TrimSpace(j.ProjectID)
+	j.JobID = strings.TrimSpace(j.JobID)
+	if j.ProjectID == "" || j.JobID == "" {
+		return fmt.Errorf("project and job id required")
+	}
+	if j.Location == "" {
+		j.Location = "US"
+	}
+	if j.State == "" {
+		j.State = "DONE"
+	}
+	if j.CreatedAt == "" {
+		j.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	dry := 0
+	if j.DryRun {
+		dry = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO bq_jobs (project_id, job_id, location, state, query, dry_run, error_json, result_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(project_id, job_id) DO UPDATE SET
+		   state = excluded.state,
+		   query = excluded.query,
+		   dry_run = excluded.dry_run,
+		   error_json = excluded.error_json,
+		   result_json = excluded.result_json`,
+		j.ProjectID, j.JobID, j.Location, j.State, j.Query, dry, j.ErrorJSON, j.ResultJSON, j.CreatedAt,
+	)
+	return err
+}
+
+// GetBQJob loads a job by project and job id.
+func (s *Store) GetBQJob(projectID, jobID string) (*BQJob, bool, error) {
+	var j BQJob
+	var dry int
+	err := s.db.QueryRow(
+		`SELECT project_id, job_id, location, state, query, dry_run, error_json, result_json, created_at
+		 FROM bq_jobs WHERE project_id = ? AND job_id = ?`,
+		projectID, jobID,
+	).Scan(&j.ProjectID, &j.JobID, &j.Location, &j.State, &j.Query, &dry, &j.ErrorJSON, &j.ResultJSON, &j.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	j.DryRun = dry != 0
+	return &j, true, nil
 }
 
 // --- Firebase Auth ---
@@ -490,13 +647,27 @@ func (s *Store) scanFirebaseUser(q string, args ...any) (*FirebaseUser, bool, er
 
 // ListFirebaseUsers lists users for a project.
 func (s *Store) ListFirebaseUsers(projectID string) ([]FirebaseUser, error) {
-	rows, err := s.db.Query(
-		`SELECT local_id, project_id, email, password_hash, display_name, disabled, custom_attributes, created_at
-		 FROM firebase_users WHERE project_id = ? ORDER BY email`,
-		projectID,
-	)
+	list, _, err := s.ListFirebaseUsersPage(projectID, 0, "")
+	return list, err
+}
+
+// ListFirebaseUsersPage lists users with optional pageSize and pageToken (local_id cursor).
+func (s *Store) ListFirebaseUsersPage(projectID string, pageSize int, pageToken string) ([]FirebaseUser, string, error) {
+	if pageSize <= 0 {
+		pageSize = 1000
+	}
+	q := `SELECT local_id, project_id, email, password_hash, display_name, disabled, custom_attributes, created_at
+	      FROM firebase_users WHERE project_id = ?`
+	args := []any{projectID}
+	if pageToken != "" {
+		q += ` AND local_id > ?`
+		args = append(args, pageToken)
+	}
+	q += ` ORDER BY local_id LIMIT ?`
+	args = append(args, pageSize+1)
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	var out []FirebaseUser
@@ -504,12 +675,105 @@ func (s *Store) ListFirebaseUsers(projectID string) ([]FirebaseUser, error) {
 		var u FirebaseUser
 		var disabled int
 		if err := rows.Scan(&u.LocalID, &u.ProjectID, &u.Email, &u.PasswordHash, &u.DisplayName, &disabled, &u.CustomAttributes, &u.CreatedAt); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		u.Disabled = disabled != 0
 		out = append(out, u)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) > pageSize {
+		next = out[pageSize-1].LocalID
+		out = out[:pageSize]
+	}
+	return out, next, nil
+}
+
+// FirebaseOOBCode is a password-reset (or similar) out-of-band code.
+type FirebaseOOBCode struct {
+	OOBCode     string
+	ProjectID   string
+	Email       string
+	RequestType string
+	LocalID     string
+	CreatedAt   string
+	ExpiresAt   string
+	Used        bool
+}
+
+// CreateFirebaseOOBCode stores a lab OOB code (password reset theatre).
+func (s *Store) CreateFirebaseOOBCode(c FirebaseOOBCode) error {
+	if c.OOBCode == "" || c.ProjectID == "" || c.Email == "" || c.RequestType == "" {
+		return fmt.Errorf("oob code, project, email, and request type required")
+	}
+	now := time.Now().UTC()
+	if c.CreatedAt == "" {
+		c.CreatedAt = now.Format(time.RFC3339Nano)
+	}
+	if c.ExpiresAt == "" {
+		c.ExpiresAt = now.Add(time.Hour).Format(time.RFC3339Nano)
+	}
+	used := 0
+	if c.Used {
+		used = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO firebase_oob_codes (oob_code, project_id, email, request_type, local_id, created_at, expires_at, used)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.OOBCode, c.ProjectID, strings.ToLower(strings.TrimSpace(c.Email)), c.RequestType, c.LocalID, c.CreatedAt, c.ExpiresAt, used,
+	)
+	return err
+}
+
+// GetFirebaseOOBCode loads an unused, unexpired OOB code.
+func (s *Store) GetFirebaseOOBCode(code string) (*FirebaseOOBCode, bool, error) {
+	var c FirebaseOOBCode
+	var used int
+	err := s.db.QueryRow(
+		`SELECT oob_code, project_id, email, request_type, local_id, created_at, expires_at, used
+		 FROM firebase_oob_codes WHERE oob_code = ?`, code,
+	).Scan(&c.OOBCode, &c.ProjectID, &c.Email, &c.RequestType, &c.LocalID, &c.CreatedAt, &c.ExpiresAt, &used)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	c.Used = used != 0
+	return &c, true, nil
+}
+
+// ConsumeFirebaseOOBCode marks a code used if still valid.
+func (s *Store) ConsumeFirebaseOOBCode(code string) (*FirebaseOOBCode, bool, error) {
+	c, ok, err := s.GetFirebaseOOBCode(code)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if c.Used {
+		return nil, false, nil
+	}
+	exp, err := time.Parse(time.RFC3339Nano, c.ExpiresAt)
+	if err != nil {
+		exp, err = time.Parse(time.RFC3339, c.ExpiresAt)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	if !time.Now().UTC().Before(exp) {
+		return nil, false, nil
+	}
+	res, err := s.db.Exec(`UPDATE firebase_oob_codes SET used = 1 WHERE oob_code = ? AND used = 0`, code)
+	if err != nil {
+		return nil, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return nil, false, err
+	}
+	c.Used = true
+	return c, true, nil
 }
 
 // UpdateFirebaseUser patches display name / disabled / custom attributes.
@@ -740,6 +1004,184 @@ func (s *Store) ListTimeSeriesPoints(f ListTimeSeriesFilter) ([]TimeSeriesPoint,
 	return out, rows.Err()
 }
 
+// DeleteTimeSeriesPoints deletes points matching project and optional metric type. Returns rows deleted.
+func (s *Store) DeleteTimeSeriesPoints(projectID, metricType string) (int64, error) {
+	if projectID == "" {
+		return 0, fmt.Errorf("project id required")
+	}
+	var (
+		res sql.Result
+		err error
+	)
+	if metricType == "" {
+		res, err = s.db.Exec(`DELETE FROM time_series_points WHERE project_id = ?`, projectID)
+	} else {
+		res, err = s.db.Exec(`DELETE FROM time_series_points WHERE project_id = ? AND metric_type = ?`, projectID, metricType)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("delete time series: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// AlertPolicyRow is a Cloud Monitoring alert policy metadata row (theatre).
+type AlertPolicyRow struct {
+	Name               string
+	ProjectID          string
+	PolicyID           string
+	DisplayName        string
+	Enabled            bool
+	Combiner           string
+	ConditionsJSON     string
+	DocumentationJSON  string
+	UserLabelsJSON     string
+	CreatedAt          string
+	UpdatedAt          string
+}
+
+// CreateAlertPolicy inserts an alert policy. created=false when already exists.
+func (s *Store) CreateAlertPolicy(p AlertPolicyRow) (*AlertPolicyRow, bool, error) {
+	p.ProjectID = strings.TrimSpace(p.ProjectID)
+	p.PolicyID = strings.TrimSpace(p.PolicyID)
+	if p.ProjectID == "" || p.PolicyID == "" {
+		return nil, false, fmt.Errorf("project and policy id required")
+	}
+	if p.Name == "" {
+		p.Name = "projects/" + p.ProjectID + "/alertPolicies/" + p.PolicyID
+	}
+	if p.Combiner == "" {
+		p.Combiner = "OR"
+	}
+	if p.ConditionsJSON == "" {
+		p.ConditionsJSON = "[]"
+	}
+	if p.DocumentationJSON == "" {
+		p.DocumentationJSON = "{}"
+	}
+	if p.UserLabelsJSON == "" {
+		p.UserLabelsJSON = "{}"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	p.CreatedAt = now
+	p.UpdatedAt = now
+	enabled := 1
+	if !p.Enabled {
+		enabled = 0
+	}
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO alert_policies
+		 (name, project_id, policy_id, display_name, enabled, combiner, conditions_json, documentation_json, user_labels_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.Name, p.ProjectID, p.PolicyID, p.DisplayName, enabled, p.Combiner, p.ConditionsJSON, p.DocumentationJSON, p.UserLabelsJSON, now, now,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("create alert policy: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if n == 0 {
+		return nil, false, nil
+	}
+	return &p, true, nil
+}
+
+// GetAlertPolicy loads by resource name.
+func (s *Store) GetAlertPolicy(name string) (*AlertPolicyRow, bool, error) {
+	var p AlertPolicyRow
+	var enabled int
+	err := s.db.QueryRow(
+		`SELECT name, project_id, policy_id, display_name, enabled, combiner, conditions_json, documentation_json, user_labels_json, created_at, updated_at
+		 FROM alert_policies WHERE name = ?`, name,
+	).Scan(&p.Name, &p.ProjectID, &p.PolicyID, &p.DisplayName, &enabled, &p.Combiner, &p.ConditionsJSON, &p.DocumentationJSON, &p.UserLabelsJSON, &p.CreatedAt, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("get alert policy: %w", err)
+	}
+	p.Enabled = enabled != 0
+	return &p, true, nil
+}
+
+// ListAlertPolicies lists policies for a project.
+func (s *Store) ListAlertPolicies(projectID string) ([]AlertPolicyRow, error) {
+	rows, err := s.db.Query(
+		`SELECT name, project_id, policy_id, display_name, enabled, combiner, conditions_json, documentation_json, user_labels_json, created_at, updated_at
+		 FROM alert_policies WHERE project_id = ? ORDER BY policy_id`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list alert policies: %w", err)
+	}
+	defer rows.Close()
+	var out []AlertPolicyRow
+	for rows.Next() {
+		var p AlertPolicyRow
+		var enabled int
+		if err := rows.Scan(&p.Name, &p.ProjectID, &p.PolicyID, &p.DisplayName, &enabled, &p.Combiner, &p.ConditionsJSON, &p.DocumentationJSON, &p.UserLabelsJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		p.Enabled = enabled != 0
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// UpdateAlertPolicy replaces theatre metadata for an existing policy.
+func (s *Store) UpdateAlertPolicy(p AlertPolicyRow) (*AlertPolicyRow, bool, error) {
+	if p.Name == "" {
+		return nil, false, fmt.Errorf("name required")
+	}
+	if p.Combiner == "" {
+		p.Combiner = "OR"
+	}
+	if p.ConditionsJSON == "" {
+		p.ConditionsJSON = "[]"
+	}
+	if p.DocumentationJSON == "" {
+		p.DocumentationJSON = "{}"
+	}
+	if p.UserLabelsJSON == "" {
+		p.UserLabelsJSON = "{}"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	enabled := 1
+	if !p.Enabled {
+		enabled = 0
+	}
+	res, err := s.db.Exec(
+		`UPDATE alert_policies SET display_name = ?, enabled = ?, combiner = ?, conditions_json = ?, documentation_json = ?, user_labels_json = ?, updated_at = ?
+		 WHERE name = ?`,
+		p.DisplayName, enabled, p.Combiner, p.ConditionsJSON, p.DocumentationJSON, p.UserLabelsJSON, now, p.Name,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("update alert policy: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if n == 0 {
+		return nil, false, nil
+	}
+	return s.GetAlertPolicy(p.Name)
+}
+
+// DeleteAlertPolicy removes a policy by name.
+func (s *Store) DeleteAlertPolicy(name string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM alert_policies WHERE name = ?`, name)
+	if err != nil {
+		return false, fmt.Errorf("delete alert policy: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // --- Datastore ---
 
 // DatastoreEntity is a Datastore entity row (distinct from Firestore).
@@ -890,6 +1332,57 @@ func (s *Store) NextDatastoreID(projectID, namespace, kind string) (int64, error
 	return max.Int64 + 1, nil
 }
 
+// PutDatastoreTransaction registers a lab transaction token (no isolation).
+func (s *Store) PutDatastoreTransaction(token, projectID, databaseID string) error {
+	if token == "" || projectID == "" {
+		return fmt.Errorf("datastore transaction requires token and project")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(
+		`INSERT INTO datastore_transactions (token, project_id, database_id, created_at) VALUES (?, ?, ?, ?)`,
+		token, projectID, databaseID, now,
+	)
+	if err != nil {
+		return fmt.Errorf("put datastore transaction: %w", err)
+	}
+	return nil
+}
+
+// ConsumeDatastoreTransaction deletes and validates a token for project. ok is false when missing.
+func (s *Store) ConsumeDatastoreTransaction(token, projectID string) (bool, error) {
+	if token == "" {
+		return false, nil
+	}
+	res, err := s.db.Exec(
+		`DELETE FROM datastore_transactions WHERE token = ? AND project_id = ?`,
+		token, projectID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("consume datastore transaction: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// DeleteDatastoreTransaction removes a token. ok is false when missing.
+func (s *Store) DeleteDatastoreTransaction(token string) (bool, error) {
+	if token == "" {
+		return false, nil
+	}
+	res, err := s.db.Exec(`DELETE FROM datastore_transactions WHERE token = ?`, token)
+	if err != nil {
+		return false, fmt.Errorf("delete datastore transaction: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // --- Eventarc ---
 
 // EventarcTrigger is a trigger row.
@@ -901,7 +1394,21 @@ type EventarcTrigger struct {
 	FiltersJSON     string
 	DestinationJSON string
 	TransportJSON   string
+	Channel         string
 	CreatedAt       string
+}
+
+// EventarcChannel is a channel stub row.
+type EventarcChannel struct {
+	Name        string
+	ProjectID   string
+	Location    string
+	ChannelID   string
+	UID         string
+	Provider    string
+	PubsubTopic string
+	State       string
+	CreatedAt   string
 }
 
 // CreateEventarcTrigger inserts a trigger. created=false means already exists.
@@ -928,9 +1435,9 @@ func (s *Store) CreateEventarcTrigger(t EventarcTrigger) (*EventarcTrigger, bool
 	t.CreatedAt = now
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO eventarc_triggers
-		 (name, project_id, location, trigger_id, filters_json, destination_json, transport_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.Name, t.ProjectID, t.Location, t.TriggerID, t.FiltersJSON, t.DestinationJSON, t.TransportJSON, now,
+		 (name, project_id, location, trigger_id, filters_json, destination_json, transport_json, channel, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.Name, t.ProjectID, t.Location, t.TriggerID, t.FiltersJSON, t.DestinationJSON, t.TransportJSON, t.Channel, now,
 	)
 	if err != nil {
 		return nil, false, err
@@ -949,10 +1456,10 @@ func (s *Store) CreateEventarcTrigger(t EventarcTrigger) (*EventarcTrigger, bool
 func (s *Store) GetEventarcTrigger(name string) (*EventarcTrigger, bool, error) {
 	var t EventarcTrigger
 	err := s.db.QueryRow(
-		`SELECT name, project_id, location, trigger_id, filters_json, destination_json, transport_json, created_at
+		`SELECT name, project_id, location, trigger_id, filters_json, destination_json, transport_json, channel, created_at
 		 FROM eventarc_triggers WHERE name = ?`,
 		name,
-	).Scan(&t.Name, &t.ProjectID, &t.Location, &t.TriggerID, &t.FiltersJSON, &t.DestinationJSON, &t.TransportJSON, &t.CreatedAt)
+	).Scan(&t.Name, &t.ProjectID, &t.Location, &t.TriggerID, &t.FiltersJSON, &t.DestinationJSON, &t.TransportJSON, &t.Channel, &t.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
@@ -970,13 +1477,13 @@ func (s *Store) ListEventarcTriggers(projectID, location string) ([]EventarcTrig
 	)
 	if location == "" || location == "-" {
 		rows, err = s.db.Query(
-			`SELECT name, project_id, location, trigger_id, filters_json, destination_json, transport_json, created_at
+			`SELECT name, project_id, location, trigger_id, filters_json, destination_json, transport_json, channel, created_at
 			 FROM eventarc_triggers WHERE project_id = ? ORDER BY name`,
 			projectID,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT name, project_id, location, trigger_id, filters_json, destination_json, transport_json, created_at
+			`SELECT name, project_id, location, trigger_id, filters_json, destination_json, transport_json, channel, created_at
 			 FROM eventarc_triggers WHERE project_id = ? AND location = ? ORDER BY name`,
 			projectID, location,
 		)
@@ -988,7 +1495,7 @@ func (s *Store) ListEventarcTriggers(projectID, location string) ([]EventarcTrig
 	var out []EventarcTrigger
 	for rows.Next() {
 		var t EventarcTrigger
-		if err := rows.Scan(&t.Name, &t.ProjectID, &t.Location, &t.TriggerID, &t.FiltersJSON, &t.DestinationJSON, &t.TransportJSON, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.Name, &t.ProjectID, &t.Location, &t.TriggerID, &t.FiltersJSON, &t.DestinationJSON, &t.TransportJSON, &t.Channel, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -1009,9 +1516,100 @@ func (s *Store) DeleteEventarcTrigger(name string) (bool, error) {
 	return n > 0, nil
 }
 
+// CreateEventarcChannel inserts a channel stub. created=false means already exists.
+func (s *Store) CreateEventarcChannel(c EventarcChannel) (*EventarcChannel, bool, error) {
+	c.ProjectID = strings.TrimSpace(c.ProjectID)
+	c.Location = strings.TrimSpace(c.Location)
+	c.ChannelID = strings.TrimSpace(c.ChannelID)
+	if c.ProjectID == "" || c.Location == "" || c.ChannelID == "" {
+		return nil, false, fmt.Errorf("project, location, and channel id required")
+	}
+	if c.Name == "" {
+		c.Name = "projects/" + c.ProjectID + "/locations/" + c.Location + "/channels/" + c.ChannelID
+	}
+	if c.UID == "" {
+		c.UID = uuid.NewString()
+	}
+	if c.State == "" {
+		c.State = "ACTIVE"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	c.CreatedAt = now
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO eventarc_channels
+		 (name, project_id, location, channel_id, uid, provider, pubsub_topic, state, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Name, c.ProjectID, c.Location, c.ChannelID, c.UID, c.Provider, c.PubsubTopic, c.State, now,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if n == 0 {
+		return nil, false, nil
+	}
+	return &c, true, nil
+}
+
+// GetEventarcChannel loads by resource name.
+func (s *Store) GetEventarcChannel(name string) (*EventarcChannel, bool, error) {
+	var c EventarcChannel
+	err := s.db.QueryRow(
+		`SELECT name, project_id, location, channel_id, uid, provider, pubsub_topic, state, created_at
+		 FROM eventarc_channels WHERE name = ?`, name,
+	).Scan(&c.Name, &c.ProjectID, &c.Location, &c.ChannelID, &c.UID, &c.Provider, &c.PubsubTopic, &c.State, &c.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return &c, true, nil
+}
+
+// ListEventarcChannels lists channels for project+location.
+func (s *Store) ListEventarcChannels(projectID, location string) ([]EventarcChannel, error) {
+	rows, err := s.db.Query(
+		`SELECT name, project_id, location, channel_id, uid, provider, pubsub_topic, state, created_at
+		 FROM eventarc_channels WHERE project_id = ? AND location = ? ORDER BY name`,
+		projectID, location,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EventarcChannel
+	for rows.Next() {
+		var c EventarcChannel
+		if err := rows.Scan(&c.Name, &c.ProjectID, &c.Location, &c.ChannelID, &c.UID, &c.Provider, &c.PubsubTopic, &c.State, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// DeleteEventarcChannel removes a channel.
+func (s *Store) DeleteEventarcChannel(name string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM eventarc_channels WHERE name = ?`, name)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 type eventFilter struct {
-	Attribute string `json:"attribute"`
-	Value     string `json:"value"`
+	Attribute string            `json:"attribute"`
+	Value     string            `json:"value"`
+	Operator  string            `json:"operator"`
+	Values    map[string]string `json:"values"`
 }
 
 type eventDestination struct {
@@ -1099,7 +1697,7 @@ func (s *Store) DeliverEventarcForGCSFinalize(bucket, objectName string, generat
 
 func (s *Store) listAllEventarcTriggers() ([]EventarcTrigger, error) {
 	rows, err := s.db.Query(
-		`SELECT name, project_id, location, trigger_id, filters_json, destination_json, transport_json, created_at
+		`SELECT name, project_id, location, trigger_id, filters_json, destination_json, transport_json, channel, created_at
 		 FROM eventarc_triggers`,
 	)
 	if err != nil {
@@ -1109,7 +1707,7 @@ func (s *Store) listAllEventarcTriggers() ([]EventarcTrigger, error) {
 	var out []EventarcTrigger
 	for rows.Next() {
 		var t EventarcTrigger
-		if err := rows.Scan(&t.Name, &t.ProjectID, &t.Location, &t.TriggerID, &t.FiltersJSON, &t.DestinationJSON, &t.TransportJSON, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.Name, &t.ProjectID, &t.Location, &t.TriggerID, &t.FiltersJSON, &t.DestinationJSON, &t.TransportJSON, &t.Channel, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -1136,7 +1734,15 @@ func eventarcMatches(t EventarcTrigger, attrs map[string]string, pubsubTopic, gc
 				return false
 			}
 		default:
-			if attrs[f.Attribute] != f.Value {
+			if len(f.Values) > 0 {
+				for k, v := range f.Values {
+					if attrs[k] != v {
+						return false
+					}
+				}
+				continue
+			}
+			if f.Value != "" && attrs[f.Attribute] != f.Value {
 				return false
 			}
 		}
@@ -1162,21 +1768,30 @@ func (s *Store) deliverEventarc(t EventarcTrigger, payload map[string]any) {
 		return
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, uri, bytes.NewReader(raw))
-	if err != nil {
-		return
+	doPost := func() error {
+		req, err := http.NewRequest(http.MethodPost, uri, bytes.NewReader(raw))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("ce-specversion", "1.0")
+		if typ, ok := payload["type"].(string); ok {
+			req.Header.Set("ce-type", typ)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode >= 500 {
+			return fmt.Errorf("status %d", resp.StatusCode)
+		}
+		return nil
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("ce-specversion", "1.0")
-	if typ, ok := payload["type"].(string); ok {
-		req.Header.Set("ce-type", typ)
+	if err := doPost(); err != nil {
+		_ = doPost() // one retry on failed deliver
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
 }
 
 func (s *Store) resolveEventarcURI(t EventarcTrigger) string {

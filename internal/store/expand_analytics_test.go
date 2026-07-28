@@ -71,6 +71,25 @@ func TestExpandAnalyticsMonitoringDatastoreEventarc(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	n, err := st.DeleteTimeSeriesPoints("p", "custom.googleapis.com/x")
+	if err != nil || n != 1 {
+		t.Fatalf("delete ts n=%d err=%v", n, err)
+	}
+	pol, created, err := st.CreateAlertPolicy(store.AlertPolicyRow{
+		ProjectID: "p", PolicyID: "ap1", DisplayName: "d", Enabled: true, ConditionsJSON: `[]`,
+	})
+	if err != nil || !created {
+		t.Fatalf("alert create: %v %v", created, err)
+	}
+	pol.DisplayName = "d2"
+	updated, ok, err := st.UpdateAlertPolicy(*pol)
+	if err != nil || !ok || updated.DisplayName != "d2" {
+		t.Fatalf("alert update: %#v ok=%v err=%v", updated, ok, err)
+	}
+	ok, err = st.DeleteAlertPolicy(pol.Name)
+	if err != nil || !ok {
+		t.Fatalf("alert delete ok=%v err=%v", ok, err)
+	}
 
 	if err := st.PutDatastoreEntity(store.DatastoreEntity{
 		ProjectID: "p", Kind: "K", KeyPath: "K/name:a", KeyName: "a", PropertiesJSON: `{"n":"v"}`,

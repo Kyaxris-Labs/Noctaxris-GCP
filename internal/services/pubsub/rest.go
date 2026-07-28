@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -259,6 +260,7 @@ func (h *restHandler) createOrReplaceSubscription(w http.ResponseWriter, r *http
 			PushEndpoint string `json:"pushEndpoint"`
 		} `json:"pushConfig"`
 		Labels map[string]string `json:"labels"`
+		Filter string            `json:"filter"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid subscription body")
@@ -269,11 +271,15 @@ func (h *restHandler) createOrReplaceSubscription(w http.ResponseWriter, r *http
 		push = body.PushConfig.PushEndpoint
 	}
 	created, ok, err := h.svc.Store.CreateSubscriptionFull(
-		subName(project, subID), body.Topic, project, body.AckDeadlineSeconds, push, body.Labels,
+		subName(project, subID), body.Topic, project, body.AckDeadlineSeconds, push, body.Labels, body.Filter,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "topic not found") {
 			gcperrors.NotFound(w, "topic not found")
+			return
+		}
+		if strings.Contains(err.Error(), "invalid filter") {
+			gcperrors.InvalidArgument(w, err.Error())
 			return
 		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -316,6 +322,7 @@ func (h *restHandler) patchSubscription(w http.ResponseWriter, r *http.Request) 
 			PushEndpoint string `json:"pushEndpoint"`
 		} `json:"pushConfig"`
 		Labels *map[string]string `json:"labels"`
+		Filter *string            `json:"filter"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid subscription patch body")
@@ -326,10 +333,14 @@ func (h *restHandler) patchSubscription(w http.ResponseWriter, r *http.Request) 
 		ep := body.PushConfig.PushEndpoint
 		push = &ep
 	}
-	updated, err := h.svc.Store.UpdateSubscription(subName(project, subID), body.AckDeadlineSeconds, push, body.Labels)
+	updated, err := h.svc.Store.UpdateSubscription(subName(project, subID), body.AckDeadlineSeconds, push, body.Labels, body.Filter)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			gcperrors.NotFound(w, "subscription not found")
+			return
+		}
+		if strings.Contains(err.Error(), "invalid filter") {
+			gcperrors.InvalidArgument(w, err.Error())
 			return
 		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -366,6 +377,10 @@ func (h *restHandler) subscriptionPost(w http.ResponseWriter, r *http.Request) {
 		h.acknowledge(w, r)
 	case "modifyAckDeadline":
 		h.modifyAckDeadline(w, r)
+	case "modifyPushConfig":
+		h.modifyPushConfig(w, r)
+	case "seek":
+		h.seek(w, r)
 	default:
 		gcperrors.InvalidArgument(w, "unsupported subscriptions custom method")
 	}
@@ -452,6 +467,74 @@ func (h *restHandler) modifyAckDeadline(w http.ResponseWriter, r *http.Request) 
 	_, _ = w.Write([]byte("{}"))
 }
 
+func (h *restHandler) modifyPushConfig(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	subID, _ := splitColon(r.PathValue("subscription"))
+	if !h.require(w, r, "pubsub.subscriptions.update", projectResource(project)) {
+		return
+	}
+	var body struct {
+		PushConfig *struct {
+			PushEndpoint string `json:"pushEndpoint"`
+		} `json:"pushConfig"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid modifyPushConfig body")
+		return
+	}
+	ep := ""
+	if body.PushConfig != nil {
+		ep = body.PushConfig.PushEndpoint
+	}
+	updated, err := h.svc.Store.UpdateSubscription(subName(project, subID), nil, &ep, nil, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			gcperrors.NotFound(w, "subscription not found")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, subscriptionJSON(updated))
+}
+
+func (h *restHandler) seek(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	subID, _ := splitColon(r.PathValue("subscription"))
+	if !h.require(w, r, "pubsub.subscriptions.consume", projectResource(project)) {
+		return
+	}
+	var body struct {
+		Time string `json:"time"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid seek body")
+		return
+	}
+	if body.Time == "" {
+		gcperrors.InvalidArgument(w, "seek time required (snapshots not supported)")
+		return
+	}
+	t, err := time.Parse(time.RFC3339Nano, body.Time)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, body.Time)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "invalid seek time")
+			return
+		}
+	}
+	if err := h.svc.Store.SeekToTime(subName(project, subID), t); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			gcperrors.NotFound(w, "subscription not found")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("{}"))
+}
+
 func topicJSON(t *store.PubSubTopic) map[string]any {
 	labels := t.Labels
 	if labels == nil {
@@ -470,6 +553,9 @@ func subscriptionJSON(sub *store.PubSubSubscription) map[string]any {
 		"topic":              sub.Topic,
 		"ackDeadlineSeconds": sub.AckDeadlineSeconds,
 		"labels":             labels,
+	}
+	if sub.Filter != "" {
+		out["filter"] = sub.Filter
 	}
 	if sub.PushEndpoint != "" {
 		out["pushConfig"] = map[string]any{"pushEndpoint": sub.PushEndpoint}

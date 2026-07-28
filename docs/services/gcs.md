@@ -13,9 +13,13 @@ Noctaxris-GCP (`127.0.0.1:4588` by default).
 | Buckets | `POST /storage/v1/b?project=`, `GET /storage/v1/b/{bucket}`, `GET /storage/v1/b?project=`, `PATCH /storage/v1/b/{bucket}`, `DELETE /storage/v1/b/{bucket}` |
 | Bucket IAM | `GET` / `PUT /storage/v1/b/{bucket}/iam`, `GET .../iam/testPermissions` |
 | Objects | `GET` / `PATCH` / `DELETE /storage/v1/b/{bucket}/o/{object}`, `GET /storage/v1/b/{bucket}/o` |
+| List | `prefix` and `delimiter` (common prefixes / directory theatre) |
+| Preconditions | `ifGenerationMatch` on object GET and DELETE |
 | Compose | `POST .../o/{dest}/compose` (max 32 sources) |
 | Copy | `POST .../o/{src}/copyTo/b/{dstBucket}/o/{dstObject}` |
-| Upload | `POST /upload/storage/v1/b/{bucket}/o` (`uploadType=media`, `uploadType=multipart`) |
+| Rewrite | `POST .../o/{src}/rewriteTo/b/{dstBucket}/o/{dstObject}` (single-shot `done=true`) |
+| Upload | `POST /upload/storage/v1/b/{bucket}/o` (`uploadType=media`, `multipart`, `resumable`) |
+| Resumable | Initiate returns `Location`; `PUT` that URI completes a lab single-chunk upload; `DELETE` cancels |
 | Download | `GET .../o/{object}?alt=media` |
 | Versioning | Each write creates a new generation; list/get default to latest |
 
@@ -29,12 +33,13 @@ documents are stored under `buckets/{name}` via get/set IAM.
 
 ## Emulator limits
 
-- No object ACLs or object-level IAM documents
-- No resumable uploads or signed URL RSA signing
+- No object ACLs or object-level IAM documents (skipped; use bucket IAM)
 - Soft delete, retention, and lifecycle are not enforced
 - Multipart upload supports metadata JSON + media parts only
+- Resumable uploads are single-chunk lab complete (no multi-chunk / status resume)
 - Max upload body size in this lab: 64 MiB per request
 - Compose is same-bucket only; max 32 sources
+- Rewrite always finishes in one request (no rewriteToken continuation)
 
 ## Pointing clients
 
@@ -76,12 +81,18 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
   "$EP/storage/v1/b/lab-bucket/o/hello.txt?alt=media"
 
 curl -sS -H "Authorization: Bearer $TOKEN" \
-  "$EP/storage/v1/b/lab-bucket/iam"
+  "$EP/storage/v1/b/lab-bucket/o?delimiter=/"
+
+curl -sS -i -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"contentType":"text/plain"}' \
+  "$EP/upload/storage/v1/b/lab-bucket/o?uploadType=resumable&name=resumable.txt"
 ```
+
+Also: `go test ./internal/store/ ./internal/server/ -run 'TestGCS'`
 
 ## Deferred depth
 
 - Signed URL RSA (V2/V4) generation and verification
-- Resumable uploads, rewrite, and notifications
+- Multi-chunk resumable resume / status queries
 - HMAC keys, Autoclass, soft delete / retention enforcement
 - Object-level IAM and uniform bucket-level access edge cases

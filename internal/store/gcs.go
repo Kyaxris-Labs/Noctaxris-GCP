@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Bucket is Cloud Storage bucket metadata.
@@ -319,6 +321,23 @@ func (s *Store) GetObject(bucket, name string, generation int64) (*ObjectMeta, b
 
 // ListObjects returns the latest generation per object name, optional prefix filter.
 func (s *Store) ListObjects(bucket, prefix string) ([]ObjectMeta, error) {
+	result, err := s.ListObjectsDelimited(bucket, prefix, "")
+	if err != nil {
+		return nil, err
+	}
+	return result.Items, nil
+}
+
+// ObjectListResult is a listObjects response with optional common prefixes.
+type ObjectListResult struct {
+	Items    []ObjectMeta
+	Prefixes []string
+}
+
+// ListObjectsDelimited lists latest-generation objects with optional prefix and delimiter.
+// When delimiter is set (typically "/"), names that continue past the next delimiter after
+// prefix are collapsed into Prefixes (directory theatre).
+func (s *Store) ListObjectsDelimited(bucket, prefix, delimiter string) (*ObjectListResult, error) {
 	rows, err := s.db.Query(
 		`SELECT o.bucket, o.name, o.generation, o.size, o.content_type, o.blob_path, o.md5_hash, o.crc32c,
 		 COALESCE(o.metadata_json, '{}'), COALESCE(o.cache_control, ''), COALESCE(o.content_disposition, ''),
@@ -335,7 +354,8 @@ func (s *Store) ListObjects(bucket, prefix string) ([]ObjectMeta, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []ObjectMeta
+	out := &ObjectListResult{}
+	prefixSet := map[string]struct{}{}
 	for rows.Next() {
 		o, err := scanObject(rows)
 		if err != nil {
@@ -344,9 +364,136 @@ func (s *Store) ListObjects(bucket, prefix string) ([]ObjectMeta, error) {
 		if prefix != "" && !strings.HasPrefix(o.Name, prefix) {
 			continue
 		}
-		out = append(out, *o)
+		if delimiter == "" {
+			out.Items = append(out.Items, *o)
+			continue
+		}
+		rest := strings.TrimPrefix(o.Name, prefix)
+		if i := strings.Index(rest, delimiter); i >= 0 {
+			common := prefix + rest[:i+len(delimiter)]
+			if _, ok := prefixSet[common]; !ok {
+				prefixSet[common] = struct{}{}
+				out.Prefixes = append(out.Prefixes, common)
+			}
+			continue
+		}
+		out.Items = append(out.Items, *o)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ErrPreconditionFailed is returned when ifGenerationMatch does not match.
+var ErrPreconditionFailed = fmt.Errorf("precondition failed")
+
+// CheckGenerationMatch verifies ifGenerationMatch against the live object.
+// wantGen < 0 means no check. wantGen == 0 requires the object not to exist.
+func (s *Store) CheckGenerationMatch(bucket, name string, wantGen int64) error {
+	if wantGen < 0 {
+		return nil
+	}
+	o, ok, err := s.GetObject(bucket, name, 0)
+	if err != nil {
+		return err
+	}
+	if wantGen == 0 {
+		if ok {
+			return ErrPreconditionFailed
+		}
+		return nil
+	}
+	if !ok || o.Generation != wantGen {
+		return ErrPreconditionFailed
+	}
+	return nil
+}
+
+// RewriteObject copies source to destination in one shot (lab: always done=true).
+func (s *Store) RewriteObject(srcBucket, srcName string, srcGeneration int64, dstBucket, dstName string) (*ObjectMeta, error) {
+	return s.CopyObject(srcBucket, srcName, srcGeneration, dstBucket, dstName)
+}
+
+// GCSUploadSession is a resumable upload session.
+type GCSUploadSession struct {
+	UploadID    string
+	Bucket      string
+	Name        string
+	ContentType string
+	CreatedAt   string
+}
+
+// CreateUploadSession starts a resumable upload session.
+func (s *Store) CreateUploadSession(bucket, name, contentType string) (*GCSUploadSession, error) {
+	if _, ok, err := s.GetBucket(bucket); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("bucket not found")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("object name required")
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	id := uuid.NewString()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(
+		`INSERT INTO gcs_upload_sessions (upload_id, bucket, name, content_type, created_at) VALUES (?, ?, ?, ?, ?)`,
+		id, bucket, name, contentType, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &GCSUploadSession{UploadID: id, Bucket: bucket, Name: name, ContentType: contentType, CreatedAt: now}, nil
+}
+
+// GetUploadSession loads a resumable upload session.
+func (s *Store) GetUploadSession(uploadID string) (*GCSUploadSession, bool, error) {
+	var sess GCSUploadSession
+	err := s.db.QueryRow(
+		`SELECT upload_id, bucket, name, content_type, created_at FROM gcs_upload_sessions WHERE upload_id = ?`,
+		uploadID,
+	).Scan(&sess.UploadID, &sess.Bucket, &sess.Name, &sess.ContentType, &sess.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return &sess, true, nil
+}
+
+// CompleteUploadSession writes object bytes and removes the session.
+func (s *Store) CompleteUploadSession(uploadID string, data []byte) (*ObjectMeta, error) {
+	sess, ok, err := s.GetUploadSession(uploadID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("upload session not found")
+	}
+	obj, err := s.PutObjectBytes(sess.Bucket, sess.Name, sess.ContentType, data)
+	if err != nil {
+		return nil, err
+	}
+	_, _ = s.db.Exec(`DELETE FROM gcs_upload_sessions WHERE upload_id = ?`, uploadID)
+	return obj, nil
+}
+
+// DeleteUploadSession cancels a resumable upload.
+func (s *Store) DeleteUploadSession(uploadID string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM gcs_upload_sessions WHERE upload_id = ?`, uploadID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // PatchObjectMetadata updates mutable metadata on the latest (or given) generation.

@@ -180,3 +180,84 @@ func TestListDeleteLogsAndSeverityTimestampFilter(t *testing.T) {
 		t.Fatalf("expected empty after delete, got %#v", resp.Entries)
 	}
 }
+
+func TestSinksTailAndCopy(t *testing.T) {
+	mux := setupLogging(t)
+
+	create := `{"destination":"storage.googleapis.com/lab-bucket","filter":"severity>=ERROR"}`
+	req := httptest.NewRequest(http.MethodPost, "/v2/projects/noctaxris-gcp-local/sinks?sinkId=lab-sink", bytes.NewReader([]byte(create)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create sink status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v2/projects/noctaxris-gcp-local/sinks/lab-sink", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get sink status=%d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/v2/projects/noctaxris-gcp-local/sinks/lab-sink", bytes.NewReader([]byte(`{"filter":"severity=ERROR"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update sink status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var sink map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &sink)
+	if sink["filter"] != "severity=ERROR" {
+		t.Fatalf("sink=%#v", sink)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v2/projects/noctaxris-gcp-local/sinks", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list sinks status=%d", rec.Code)
+	}
+
+	writeBody := `{"logName":"projects/noctaxris-gcp-local/logs/app","entries":[{"textPayload":"tail-me","insertId":"t1"}]}`
+	req = httptest.NewRequest(http.MethodPost, "/v2/entries:write", bytes.NewReader([]byte(writeBody)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("write status=%d", rec.Code)
+	}
+
+	tailBody := `{"resourceNames":["projects/noctaxris-gcp-local"],"filter":"textPayload:\"tail-me\"","pageSize":10}`
+	req = httptest.NewRequest(http.MethodPost, "/v2/entries:tail", bytes.NewReader([]byte(tailBody)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tail status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var tailResp struct {
+		Entries []map[string]any `json:"entries"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &tailResp)
+	if len(tailResp.Entries) != 1 {
+		t.Fatalf("tail entries=%#v", tailResp.Entries)
+	}
+
+	copyBody := `{"resourceNames":["projects/noctaxris-gcp-local"],"destination":"storage.googleapis.com/out","filter":"severity=ERROR"}`
+	req = httptest.NewRequest(http.MethodPost, "/v2/entries:copy", bytes.NewReader([]byte(copyBody)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("copy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var copyResp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &copyResp)
+	if copyResp["done"] != true {
+		t.Fatalf("copy=%#v", copyResp)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/v2/projects/noctaxris-gcp-local/sinks/lab-sink", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete sink status=%d", rec.Code)
+	}
+}

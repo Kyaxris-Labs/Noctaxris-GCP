@@ -26,6 +26,7 @@ type PubSubSubscription struct {
 	AckDeadlineSeconds int
 	PushEndpoint       string
 	Labels             map[string]string
+	Filter             string
 	CreatedAt          string
 }
 
@@ -150,11 +151,11 @@ func (s *Store) DeleteTopic(name string) (bool, error) {
 
 // CreateSubscription inserts a subscription. created=false means already exists.
 func (s *Store) CreateSubscription(name, topic, projectID string, ackDeadlineSeconds int) (*PubSubSubscription, bool, error) {
-	return s.CreateSubscriptionFull(name, topic, projectID, ackDeadlineSeconds, "", nil)
+	return s.CreateSubscriptionFull(name, topic, projectID, ackDeadlineSeconds, "", nil, "")
 }
 
-// CreateSubscriptionFull inserts a subscription with push endpoint and labels.
-func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlineSeconds int, pushEndpoint string, labels map[string]string) (*PubSubSubscription, bool, error) {
+// CreateSubscriptionFull inserts a subscription with push endpoint, labels, and optional filter.
+func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlineSeconds int, pushEndpoint string, labels map[string]string, filter string) (*PubSubSubscription, bool, error) {
 	name = strings.TrimSpace(name)
 	topic = strings.TrimSpace(topic)
 	projectID = strings.TrimSpace(projectID)
@@ -167,6 +168,12 @@ func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlin
 	if labels == nil {
 		labels = map[string]string{}
 	}
+	filter = strings.TrimSpace(filter)
+	if filter != "" {
+		if _, err := parseAttributeEqualityFilter(filter); err != nil {
+			return nil, false, fmt.Errorf("invalid filter: %w", err)
+		}
+	}
 	if _, ok, err := s.GetTopic(topic); err != nil {
 		return nil, false, err
 	} else if !ok {
@@ -174,9 +181,9 @@ func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlin
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO pubsub_subscriptions (name, topic, project_id, ack_deadline_seconds, push_endpoint, labels_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		name, topic, projectID, ackDeadlineSeconds, strings.TrimSpace(pushEndpoint), encodeStringMap(labels), now,
+		`INSERT OR IGNORE INTO pubsub_subscriptions (name, topic, project_id, ack_deadline_seconds, push_endpoint, labels_json, filter, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		name, topic, projectID, ackDeadlineSeconds, strings.TrimSpace(pushEndpoint), encodeStringMap(labels), filter, now,
 	)
 	if err != nil {
 		return nil, false, err
@@ -191,7 +198,7 @@ func (s *Store) CreateSubscriptionFull(name, topic, projectID string, ackDeadlin
 	return &PubSubSubscription{
 		Name: name, Topic: topic, ProjectID: projectID,
 		AckDeadlineSeconds: ackDeadlineSeconds, PushEndpoint: strings.TrimSpace(pushEndpoint),
-		Labels: labels, CreatedAt: now,
+		Labels: labels, Filter: filter, CreatedAt: now,
 	}, true, nil
 }
 
@@ -200,10 +207,10 @@ func (s *Store) GetSubscription(name string) (*PubSubSubscription, bool, error) 
 	var sub PubSubSubscription
 	var labelsJSON string
 	err := s.db.QueryRow(
-		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'), created_at
+		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'), COALESCE(filter, ''), created_at
 		 FROM pubsub_subscriptions WHERE name = ?`,
 		name,
-	).Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON, &sub.CreatedAt)
+	).Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON, &sub.Filter, &sub.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
@@ -215,7 +222,7 @@ func (s *Store) GetSubscription(name string) (*PubSubSubscription, bool, error) 
 }
 
 // UpdateSubscription applies mutable subscription fields. Nil pointers leave fields unchanged.
-func (s *Store) UpdateSubscription(name string, ackDeadline *int, pushEndpoint *string, labels *map[string]string) (*PubSubSubscription, error) {
+func (s *Store) UpdateSubscription(name string, ackDeadline *int, pushEndpoint *string, labels *map[string]string, filter *string) (*PubSubSubscription, error) {
 	sub, ok, err := s.GetSubscription(name)
 	if err != nil {
 		return nil, err
@@ -239,9 +246,18 @@ func (s *Store) UpdateSubscription(name string, ackDeadline *int, pushEndpoint *
 			sub.Labels = map[string]string{}
 		}
 	}
+	if filter != nil {
+		f := strings.TrimSpace(*filter)
+		if f != "" {
+			if _, err := parseAttributeEqualityFilter(f); err != nil {
+				return nil, fmt.Errorf("invalid filter: %w", err)
+			}
+		}
+		sub.Filter = f
+	}
 	_, err = s.db.Exec(
-		`UPDATE pubsub_subscriptions SET ack_deadline_seconds = ?, push_endpoint = ?, labels_json = ? WHERE name = ?`,
-		sub.AckDeadlineSeconds, sub.PushEndpoint, encodeStringMap(sub.Labels), name,
+		`UPDATE pubsub_subscriptions SET ack_deadline_seconds = ?, push_endpoint = ?, labels_json = ?, filter = ? WHERE name = ?`,
+		sub.AckDeadlineSeconds, sub.PushEndpoint, encodeStringMap(sub.Labels), sub.Filter, name,
 	)
 	if err != nil {
 		return nil, err
@@ -252,7 +268,7 @@ func (s *Store) UpdateSubscription(name string, ackDeadline *int, pushEndpoint *
 // ListSubscriptions lists subscriptions for a project id.
 func (s *Store) ListSubscriptions(projectID string) ([]PubSubSubscription, error) {
 	rows, err := s.db.Query(
-		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'), created_at
+		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'), COALESCE(filter, ''), created_at
 		 FROM pubsub_subscriptions WHERE project_id = ? ORDER BY name`,
 		projectID,
 	)
@@ -264,7 +280,7 @@ func (s *Store) ListSubscriptions(projectID string) ([]PubSubSubscription, error
 	for rows.Next() {
 		var sub PubSubSubscription
 		var labelsJSON string
-		if err := rows.Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON, &sub.CreatedAt); err != nil {
+		if err := rows.Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON, &sub.Filter, &sub.CreatedAt); err != nil {
 			return nil, err
 		}
 		sub.Labels = decodeStringMap(labelsJSON)
@@ -276,7 +292,7 @@ func (s *Store) ListSubscriptions(projectID string) ([]PubSubSubscription, error
 // ListSubscriptionsForTopic lists all subscriptions attached to a topic.
 func (s *Store) ListSubscriptionsForTopic(topic string) ([]PubSubSubscription, error) {
 	rows, err := s.db.Query(
-		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'), created_at
+		`SELECT name, topic, project_id, ack_deadline_seconds, COALESCE(push_endpoint, ''), COALESCE(labels_json, '{}'), COALESCE(filter, ''), created_at
 		 FROM pubsub_subscriptions WHERE topic = ? ORDER BY name`,
 		topic,
 	)
@@ -288,7 +304,7 @@ func (s *Store) ListSubscriptionsForTopic(topic string) ([]PubSubSubscription, e
 	for rows.Next() {
 		var sub PubSubSubscription
 		var labelsJSON string
-		if err := rows.Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON, &sub.CreatedAt); err != nil {
+		if err := rows.Scan(&sub.Name, &sub.Topic, &sub.ProjectID, &sub.AckDeadlineSeconds, &sub.PushEndpoint, &labelsJSON, &sub.Filter, &sub.CreatedAt); err != nil {
 			return nil, err
 		}
 		sub.Labels = decodeStringMap(labelsJSON)
@@ -348,6 +364,9 @@ func (s *Store) PublishFanout(topic string, data []byte, attributes map[string]s
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, sub := range subs {
+		if !messageMatchesFilter(sub.Filter, attributes) {
+			continue
+		}
 		ackID := uuid.NewString()
 		if _, err := tx.Exec(
 			`INSERT INTO pubsub_messages (id, subscription, topic, data, attributes_json, publish_time, ack_id, ack_deadline, delivered)
@@ -477,4 +496,82 @@ func (s *Store) ModifyAckDeadline(subscription string, ackIDs []string, ackDeadl
 		}
 	}
 	return tx.Commit()
+}
+
+// SeekToTime seeks a subscription to time t:
+// messages with publish_time < t are deleted (acked); later messages have ack state cleared.
+func (s *Store) SeekToTime(subscription string, t time.Time) error {
+	if _, ok, err := s.GetSubscription(subscription); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("subscription not found")
+	}
+	ts := t.UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(
+		`DELETE FROM pubsub_messages WHERE subscription = ? AND publish_time < ?`,
+		subscription, ts,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE pubsub_messages SET delivered = 0, ack_deadline = NULL WHERE subscription = ? AND publish_time >= ?`,
+		subscription, ts,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// parseAttributeEqualityFilter parses lab filters of the form:
+// attributes.key = "value" [AND attributes.other = "x"]
+func parseAttributeEqualityFilter(filter string) (map[string]string, error) {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return map[string]string{}, nil
+	}
+	parts := strings.Split(filter, " AND ")
+	out := map[string]string{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		const prefix = "attributes."
+		if !strings.HasPrefix(part, prefix) {
+			return nil, fmt.Errorf("only attributes.<key> = \"value\" equality is supported")
+		}
+		rest := strings.TrimSpace(part[len(prefix):])
+		eq := strings.Index(rest, "=")
+		if eq < 0 {
+			return nil, fmt.Errorf("missing = in filter term")
+		}
+		key := strings.TrimSpace(rest[:eq])
+		valRaw := strings.TrimSpace(rest[eq+1:])
+		if key == "" {
+			return nil, fmt.Errorf("empty attribute key")
+		}
+		if len(valRaw) < 2 || valRaw[0] != '"' || valRaw[len(valRaw)-1] != '"' {
+			return nil, fmt.Errorf("filter value must be a quoted string")
+		}
+		out[key] = valRaw[1 : len(valRaw)-1]
+	}
+	return out, nil
+}
+
+func messageMatchesFilter(filter string, attributes map[string]string) bool {
+	want, err := parseAttributeEqualityFilter(filter)
+	if err != nil || len(want) == 0 {
+		return err == nil
+	}
+	if attributes == nil {
+		attributes = map[string]string{}
+	}
+	for k, v := range want {
+		if attributes[k] != v {
+			return false
+		}
+	}
+	return true
 }

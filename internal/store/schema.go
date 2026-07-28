@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS service_accounts (
   unique_id TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL DEFAULT '',
   disabled INTEGER NOT NULL DEFAULT 0,
+  deleted_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -97,6 +98,7 @@ CREATE TABLE IF NOT EXISTS pubsub_subscriptions (
   ack_deadline_seconds INTEGER NOT NULL DEFAULT 10,
   push_endpoint TEXT NOT NULL DEFAULT '',
   labels_json TEXT NOT NULL DEFAULT '{}',
+  filter TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -117,6 +119,16 @@ CREATE TABLE IF NOT EXISTS secrets (
   project_id TEXT NOT NULL,
   labels_json TEXT NOT NULL DEFAULT '{}',
   annotations_json TEXT NOT NULL DEFAULT '{}',
+  replication_json TEXT NOT NULL DEFAULT '{}',
+  cmek_kms_key_name TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gcs_upload_sessions (
+  upload_id TEXT PRIMARY KEY,
+  bucket TEXT NOT NULL,
+  name TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
   created_at TEXT NOT NULL
 );
 
@@ -158,7 +170,20 @@ CREATE TABLE IF NOT EXISTS kms_keys (
   keyring TEXT NOT NULL,
   purpose TEXT NOT NULL DEFAULT 'ENCRYPT_DECRYPT',
   algorithm TEXT NOT NULL DEFAULT 'GOOGLE_SYMMETRIC_ENCRYPTION',
+  labels_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS log_sinks (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  sink_id TEXT NOT NULL,
+  destination TEXT NOT NULL DEFAULT '',
+  filter TEXT NOT NULL DEFAULT '',
+  writer_identity TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, sink_id)
 );
 
 CREATE TABLE IF NOT EXISTS kms_key_versions (
@@ -192,6 +217,7 @@ CREATE TABLE IF NOT EXISTS run_services (
   latest_revision TEXT NOT NULL DEFAULT '',
   lab_response_body TEXT NOT NULL DEFAULT '',
   last_invoke_json TEXT NOT NULL DEFAULT '',
+  traffic_json TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -202,6 +228,18 @@ CREATE TABLE IF NOT EXISTS run_revisions (
   generation INTEGER NOT NULL,
   template_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_jobs (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  location TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  uid TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 1,
+  template_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS cloud_functions (
@@ -227,6 +265,8 @@ CREATE TABLE IF NOT EXISTS scheduler_jobs (
   state TEXT NOT NULL DEFAULT 'ENABLED',
   http_target_json TEXT NOT NULL DEFAULT '',
   pubsub_target_json TEXT NOT NULL DEFAULT '',
+  oidc_audience TEXT NOT NULL DEFAULT '',
+  next_run_time TEXT NOT NULL DEFAULT '',
   last_attempt_time TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -238,6 +278,9 @@ CREATE TABLE IF NOT EXISTS cloud_tasks_queues (
   location TEXT NOT NULL,
   queue_id TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'RUNNING',
+  rate_limits_json TEXT NOT NULL DEFAULT '{}',
+  retry_config_json TEXT NOT NULL DEFAULT '{}',
+  app_engine_routing_override_json TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -247,7 +290,9 @@ CREATE TABLE IF NOT EXISTS cloud_tasks (
   schedule_time TEXT NOT NULL,
   create_time TEXT NOT NULL,
   http_request_json TEXT NOT NULL DEFAULT '',
-  dispatch_count INTEGER NOT NULL DEFAULT 0
+  app_engine_http_request_json TEXT NOT NULL DEFAULT '',
+  dispatch_count INTEGER NOT NULL DEFAULT 0,
+  response_count INTEGER NOT NULL DEFAULT 0
 );
 `
 

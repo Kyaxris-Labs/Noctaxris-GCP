@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -175,4 +176,122 @@ func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, `%`, `\%`)
 	s = strings.ReplaceAll(s, `_`, `\_`)
 	return s
+}
+
+// LogSink is a Cloud Logging sink metadata row (no real export).
+type LogSink struct {
+	Name           string
+	ProjectID      string
+	SinkID         string
+	Destination    string
+	Filter         string
+	WriterIdentity string
+	CreatedAt      string
+	UpdatedAt      string
+}
+
+// CreateLogSink inserts a sink. created=false when name already exists.
+func (s *Store) CreateLogSink(sink LogSink) (*LogSink, bool, error) {
+	sink.ProjectID = strings.TrimSpace(sink.ProjectID)
+	sink.SinkID = strings.TrimSpace(sink.SinkID)
+	if sink.ProjectID == "" || sink.SinkID == "" {
+		return nil, false, fmt.Errorf("project and sink id required")
+	}
+	if sink.Name == "" {
+		sink.Name = "projects/" + sink.ProjectID + "/sinks/" + sink.SinkID
+	}
+	if sink.WriterIdentity == "" {
+		sink.WriterIdentity = "serviceAccount:cloud-logs@" + sink.ProjectID + ".iam.gserviceaccount.com"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	sink.CreatedAt = now
+	sink.UpdatedAt = now
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO log_sinks
+		 (name, project_id, sink_id, destination, filter, writer_identity, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sink.Name, sink.ProjectID, sink.SinkID, sink.Destination, sink.Filter, sink.WriterIdentity, now, now,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("create log sink: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if n == 0 {
+		return nil, false, nil
+	}
+	return &sink, true, nil
+}
+
+// GetLogSink loads a sink by resource name.
+func (s *Store) GetLogSink(name string) (*LogSink, bool, error) {
+	var sk LogSink
+	err := s.db.QueryRow(
+		`SELECT name, project_id, sink_id, destination, filter, writer_identity, created_at, updated_at
+		 FROM log_sinks WHERE name = ?`, name,
+	).Scan(&sk.Name, &sk.ProjectID, &sk.SinkID, &sk.Destination, &sk.Filter, &sk.WriterIdentity, &sk.CreatedAt, &sk.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("get log sink: %w", err)
+	}
+	return &sk, true, nil
+}
+
+// ListLogSinks lists sinks under a project.
+func (s *Store) ListLogSinks(projectID string) ([]LogSink, error) {
+	rows, err := s.db.Query(
+		`SELECT name, project_id, sink_id, destination, filter, writer_identity, created_at, updated_at
+		 FROM log_sinks WHERE project_id = ? ORDER BY sink_id`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list log sinks: %w", err)
+	}
+	defer rows.Close()
+	var out []LogSink
+	for rows.Next() {
+		var sk LogSink
+		if err := rows.Scan(&sk.Name, &sk.ProjectID, &sk.SinkID, &sk.Destination, &sk.Filter, &sk.WriterIdentity, &sk.CreatedAt, &sk.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, sk)
+	}
+	return out, rows.Err()
+}
+
+// UpdateLogSink replaces destination and filter for an existing sink.
+func (s *Store) UpdateLogSink(name, destination, filter string) (*LogSink, bool, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.Exec(
+		`UPDATE log_sinks SET destination = ?, filter = ?, updated_at = ? WHERE name = ?`,
+		destination, filter, now, name,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("update log sink: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if n == 0 {
+		return nil, false, nil
+	}
+	return s.GetLogSink(name)
+}
+
+// DeleteLogSink removes a sink by name.
+func (s *Store) DeleteLogSink(name string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM log_sinks WHERE name = ?`, name)
+	if err != nil {
+		return false, fmt.Errorf("delete log sink: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

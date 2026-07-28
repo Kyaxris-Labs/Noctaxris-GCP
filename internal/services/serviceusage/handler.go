@@ -28,8 +28,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/projects/{project}/services", h.listServices)
 	mux.HandleFunc("GET /v1/projects/{project}/services/{service}", h.getService)
 	mux.HandleFunc("POST /v1/projects/{project}/services/{service}", h.serviceAction)
-	// batchEnable: POST /v1/projects/{project}/services:batchEnable — colon inside {servicesCol}.
+	// batchEnable / batchGet: colon inside {servicesCol}.
 	mux.HandleFunc("POST /v1/projects/{project}/{servicesCol}", h.servicesCollectionPost)
+	mux.HandleFunc("GET /v1/projects/{project}/{servicesCol}", h.servicesCollectionGet)
 }
 
 func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {
@@ -138,22 +139,40 @@ func (h *Handler) serviceAction(w http.ResponseWriter, r *http.Request) {
 			"name":   "projects/" + projectID + "/services/" + serviceName,
 			"parent": "projects/" + projectID,
 			"state":  state,
-			"config": map[string]any{"name": serviceName},
+			"config": serviceConfig(serviceName),
 		},
 	})
+}
+
+func (h *Handler) servicesCollectionGet(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("project")
+	col, action := splitColonAction(r.PathValue("servicesCol"))
+	if col != "services" || action != "batchGet" {
+		gcperrors.InvalidArgument(w, "expected services:batchGet")
+		return
+	}
+	h.batchGet(w, r, projectID)
 }
 
 func (h *Handler) servicesCollectionPost(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("project")
 	col, action := splitColonAction(r.PathValue("servicesCol"))
 	if col != "services" || action == "" {
-		gcperrors.InvalidArgument(w, "expected services:batchEnable")
+		gcperrors.InvalidArgument(w, "expected services:batchEnable|batchGet")
 		return
 	}
-	if action != "batchEnable" {
+	switch action {
+	case "batchEnable":
+		h.batchEnable(w, r, projectID)
+	case "batchGet":
+		// Accept POST body {"names":[...]} in addition to official GET + query.
+		h.batchGet(w, r, projectID)
+	default:
 		gcperrors.InvalidArgument(w, "unknown services collection method")
-		return
 	}
+}
+
+func (h *Handler) batchEnable(w http.ResponseWriter, r *http.Request, projectID string) {
 	resource := "projects/" + projectID
 	if !h.require(w, r, "serviceusage.services.enable", resource) {
 		return
@@ -181,7 +200,7 @@ func (h *Handler) servicesCollectionPost(w http.ResponseWriter, r *http.Request)
 			"name":   "projects/" + projectID + "/services/" + id,
 			"parent": "projects/" + projectID,
 			"state":  "ENABLED",
-			"config": map[string]any{"name": id},
+			"config": serviceConfig(id),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -192,6 +211,60 @@ func (h *Handler) servicesCollectionPost(w http.ResponseWriter, r *http.Request)
 			"services": services,
 		},
 	})
+}
+
+func (h *Handler) batchGet(w http.ResponseWriter, r *http.Request, projectID string) {
+	resource := "projects/" + projectID
+	if !h.require(w, r, "serviceusage.services.get", resource) {
+		return
+	}
+	names := r.URL.Query()["names"]
+	if len(names) == 0 {
+		// Also accept repeated names= and comma-separated.
+		if raw := r.URL.Query().Get("names"); raw != "" {
+			names = strings.Split(raw, ",")
+		}
+	}
+	if len(names) == 0 && r.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err == nil && len(body) > 0 {
+			var req struct {
+				Names []string `json:"names"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				gcperrors.InvalidArgument(w, "invalid JSON body")
+				return
+			}
+			names = req.Names
+		}
+	}
+	serviceNames := make([]string, 0, len(names))
+	prefix := "projects/" + projectID + "/services/"
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if strings.HasPrefix(n, prefix) {
+			n = strings.TrimPrefix(n, prefix)
+		} else if strings.Contains(n, "/services/") {
+			parts := strings.SplitN(n, "/services/", 2)
+			if len(parts) == 2 {
+				n = parts[1]
+			}
+		}
+		serviceNames = append(serviceNames, n)
+	}
+	list, err := h.Store.BatchGetServiceUsage(projectID, serviceNames)
+	if err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	services := make([]map[string]any, 0, len(list))
+	for _, u := range list {
+		services = append(services, serviceJSON(u))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"services": services})
 }
 
 func parseStateFilter(filter string) (string, error) {
@@ -218,10 +291,40 @@ func serviceJSON(u store.ServiceUsage) map[string]any {
 		"name":   "projects/" + u.ProjectID + "/services/" + u.ServiceName,
 		"parent": "projects/" + u.ProjectID,
 		"state":  u.State,
-		"config": map[string]any{
-			"name": u.ServiceName,
-		},
+		"config": serviceConfig(u.ServiceName),
 	}
+}
+
+func serviceConfig(serviceName string) map[string]any {
+	cfg := map[string]any{"name": serviceName}
+	if title := serviceTitle(serviceName); title != "" {
+		cfg["title"] = title
+	}
+	return cfg
+}
+
+func serviceTitle(serviceName string) string {
+	titles := map[string]string{
+		"cloudresourcemanager.googleapis.com": "Cloud Resource Manager API",
+		"iam.googleapis.com":                  "Identity and Access Management (IAM) API",
+		"serviceusage.googleapis.com":         "Service Usage API",
+		"storage.googleapis.com":              "Cloud Storage API",
+		"pubsub.googleapis.com":               "Cloud Pub/Sub API",
+		"secretmanager.googleapis.com":        "Secret Manager API",
+		"firestore.googleapis.com":            "Cloud Firestore API",
+		"cloudkms.googleapis.com":             "Cloud Key Management Service (KMS) API",
+		"logging.googleapis.com":              "Cloud Logging API",
+		"run.googleapis.com":                  "Cloud Run Admin API",
+		"cloudfunctions.googleapis.com":       "Cloud Functions API",
+		"cloudscheduler.googleapis.com":       "Cloud Scheduler API",
+		"cloudtasks.googleapis.com":           "Cloud Tasks API",
+		"bigquery.googleapis.com":             "BigQuery API",
+		"identitytoolkit.googleapis.com":      "Identity Toolkit API",
+		"monitoring.googleapis.com":           "Cloud Monitoring API",
+		"datastore.googleapis.com":            "Cloud Datastore API",
+		"eventarc.googleapis.com":             "Eventarc API",
+	}
+	return titles[serviceName]
 }
 
 func splitColonAction(segment string) (id, action string) {

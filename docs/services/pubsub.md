@@ -13,17 +13,20 @@ Terraform typically uses the REST surface.
 |------|---------|
 | Topics | Create / Get / List / Delete / Update (gRPC + REST); Publish |
 | Subscriptions | Create / Get / List / Delete / Update (gRPC + REST); Pull; Acknowledge; ModifyAckDeadline |
-| StreamingPull | Lab-minimal: delivers current backlog once, then ends the stream |
+| Filters | Attribute equality: `attributes.key = "value"` (AND-combined terms); non-matching messages are not delivered |
+| Seek | Seek to time (gRPC + REST `:seek`); clears ack state for later messages, deletes earlier backlog |
+| StreamingPull | Long-lived loop: recv acks/modacks, send messages until client cancels |
 | Push | If `pushConfig.pushEndpoint` is set, best-effort HTTP POST on publish (2xx acks that copy) |
+| Push update | REST `PATCH` and `:modifyPushConfig` |
 
 REST paths (colon actions live inside path wildcards):
 
 - `PUT|GET|PATCH|DELETE /v1/projects/{p}/topics/{topic}`
 - `POST /v1/projects/{p}/topics/{topic}:publish`
 - `PUT|GET|PATCH|DELETE /v1/projects/{p}/subscriptions/{sub}`
-- `POST .../subscriptions/{sub}:pull|:acknowledge|:modifyAckDeadline`
+- `POST .../subscriptions/{sub}:pull|:acknowledge|:modifyAckDeadline|:modifyPushConfig|:seek`
 
-Publish fans out one stored copy per subscription. Pull leases messages for the
+Publish fans out one stored copy per matching subscription. Pull leases messages for the
 subscription ack deadline; Acknowledge deletes them. Push delivery is best-effort
 and does not block publish success when the endpoint is unreachable.
 
@@ -31,7 +34,7 @@ and does not block publish success when the endpoint is unreachable.
 
 Permissions such as `pubsub.topics.*` and `pubsub.subscriptions.*` (including
 `pubsub.subscriptions.consume` for Pull / Acknowledge / ModifyAckDeadline /
-StreamingPull) are evaluated on `projects/{projectId}`.
+StreamingPull / Seek) are evaluated on `projects/{projectId}`.
 
 gRPC Bearer auth is applied by the shared server interceptor. Handlers also
 re-check IAM when a principal is present.
@@ -39,8 +42,8 @@ re-check IAM when a principal is present.
 ## Emulator limits
 
 - No ordering keys, exactly-once delivery, or schemas
-- No snapshots, seek, or dead-letter policies
-- StreamingPull does not stay long-lived beyond one backlog flush
+- No snapshots (seek-to-snapshot returns invalid argument)
+- Filter language is attribute equality only (no HAS, OR, NOT)
 - Message retention and backlog quotas are not enforced
 - Push has no OIDC / auth header injection
 
@@ -61,7 +64,7 @@ Terraform:
 
 ```hcl
 provider "google" {
-  pubsub_custom_endpoint = "http://127.0.0.1:4588/"
+  pubsub_custom_endpoint = "http://127.0.0.1:4588/v1/"
 }
 ```
 
@@ -76,16 +79,20 @@ curl -sS -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   -d '{}' "$EP/v1/projects/$PROJECT/topics/lab-topic"
 
 curl -sS -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d "{\"topic\":\"projects/$PROJECT/topics/lab-topic\"}" \
+  -d "{\"topic\":\"projects/$PROJECT/topics/lab-topic\",\"filter\":\"attributes.region = \\\"us\\\"\"}" \
   "$EP/v1/projects/$PROJECT/subscriptions/lab-sub"
 
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"messages":[{"data":"aGVsbG8="}]}' \
+  -d '{"messages":[{"data":"aGVsbG8=","attributes":{"region":"us"}}]}' \
   "$EP/v1/projects/$PROJECT/topics/lab-topic:publish"
 
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"maxMessages":10}' \
   "$EP/v1/projects/$PROJECT/subscriptions/lab-sub:pull"
+
+curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"pushConfig":{"pushEndpoint":"http://127.0.0.1:9/push"}}' \
+  "$EP/v1/projects/$PROJECT/subscriptions/lab-sub:modifyPushConfig"
 ```
 
 Also: `go test ./internal/server/ -run 'TestPubSub'`
@@ -93,6 +100,6 @@ Also: `go test ./internal/server/ -run 'TestPubSub'`
 ## Deferred depth
 
 - Ordering keys / exactly-once / schemas
-- Snapshots, seek, and dead-letter policies
-- Long-lived StreamingPull with continuous ack/modify loops
-- Authenticated push (OIDC) and message filters
+- Snapshots and dead-letter policies
+- Full filter language (OR / NOT / HAS)
+- Authenticated push (OIDC)

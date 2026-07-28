@@ -2,11 +2,17 @@ package kms_test
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -182,5 +188,122 @@ func TestEncryptDecryptAndDestroyRefuses(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get version status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAsymmetricSignGetPublicKeyUpdateAndIAM(t *testing.T) {
+	mux, project := setupKMS(t)
+	loc := kms.DefaultLocation
+	ringURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings?keyRingId=sign-ring"
+	req := httptest.NewRequest(http.MethodPost, ringURL, bytes.NewReader([]byte("{}")))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create ring status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	keyURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/sign-ring/cryptoKeys?cryptoKeyId=sign-key"
+	body := `{"purpose":"ASYMMETRIC_SIGN","versionTemplate":{"algorithm":"RSA_SIGN_PSS_2048_SHA256","protectionLevel":"SOFTWARE"},"labels":{"env":"lab"}}`
+	req = httptest.NewRequest(http.MethodPost, keyURL, bytes.NewReader([]byte(body)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create asym key status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Symmetric GetPublicKey must fail closed.
+	symKeyURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/sign-ring/cryptoKeys?cryptoKeyId=sym-key"
+	req = httptest.NewRequest(http.MethodPost, symKeyURL, bytes.NewReader([]byte(`{"purpose":"ENCRYPT_DECRYPT"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create sym key status=%d", rec.Code)
+	}
+	symPub := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/sign-ring/cryptoKeys/sym-key/cryptoKeyVersions/1/publicKey"
+	req = httptest.NewRequest(http.MethodGet, symPub, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("GetPublicKey on ENCRYPT_DECRYPT status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	pubURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/sign-ring/cryptoKeys/sign-key/cryptoKeyVersions/1/publicKey"
+	req = httptest.NewRequest(http.MethodGet, pubURL, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetPublicKey status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var pubResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &pubResp); err != nil {
+		t.Fatal(err)
+	}
+	pemStr, _ := pubResp["pem"].(string)
+	if !strings.Contains(pemStr, "BEGIN PUBLIC KEY") {
+		t.Fatalf("pem=%q", pemStr)
+	}
+
+	sum := sha256.Sum256([]byte("lab-sign-payload"))
+	digestB64 := base64.StdEncoding.EncodeToString(sum[:])
+	signURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/sign-ring/cryptoKeys/sign-key/cryptoKeyVersions/1:asymmetricSign"
+	req = httptest.NewRequest(http.MethodPost, signURL, bytes.NewReader([]byte(`{"digest":{"sha256":"`+digestB64+`"}}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("asymmetricSign status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var signResp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &signResp)
+	sigB64, _ := signResp["signature"].(string)
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil || len(sig) == 0 {
+		t.Fatalf("signature decode: %v %q", err, sigB64)
+	}
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		t.Fatal("pem decode failed")
+	}
+	pubAny, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := pubAny.(*rsa.PublicKey)
+	if err := rsa.VerifyPSS(pub, crypto.SHA256, sum[:], sig, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+
+	patchURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/sign-ring/cryptoKeys/sign-key?updateMask=labels"
+	req = httptest.NewRequest(http.MethodPatch, patchURL, bytes.NewReader([]byte(`{"labels":{"env":"updated"}}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("UpdateCryptoKey status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var patched map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &patched)
+	labels, _ := patched["labels"].(map[string]any)
+	if labels["env"] != "updated" {
+		t.Fatalf("labels=%#v", labels)
+	}
+
+	setIAM := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/sign-ring/cryptoKeys/sign-key:setIamPolicy"
+	req = httptest.NewRequest(http.MethodPost, setIAM, bytes.NewReader([]byte(`{"policy":{"etag":"ACAB","bindings":[{"role":"roles/cloudkms.admin","members":["allAuthenticatedUsers"]}]}}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setIamPolicy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	getIAM := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/sign-ring/cryptoKeys/sign-key:getIamPolicy"
+	req = httptest.NewRequest(http.MethodPost, getIAM, bytes.NewReader([]byte("{}")))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("getIamPolicy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var pol map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &pol)
+	bindings, _ := pol["bindings"].([]any)
+	if len(bindings) != 1 {
+		t.Fatalf("policy=%#v", pol)
 	}
 }

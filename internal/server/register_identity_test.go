@@ -2,6 +2,8 @@ package server_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -220,6 +222,185 @@ func TestServiceUsageBatchEnableAndFilter(t *testing.T) {
 		if svc["state"] != "ENABLED" {
 			t.Fatalf("non-enabled in filter: %#v", svc)
 		}
+	}
+}
+
+func TestCRMListSearchAndAncestry(t *testing.T) {
+	srv, cfg := testServer(t)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v3/projects", nil)
+	listReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	listRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listBody map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listBody); err != nil {
+		t.Fatal(err)
+	}
+	projects, _ := listBody["projects"].([]any)
+	if len(projects) < 1 {
+		t.Fatalf("expected projects, got %s", listRec.Body.String())
+	}
+
+	searchPayload := []byte(`{"query":"noctaxris"}`)
+	searchReq := httptest.NewRequest(http.MethodPost, "/v3/projects:search", bytes.NewReader(searchPayload))
+	searchReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	searchReq.Header.Set("Content-Type", "application/json")
+	searchRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(searchRec, searchReq)
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("search status = %d body=%s", searchRec.Code, searchRec.Body.String())
+	}
+
+	ancReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+":getAncestry", bytes.NewReader([]byte("{}")))
+	ancReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	ancReq.Header.Set("Content-Type", "application/json")
+	ancRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(ancRec, ancReq)
+	if ancRec.Code != http.StatusOK {
+		t.Fatalf("ancestry status = %d body=%s", ancRec.Code, ancRec.Body.String())
+	}
+	var ancBody map[string]any
+	if err := json.Unmarshal(ancRec.Body.Bytes(), &ancBody); err != nil {
+		t.Fatal(err)
+	}
+	ancestors, _ := ancBody["ancestor"].([]any)
+	if len(ancestors) != 2 {
+		t.Fatalf("ancestor = %#v", ancBody)
+	}
+	first, _ := ancestors[0].(map[string]any)
+	firstID, _ := first["resourceId"].(map[string]any)
+	if firstID["type"] != "project" || firstID["id"] != cfg.ProjectID {
+		t.Fatalf("first ancestor = %#v", first)
+	}
+	second, _ := ancestors[1].(map[string]any)
+	secondID, _ := second["resourceId"].(map[string]any)
+	if secondID["type"] != "organization" || secondID["id"] != "noctaxris-gcp-org" {
+		t.Fatalf("second ancestor = %#v", second)
+	}
+}
+
+func TestIAMUndeleteSignBlobKeysPageAndDisabledGate(t *testing.T) {
+	srv, cfg := testServer(t)
+	email := createLabServiceAccount(t, srv, cfg, "lab-sign", "Sign")
+
+	// Create two keys then page with pageSize=1.
+	for i := 0; i < 2; i++ {
+		keyReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts/"+email+"/keys", bytes.NewReader([]byte("{}")))
+		keyReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+		keyReq.Header.Set("Content-Type", "application/json")
+		keyRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(keyRec, keyReq)
+		if keyRec.Code != http.StatusOK {
+			t.Fatalf("create key status = %d body=%s", keyRec.Code, keyRec.Body.String())
+		}
+	}
+	pageReq := httptest.NewRequest(http.MethodGet, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts/"+email+"/keys?pageSize=1", nil)
+	pageReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	pageRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(pageRec, pageReq)
+	if pageRec.Code != http.StatusOK {
+		t.Fatalf("list keys status = %d body=%s", pageRec.Code, pageRec.Body.String())
+	}
+	var pageBody map[string]any
+	if err := json.Unmarshal(pageRec.Body.Bytes(), &pageBody); err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := pageBody["keys"].([]any)
+	if len(keys) != 1 || pageBody["nextPageToken"] == nil || pageBody["nextPageToken"] == "" {
+		t.Fatalf("paged keys = %#v", pageBody)
+	}
+
+	payload := base64.StdEncoding.EncodeToString([]byte("hello-lab"))
+	signPayload, _ := json.Marshal(map[string]string{"bytesToSign": payload})
+	signReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts/"+email+":signBlob", bytes.NewReader(signPayload))
+	signReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	signReq.Header.Set("Content-Type", "application/json")
+	signRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(signRec, signReq)
+	if signRec.Code != http.StatusOK {
+		t.Fatalf("signBlob status = %d body=%s", signRec.Code, signRec.Body.String())
+	}
+	var signBody map[string]any
+	if err := json.Unmarshal(signRec.Body.Bytes(), &signBody); err != nil {
+		t.Fatal(err)
+	}
+	wantSum := sha256.Sum256([]byte("hello-lab"))
+	wantSig := base64.StdEncoding.EncodeToString(wantSum[:])
+	if signBody["signature"] != wantSig || signBody["keyId"] != "lab-sha256" {
+		t.Fatalf("signBlob = %#v want %s", signBody, wantSig)
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts/"+email, nil)
+	delReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	delRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", delRec.Code, delRec.Body.String())
+	}
+	undReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts/"+email+":undelete", nil)
+	undReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	undRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(undRec, undReq)
+	if undRec.Code != http.StatusOK {
+		t.Fatalf("undelete status = %d body=%s", undRec.Code, undRec.Body.String())
+	}
+
+	// Disable iam.googleapis.com then create must fail closed.
+	disReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/services/iam.googleapis.com:disable", nil)
+	disReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	disRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(disRec, disReq)
+	if disRec.Code != http.StatusOK {
+		t.Fatalf("disable iam status = %d", disRec.Code)
+	}
+	createPayload := []byte(`{"accountId":"blockedsa","serviceAccount":{"displayName":"Blocked"}}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts", bytes.NewReader(createPayload))
+	createReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusBadRequest {
+		t.Fatalf("create with disabled iam status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+}
+
+func TestServiceUsageBatchGetAndConfigTitle(t *testing.T) {
+	srv, cfg := testServer(t)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/projects/"+cfg.ProjectID+"/services/storage.googleapis.com", nil)
+	getReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	getRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var getBody map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getBody); err != nil {
+		t.Fatal(err)
+	}
+	cfgMap, _ := getBody["config"].(map[string]any)
+	if cfgMap["name"] != "storage.googleapis.com" || cfgMap["title"] != "Cloud Storage API" {
+		t.Fatalf("config = %#v", cfgMap)
+	}
+
+	name := "projects/" + cfg.ProjectID + "/services/storage.googleapis.com"
+	batchReq := httptest.NewRequest(http.MethodGet, "/v1/projects/"+cfg.ProjectID+"/services:batchGet?names="+name, nil)
+	batchReq.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	batchRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(batchRec, batchReq)
+	if batchRec.Code != http.StatusOK {
+		t.Fatalf("batchGet status = %d body=%s", batchRec.Code, batchRec.Body.String())
+	}
+	var batchBody map[string]any
+	if err := json.Unmarshal(batchRec.Body.Bytes(), &batchBody); err != nil {
+		t.Fatal(err)
+	}
+	services, _ := batchBody["services"].([]any)
+	if len(services) != 1 {
+		t.Fatalf("batchGet services = %#v", batchBody)
 	}
 }
 

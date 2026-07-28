@@ -1,10 +1,10 @@
 # Cloud Monitoring
 
-Lab Monitoring MetricService REST v3 for metric descriptors and time series.
+Lab Monitoring MetricService REST v3 for metric descriptors, time series, and alert policy metadata.
 
 ## Status
 
-**lab** — Create/Get/List metric descriptors; CreateTimeSeries; ListTimeSeries with simple aligners. No alerts or SLOs.
+**lab** — Create/Get/List metric descriptors; CreateTimeSeries; ListTimeSeries with aligners; DeleteTimeSeries; alertPolicies CRUD (metadata theatre; no notification delivery).
 
 ## Wire protocol
 
@@ -15,6 +15,12 @@ Lab Monitoring MetricService REST v3 for metric descriptors and time series.
 | `GET` | `/v3/projects/{project}/metricDescriptors/{type...}` |
 | `POST` | `/v3/projects/{project}/timeSeries` |
 | `GET` | `/v3/projects/{project}/timeSeries` |
+| `POST` | `/v3/projects/{project}/timeSeries:delete` |
+| `POST` | `/v3/projects/{project}/alertPolicies` (`?alertPolicyId=` optional) |
+| `GET` | `/v3/projects/{project}/alertPolicies` |
+| `GET` | `/v3/projects/{project}/alertPolicies/{policy}` |
+| `PATCH` | `/v3/projects/{project}/alertPolicies/{policy}` |
+| `DELETE` | `/v3/projects/{project}/alertPolicies/{policy}` |
 
 ### ListTimeSeries
 
@@ -26,10 +32,21 @@ Query params used:
 | `interval.startTime` / `interval.endTime` | Inclusive bounds on point `endTime` |
 | `aggregation.perSeriesAligner` | `ALIGN_NONE`, `ALIGN_MEAN`, `ALIGN_SUM`, `ALIGN_MAX`, `ALIGN_MIN` |
 
+Aligners collapse a series to one point (mean/sum/max/min of `doubleValue` / `int64Value`).
+
+### DeleteTimeSeries
+
+`filter` via query or JSON body must include `metric.type="..."`. Deletes matching stored points. Response includes lab field `labDeletedPoints`.
+
+### Alert policies
+
+Stored fields: `displayName`, `enabled`, `combiner`, `conditions` (opaque JSON), `documentation`, `userLabels`. No evaluation, incidents, or notification channels.
+
 ## Authz
 
 - `monitoring.metricDescriptors.create|get|list`
-- `monitoring.timeSeries.create|list`
+- `monitoring.timeSeries.create|list|delete`
+- `monitoring.alertPolicies.create|get|list|update|delete`
 
 ## Client configuration
 
@@ -45,7 +62,7 @@ gcloud config set api_endpoint_overrides/monitoring http://127.0.0.1:4588/
 
 ## Deferred depth
 
-- Alert policies, notification channels, SLOs, uptime checks
+- Notification channels, SLOs, uptime checks, incident lifecycle
 - Cross-series aggregation / groupBy / secondary aligners
 - Monitored resource descriptors catalog
 - gRPC MetricService (REST is the lab default)

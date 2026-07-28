@@ -369,3 +369,224 @@ func TestPubSubPublishPull(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGCSRewriteResumableAndPreconditions(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+
+	req := httptest.NewRequest(http.MethodPost, "/storage/v1/b?project="+project, strings.NewReader(`{"name":"lab-gcs-deep"}`))
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	up := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/lab-gcs-deep/o?uploadType=media&name=dir/a.txt", strings.NewReader("hello"))
+	up.Header.Set("Authorization", auth)
+	up.Header.Set("Content-Type", "text/plain")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, up)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
+	}
+	var uploaded struct {
+		Generation string `json:"generation"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &uploaded)
+
+	init := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/lab-gcs-deep/o?uploadType=resumable&name=dir/b.txt", strings.NewReader(`{"contentType":"text/plain"}`))
+	init.Header.Set("Authorization", auth)
+	init.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, init)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resumable init: %d %s", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	if loc == "" {
+		t.Fatal("missing Location")
+	}
+	put := httptest.NewRequest(http.MethodPut, loc, strings.NewReader("resumable-body"))
+	put.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, put)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resumable put: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rw := httptest.NewRequest(http.MethodPost, "/storage/v1/b/lab-gcs-deep/o/dir/a.txt/rewriteTo/b/lab-gcs-deep/o/dir/c.txt", nil)
+	rw.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, rw)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rewrite: %d %s", rec.Code, rec.Body.String())
+	}
+	var rewriteResp struct {
+		Done bool `json:"done"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &rewriteResp)
+	if !rewriteResp.Done {
+		t.Fatal("rewrite not done")
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/storage/v1/b/lab-gcs-deep/o?delimiter=/", nil)
+	list.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, list)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	var listResp struct {
+		Prefixes []string `json:"prefixes"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &listResp)
+	if len(listResp.Prefixes) == 0 {
+		t.Fatalf("expected prefixes, got %s", rec.Body.String())
+	}
+
+	bad := httptest.NewRequest(http.MethodGet, "/storage/v1/b/lab-gcs-deep/o/dir/a.txt?ifGenerationMatch=999999", nil)
+	bad.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, bad)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected precondition failed, got %d %s", rec.Code, rec.Body.String())
+	}
+	okGet := httptest.NewRequest(http.MethodGet, "/storage/v1/b/lab-gcs-deep/o/dir/a.txt?ifGenerationMatch="+uploaded.Generation, nil)
+	okGet.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, okGet)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get with match: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPubSubFilterSeekPushConfig(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+
+	putTopic := httptest.NewRequest(http.MethodPut, "/v1/projects/"+project+"/topics/filter-topic", strings.NewReader(`{}`))
+	putTopic.Header.Set("Authorization", auth)
+	putTopic.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, putTopic)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("topic: %d %s", rec.Code, rec.Body.String())
+	}
+	subBody := `{"topic":"projects/` + project + `/topics/filter-topic","ackDeadlineSeconds":10,"filter":"attributes.region = \"us\""}`
+	putSub := httptest.NewRequest(http.MethodPut, "/v1/projects/"+project+"/subscriptions/filter-sub", strings.NewReader(subBody))
+	putSub.Header.Set("Authorization", auth)
+	putSub.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, putSub)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sub: %d %s", rec.Code, rec.Body.String())
+	}
+	push := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/subscriptions/filter-sub:modifyPushConfig", strings.NewReader(`{"pushConfig":{"pushEndpoint":"http://127.0.0.1:9/push"}}`))
+	push.Header.Set("Authorization", auth)
+	push.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, push)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("modifyPushConfig: %d %s", rec.Code, rec.Body.String())
+	}
+	clearPush := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/subscriptions/filter-sub:modifyPushConfig", strings.NewReader(`{"pushConfig":{"pushEndpoint":""}}`))
+	clearPush.Header.Set("Authorization", auth)
+	clearPush.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, clearPush)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear push: %d %s", rec.Code, rec.Body.String())
+	}
+	pubBody := `{"messages":[{"data":"` + base64.StdEncoding.EncodeToString([]byte("us-msg")) + `","attributes":{"region":"us"}},{"data":"` + base64.StdEncoding.EncodeToString([]byte("eu-msg")) + `","attributes":{"region":"eu"}}]}`
+	pub := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/topics/filter-topic:publish", strings.NewReader(pubBody))
+	pub.Header.Set("Authorization", auth)
+	pub.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, pub)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish: %d %s", rec.Code, rec.Body.String())
+	}
+	pull := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/subscriptions/filter-sub:pull", strings.NewReader(`{"maxMessages":10}`))
+	pull.Header.Set("Authorization", auth)
+	pull.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, pull)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pull: %d %s", rec.Code, rec.Body.String())
+	}
+	var pullResp struct {
+		ReceivedMessages []struct {
+			Message struct {
+				Data string `json:"data"`
+			} `json:"message"`
+		} `json:"receivedMessages"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &pullResp)
+	if len(pullResp.ReceivedMessages) != 1 {
+		t.Fatalf("expected 1 filtered message, got %s", rec.Body.String())
+	}
+	seek := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/subscriptions/filter-sub:seek", strings.NewReader(`{"time":"1970-01-01T00:00:00Z"}`))
+	seek.Header.Set("Authorization", auth)
+	seek.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, seek)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seek: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSecretReplicationAndVersionFilter(t *testing.T) {
+	srv, cfg := testServer(t)
+	auth := "Bearer " + cfg.RootAccessToken
+	project := cfg.ProjectID
+
+	body := `{"replication":{"automatic":{}},"customerManagedEncryption":{"kmsKeyName":"projects/p/locations/global/keyRings/r/cryptoKeys/k"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/secrets?secretId=rep-secret", strings.NewReader(body))
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if created["replication"] == nil {
+		t.Fatalf("missing replication: %s", rec.Body.String())
+	}
+	add := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/secrets/rep-secret:addVersion", strings.NewReader(`{"payload":{"data":"`+base64.StdEncoding.EncodeToString([]byte("v1"))+`"}}`))
+	add.Header.Set("Authorization", auth)
+	add.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, add)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("addVersion: %d %s", rec.Code, rec.Body.String())
+	}
+	dis := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/secrets/rep-secret/versions/1:disable", strings.NewReader(`{}`))
+	dis.Header.Set("Authorization", auth)
+	dis.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, dis)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", rec.Code, rec.Body.String())
+	}
+	list := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/secrets/rep-secret/versions?filter=state:DISABLED", nil)
+	list.Header.Set("Authorization", auth)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, list)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list filter: %d %s", rec.Code, rec.Body.String())
+	}
+	var listResp struct {
+		Versions []struct {
+			State string `json:"state"`
+		} `json:"versions"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &listResp)
+	if len(listResp.Versions) != 1 || listResp.Versions[0].State != "DISABLED" {
+		t.Fatalf("filter list = %s", rec.Body.String())
+	}
+}

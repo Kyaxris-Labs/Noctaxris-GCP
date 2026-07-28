@@ -37,6 +37,7 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/queues", s.wrap(principalFrom, s.listQueues))
 	mux.HandleFunc("POST /v2/projects/{project}/locations/{location}/queues", s.wrap(principalFrom, s.createQueue))
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/queues/{queue}", s.wrap(principalFrom, s.getQueue))
+	mux.HandleFunc("PATCH /v2/projects/{project}/locations/{location}/queues/{queue}", s.wrap(principalFrom, s.patchQueue))
 	mux.HandleFunc("DELETE /v2/projects/{project}/locations/{location}/queues/{queue}", s.wrap(principalFrom, s.deleteQueue))
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/queues/{queue}/tasks", s.wrap(principalFrom, s.listTasks))
 	mux.HandleFunc("POST /v2/projects/{project}/locations/{location}/queues/{queue}/tasks", s.wrap(principalFrom, s.createTask))
@@ -117,8 +118,24 @@ func (s *Service) createQueue(w http.ResponseWriter, r *http.Request, p authn.Pr
 		return
 	}
 	name := queueName(project, location, queueID)
+	rateLimitsJSON := `{"maxDispatchesPerSecond":500,"maxBurstSize":100,"maxConcurrentDispatches":1000}`
+	retryConfigJSON := `{"maxAttempts":100,"maxRetryDuration":"0s","minBackoff":"0.100s","maxBackoff":"3600s","maxDoublings":16}`
+	appEngineRouting := ""
+	if rl, ok := body["rateLimits"]; ok {
+		raw, _ := json.Marshal(rl)
+		rateLimitsJSON = string(raw)
+	}
+	if rc, ok := body["retryConfig"]; ok {
+		raw, _ := json.Marshal(rc)
+		retryConfigJSON = string(raw)
+	}
+	if ae, ok := body["appEngineRoutingOverride"]; ok {
+		raw, _ := json.Marshal(ae)
+		appEngineRouting = string(raw)
+	}
 	created, err := s.Store.CreateCloudTasksQueue(store.CloudTasksQueue{
 		Name: name, ProjectID: project, Location: location, QueueID: queueID, State: "RUNNING",
+		RateLimitsJSON: rateLimitsJSON, RetryConfigJSON: retryConfigJSON, AppEngineRoutingOverrideJSON: appEngineRouting,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -172,6 +189,49 @@ func (s *Service) listQueues(w http.ResponseWriter, r *http.Request, p authn.Pri
 	writeJSON(w, http.StatusOK, map[string]any{"queues": items})
 }
 
+func (s *Service) patchQueue(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	id, _ := splitAction(r.PathValue("queue"))
+	if err := s.require(p, "cloudtasks.queues.update", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := queueName(project, location, id)
+	existing, ok, err := s.Store.GetCloudTasksQueue(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Queue not found")
+		return
+	}
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if st, ok := body["state"].(string); ok && st != "" {
+		existing.State = st
+	}
+	if rl, ok := body["rateLimits"]; ok {
+		raw, _ := json.Marshal(rl)
+		existing.RateLimitsJSON = string(raw)
+	}
+	if rc, ok := body["retryConfig"]; ok {
+		raw, _ := json.Marshal(rc)
+		existing.RetryConfigJSON = string(raw)
+	}
+	if ae, ok := body["appEngineRoutingOverride"]; ok {
+		raw, _ := json.Marshal(ae)
+		existing.AppEngineRoutingOverrideJSON = string(raw)
+	}
+	if _, err := s.Store.UpdateCloudTasksQueue(existing); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	out, _, _ := s.Store.GetCloudTasksQueue(name)
+	writeJSON(w, http.StatusOK, toQueueJSON(out))
+}
+
 func (s *Service) deleteQueue(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
@@ -211,9 +271,10 @@ func (s *Service) createTask(w http.ResponseWriter, r *http.Request, p authn.Pri
 	}
 	var body struct {
 		Task struct {
-			Name         string          `json:"name"`
-			ScheduleTime string          `json:"scheduleTime"`
-			HTTPRequest  json.RawMessage `json:"httpRequest"`
+			Name                   string          `json:"name"`
+			ScheduleTime           string          `json:"scheduleTime"`
+			HTTPRequest            json.RawMessage `json:"httpRequest"`
+			AppEngineHTTPRequest   json.RawMessage `json:"appEngineHttpRequest"`
 		} `json:"task"`
 		TaskID string `json:"taskId"`
 	}
@@ -233,8 +294,10 @@ func (s *Service) createTask(w http.ResponseWriter, r *http.Request, p authn.Pri
 		sched = now
 	}
 	httpJSON := string(body.Task.HTTPRequest)
+	appEngineJSON := string(body.Task.AppEngineHTTPRequest)
 	created, err := s.Store.CreateCloudTask(store.CloudTask{
-		Name: name, QueueName: qName, ScheduleTime: sched, CreateTime: now, HTTPRequestJSON: httpJSON,
+		Name: name, QueueName: qName, ScheduleTime: sched, CreateTime: now,
+		HTTPRequestJSON: httpJSON, AppEngineHTTPRequestJSON: appEngineJSON,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -354,7 +417,9 @@ func (s *Service) runTaskOrUnknown(w http.ResponseWriter, r *http.Request, p aut
 
 func (s *Service) dispatchHTTP(task store.CloudTask) {
 	_, _, _ = s.Store.IncrementCloudTaskDispatch(task.Name)
+	defer func() { _ = s.Store.IncrementCloudTaskResponse(task.Name) }()
 	if task.HTTPRequestJSON == "" {
+		// App Engine HTTP theatre: no remote dispatch; counts still bump.
 		return
 	}
 	var hr struct {
@@ -392,10 +457,26 @@ func (s *Service) dispatchHTTP(task store.CloudTask) {
 }
 
 func toQueueJSON(q store.CloudTasksQueue) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"name":  q.Name,
 		"state": q.State,
 	}
+	if q.RateLimitsJSON != "" {
+		var rl any
+		_ = json.Unmarshal([]byte(q.RateLimitsJSON), &rl)
+		out["rateLimits"] = rl
+	}
+	if q.RetryConfigJSON != "" {
+		var rc any
+		_ = json.Unmarshal([]byte(q.RetryConfigJSON), &rc)
+		out["retryConfig"] = rc
+	}
+	if q.AppEngineRoutingOverrideJSON != "" {
+		var ae any
+		_ = json.Unmarshal([]byte(q.AppEngineRoutingOverrideJSON), &ae)
+		out["appEngineRoutingOverride"] = ae
+	}
+	return out
 }
 
 func toTaskJSON(t store.CloudTask) map[string]any {
@@ -404,12 +485,18 @@ func toTaskJSON(t store.CloudTask) map[string]any {
 		"scheduleTime":  t.ScheduleTime,
 		"createTime":    t.CreateTime,
 		"dispatchCount": t.DispatchCount,
+		"responseCount": t.ResponseCount,
 		"view":          "BASIC",
 	}
 	if t.HTTPRequestJSON != "" {
 		var hr any
 		_ = json.Unmarshal([]byte(t.HTTPRequestJSON), &hr)
 		out["httpRequest"] = hr
+	}
+	if t.AppEngineHTTPRequestJSON != "" {
+		var ae any
+		_ = json.Unmarshal([]byte(t.AppEngineHTTPRequestJSON), &ae)
+		out["appEngineHttpRequest"] = ae
 	}
 	return out
 }

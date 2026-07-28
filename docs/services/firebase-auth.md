@@ -1,10 +1,10 @@
 # Firebase Auth (Identity Toolkit)
 
-Lab Identity Toolkit REST for email/password auth and admin user CRUD.
+Lab Identity Toolkit REST for email/password auth, password-reset OOB codes, admin user CRUD, custom claims, and unsigned JWT verify.
 
 ## Status
 
-**lab** — signUp / signInWithPassword / lookup / update / delete, admin user CRUD, unsigned custom tokens.
+**lab** — signUp / signInWithPassword / lookup / update / delete, sendOobCode / resetPassword, admin user CRUD with pagination, setCustomUserClaims, verifyIdToken, unsigned custom tokens.
 
 ## Wire protocol
 
@@ -18,19 +18,25 @@ Client methods (no Bearer required; emulator-shaped):
 | `POST` | `/identitytoolkit.googleapis.com/v1/accounts:update` |
 | `POST` | `/identitytoolkit.googleapis.com/v1/accounts:delete` |
 | `POST` | `/identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken` |
+| `POST` | `/identitytoolkit.googleapis.com/v1/accounts:sendOobCode` |
+| `POST` | `/identitytoolkit.googleapis.com/v1/accounts:resetPassword` |
 
 Admin (Bearer required):
 
 | Method | Path |
 |--------|------|
 | `POST` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts` |
-| `GET` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts` |
+| `GET` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts` (`maxResults`, `nextPageToken` / `pageToken`) |
 | `GET` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts/{localId}` |
 | `PATCH` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts/{localId}` |
 | `DELETE` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts/{localId}` |
 | `POST` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts:createCustomToken` |
+| `POST` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts:setCustomUserClaims` |
+| `POST` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts:verifyIdToken` |
 
-Custom tokens and id tokens are **unsigned lab JWTs** (`alg: none`, empty signature segment). Do not treat them as production credentials.
+Password reset: `sendOobCode` with `requestType=PASSWORD_RESET` returns a lab `oobCode` (no email send). `resetPassword` consumes the code and sets `newPassword`.
+
+`setCustomUserClaims` stores `customAttributes` / `claims` JSON on the user. `verifyIdToken` parses unsigned lab JWTs (`alg: none`) and returns `uid` / claims. Custom tokens and id tokens are **unsigned lab JWTs** (empty signature segment). Do not treat them as production credentials.
 
 ## Client configuration
 

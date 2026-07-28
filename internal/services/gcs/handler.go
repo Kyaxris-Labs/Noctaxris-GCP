@@ -43,6 +43,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /storage/v1/b/{bucket}/o/{object...}", h.deleteObject)
 	mux.HandleFunc("POST /storage/v1/b/{bucket}/o/{object...}", h.postObjectAction)
 	mux.HandleFunc("POST /upload/storage/v1/b/{bucket}/o", h.uploadObject)
+	mux.HandleFunc("PUT /upload/storage/v1/b/{bucket}/o", h.putResumableUpload)
+	mux.HandleFunc("DELETE /upload/storage/v1/b/{bucket}/o", h.deleteResumableUpload)
 }
 
 func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {
@@ -360,16 +362,21 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := r.URL.Query().Get("prefix")
-	list, err := h.Store.ListObjects(bucket, prefix)
+	delimiter := r.URL.Query().Get("delimiter")
+	result, err := h.Store.ListObjectsDelimited(bucket, prefix, delimiter)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	items := make([]map[string]any, 0, len(list))
-	for i := range list {
-		items = append(items, objectJSON(&list[i]))
+	items := make([]map[string]any, 0, len(result.Items))
+	for i := range result.Items {
+		items = append(items, objectJSON(&result.Items[i]))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"kind": "storage#objects", "items": items})
+	resp := map[string]any{"kind": "storage#objects", "items": items}
+	if len(result.Prefixes) > 0 {
+		resp["prefixes"] = result.Prefixes
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) getOrDownloadObject(w http.ResponseWriter, r *http.Request) {
@@ -395,6 +402,21 @@ func (h *Handler) getOrDownloadObject(w http.ResponseWriter, r *http.Request) {
 		gen, err = strconv.ParseInt(g, 10, 64)
 		if err != nil {
 			gcperrors.InvalidArgument(w, "invalid generation")
+			return
+		}
+	}
+	if match := r.URL.Query().Get("ifGenerationMatch"); match != "" {
+		want, err := strconv.ParseInt(match, 10, 64)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "invalid ifGenerationMatch")
+			return
+		}
+		if err := h.Store.CheckGenerationMatch(bucket, object, want); err != nil {
+			if err == store.ErrPreconditionFailed {
+				gcperrors.WriteREST(w, http.StatusPreconditionFailed, gcperrors.StatusFailedPrecondition, "ifGenerationMatch failed")
+				return
+			}
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 			return
 		}
 	}
@@ -506,6 +528,21 @@ func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if match := r.URL.Query().Get("ifGenerationMatch"); match != "" {
+		want, err := strconv.ParseInt(match, 10, 64)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "invalid ifGenerationMatch")
+			return
+		}
+		if err := h.Store.CheckGenerationMatch(bucket, object, want); err != nil {
+			if err == store.ErrPreconditionFailed {
+				gcperrors.WriteREST(w, http.StatusPreconditionFailed, gcperrors.StatusFailedPrecondition, "ifGenerationMatch failed")
+				return
+			}
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+	}
 	found, err := h.Store.DeleteObject(bucket, object, gen)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -533,6 +570,17 @@ func (h *Handler) postObjectAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.copyObject(w, r, srcObject, dstBucket, dstObject)
+		return
+	}
+	if i := strings.Index(objectPath, "/rewriteTo/b/"); i >= 0 {
+		srcObject := objectPath[:i]
+		rest := objectPath[i+len("/rewriteTo/b/"):]
+		dstBucket, dstObject, ok := strings.Cut(rest, "/o/")
+		if !ok || dstBucket == "" || dstObject == "" {
+			gcperrors.InvalidArgument(w, "invalid rewriteTo path")
+			return
+		}
+		h.rewriteObject(w, r, srcObject, dstBucket, dstObject)
 		return
 	}
 	gcperrors.InvalidArgument(w, "unsupported object POST action")
@@ -641,6 +689,64 @@ func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, srcObject, 
 	writeJSON(w, http.StatusOK, objectJSON(obj))
 }
 
+func (h *Handler) rewriteObject(w http.ResponseWriter, r *http.Request, srcObject, dstBucket, dstObject string) {
+	srcBucket := r.PathValue("bucket")
+	sb, ok, err := h.Store.GetBucket(srcBucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.get", srcBucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "source bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.get", sb.Name, sb.ProjectID); !aok {
+		return
+	}
+	db, ok, err := h.Store.GetBucket(dstBucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.objects.create", dstBucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "destination bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.create", db.Name, db.ProjectID); !aok {
+		return
+	}
+	var gen int64
+	if g := r.URL.Query().Get("sourceGeneration"); g != "" {
+		gen, err = strconv.ParseInt(g, 10, 64)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "invalid sourceGeneration")
+			return
+		}
+	}
+	obj, err := h.Store.RewriteObject(srcBucket, srcObject, gen, dstBucket, dstObject)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			gcperrors.NotFound(w, err.Error())
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":                "storage#rewriteResponse",
+		"totalBytesRewritten": strconv.FormatInt(obj.Size, 10),
+		"objectSize":          strconv.FormatInt(obj.Size, 10),
+		"done":                true,
+		"resource":            objectJSON(obj),
+	})
+}
+
 func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
 	b, ok, err := h.Store.GetBucket(bucket)
@@ -676,6 +782,9 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
+	case "resumable":
+		h.initiateResumable(w, r, bucket, name)
+		return
 	case "multipart":
 		mediaType, params, err := mime.ParseMediaType(contentType)
 		if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
@@ -742,6 +851,116 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, objectJSON(obj))
+}
+
+func (h *Handler) initiateResumable(w http.ResponseWriter, r *http.Request, bucket, name string) {
+	contentType := r.Header.Get("X-Upload-Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	if name == "" {
+		var meta struct {
+			Name        string `json:"name"`
+			ContentType string `json:"contentType"`
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if len(body) > 0 {
+			_ = json.Unmarshal(body, &meta)
+			name = meta.Name
+			if meta.ContentType != "" {
+				contentType = meta.ContentType
+			}
+		}
+	}
+	if name == "" {
+		gcperrors.InvalidArgument(w, "object name is required for resumable upload")
+		return
+	}
+	sess, err := h.Store.CreateUploadSession(bucket, name, contentType)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	loc := fmt.Sprintf("/upload/storage/v1/b/%s/o?uploadType=resumable&upload_id=%s", bucket, sess.UploadID)
+	w.Header().Set("Location", loc)
+	w.Header().Set("X-GUploader-UploadID", sess.UploadID)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) putResumableUpload(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	uploadID := r.URL.Query().Get("upload_id")
+	if uploadID == "" {
+		gcperrors.InvalidArgument(w, "upload_id is required")
+		return
+	}
+	sess, ok, err := h.Store.GetUploadSession(uploadID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok || sess.Bucket != bucket {
+		gcperrors.NotFound(w, "upload session not found")
+		return
+	}
+	b, bok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !bok {
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.create", b.Name, b.ProjectID); !aok {
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	obj, err := h.Store.CompleteUploadSession(uploadID, data)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, objectJSON(obj))
+}
+
+func (h *Handler) deleteResumableUpload(w http.ResponseWriter, r *http.Request) {
+	uploadID := r.URL.Query().Get("upload_id")
+	if uploadID == "" {
+		gcperrors.InvalidArgument(w, "upload_id is required")
+		return
+	}
+	bucket := r.PathValue("bucket")
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	project := h.authProject("")
+	if ok {
+		project = b.ProjectID
+	}
+	if _, aok := h.requireStorage(w, r, "storage.objects.delete", bucket, project); !aok {
+		return
+	}
+	found, err := h.Store.DeleteUploadSession(uploadID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		gcperrors.NotFound(w, "upload session not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func bucketJSON(b *store.Bucket) map[string]any {

@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func startFirestore(t *testing.T) (firestorepb.FirestoreClient, *store.Store, func()) {
@@ -308,3 +309,150 @@ func TestBeginCommitRollbackTransactionToken(t *testing.T) {
 		t.Fatal("expected rolled-back transaction to fail")
 	}
 }
+
+func TestRunQueryCollectionGroupOrderLimitInequality(t *testing.T) {
+	client, _, cleanup := startFirestore(t)
+	defer cleanup()
+	parent := "projects/noctaxris-gcp-local/databases/(default)/documents"
+	ctx := authCtx("test-root-token")
+
+	// Nested under different parents with same collection id "items".
+	for _, pair := range []struct {
+		parentDoc, id string
+		score         int64
+	}{
+		{"rooms/r1", "a", 10},
+		{"rooms/r1", "b", 30},
+		{"rooms/r2", "c", 20},
+	} {
+		p := parent + "/" + pair.parentDoc
+		if _, err := client.CreateDocument(ctx, &firestorepb.CreateDocumentRequest{
+			Parent: p, CollectionId: "items", DocumentId: pair.id,
+			Document: &firestorepb.Document{Fields: map[string]*firestorepb.Value{
+				"score": {ValueType: &firestorepb.Value_IntegerValue{IntegerValue: pair.score}},
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stream, err := client.RunQuery(ctx, &firestorepb.RunQueryRequest{
+		Parent: parent,
+		QueryType: &firestorepb.RunQueryRequest_StructuredQuery{
+			StructuredQuery: &firestorepb.StructuredQuery{
+				From: []*firestorepb.StructuredQuery_CollectionSelector{{
+					CollectionId: "items", AllDescendants: true,
+				}},
+				Where: &firestorepb.StructuredQuery_Filter{
+					FilterType: &firestorepb.StructuredQuery_Filter_FieldFilter{
+						FieldFilter: &firestorepb.StructuredQuery_FieldFilter{
+							Field: &firestorepb.StructuredQuery_FieldReference{FieldPath: "score"},
+							Op:    firestorepb.StructuredQuery_FieldFilter_GREATER_THAN,
+							Value: &firestorepb.Value{ValueType: &firestorepb.Value_IntegerValue{IntegerValue: 10}},
+						},
+					},
+				},
+				OrderBy: []*firestorepb.StructuredQuery_Order{{
+					Field:     &firestorepb.StructuredQuery_FieldReference{FieldPath: "score"},
+					Direction: firestorepb.StructuredQuery_ASCENDING,
+				}},
+				Limit: wrapperspb.Int32(2),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scores []int64
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := resp.GetDocument(); d != nil {
+			scores = append(scores, d.GetFields()["score"].GetIntegerValue())
+		}
+	}
+	if len(scores) != 2 || scores[0] != 20 || scores[1] != 30 {
+		t.Fatalf("scores=%v", scores)
+	}
+}
+
+func TestCommitFieldTransformAndPartitionQuery(t *testing.T) {
+	client, _, cleanup := startFirestore(t)
+	defer cleanup()
+	ctx := authCtx("test-root-token")
+	db := "projects/noctaxris-gcp-local/databases/(default)"
+	parent := db + "/documents"
+	name := parent + "/counters/c1"
+
+	_, err := client.CreateDocument(ctx, &firestorepb.CreateDocumentRequest{
+		Parent: parent, CollectionId: "counters", DocumentId: "c1",
+		Document: &firestorepb.Document{Fields: map[string]*firestorepb.Value{
+			"n": {ValueType: &firestorepb.Value_IntegerValue{IntegerValue: 5}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.Commit(ctx, &firestorepb.CommitRequest{
+		Database: db,
+		Writes: []*firestorepb.Write{{
+			Operation: &firestorepb.Write_Transform{
+				Transform: &firestorepb.DocumentTransform{
+					Document: name,
+					FieldTransforms: []*firestorepb.DocumentTransform_FieldTransform{
+						{
+							FieldPath: "n",
+							TransformType: &firestorepb.DocumentTransform_FieldTransform_Increment{
+								Increment: &firestorepb.Value{ValueType: &firestorepb.Value_IntegerValue{IntegerValue: 2}},
+							},
+						},
+						{
+							FieldPath: "updated",
+							TransformType: &firestorepb.DocumentTransform_FieldTransform_SetToServerValue{
+								SetToServerValue: firestorepb.DocumentTransform_FieldTransform_REQUEST_TIME,
+							},
+						},
+					},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.GetDocument(ctx, &firestorepb.GetDocumentRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetFields()["n"].GetIntegerValue() != 7 {
+		t.Fatalf("n=%v", got.GetFields()["n"])
+	}
+	if got.GetFields()["updated"].GetTimestampValue() == nil {
+		t.Fatalf("expected server timestamp, fields=%#v", got.GetFields())
+	}
+
+	part, err := client.PartitionQuery(ctx, &firestorepb.PartitionQueryRequest{
+		Parent:         parent,
+		PartitionCount: 8,
+		QueryType: &firestorepb.PartitionQueryRequest_StructuredQuery{
+			StructuredQuery: &firestorepb.StructuredQuery{
+				From: []*firestorepb.StructuredQuery_CollectionSelector{{
+					CollectionId: "counters", AllDescendants: true,
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(part.GetPartitions()) != 1 {
+		t.Fatalf("partitions=%d", len(part.GetPartitions()))
+	}
+}
+

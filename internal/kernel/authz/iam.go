@@ -170,10 +170,7 @@ func roleGrants(role, permission string) bool {
 	case "roles/owner", "roles/editor":
 		return true
 	case "roles/viewer":
-		return strings.HasSuffix(permission, ".get") ||
-			strings.HasSuffix(permission, ".list") ||
-			strings.Contains(permission, ".get") ||
-			strings.Contains(permission, ".list")
+		return viewerGrants(permission)
 	case "roles/iam.securityAdmin":
 		return strings.HasPrefix(permission, "iam.") ||
 			strings.HasPrefix(permission, "resourcemanager.projects.")
@@ -192,6 +189,79 @@ func roleGrants(role, permission string) bool {
 				return strings.HasPrefix(permission, svc+".")
 			}
 		}
+		return false
+	}
+}
+
+// viewerGrants covers get/list (and getIamPolicy) across common lab services.
+func viewerGrants(permission string) bool {
+	if permission == "" {
+		return false
+	}
+	if strings.HasSuffix(permission, ".get") ||
+		strings.HasSuffix(permission, ".list") ||
+		strings.HasSuffix(permission, ".getIamPolicy") {
+		return true
+	}
+	// Nested read verbs used by Google APIs (e.g. storage.objects.get, logging.entries.list).
+	if strings.Contains(permission, ".get") || strings.Contains(permission, ".list") {
+		return true
+	}
+	switch permission {
+	case "resourcemanager.projects.get",
+		"resourcemanager.projects.getIamPolicy",
+		"resourcemanager.projects.list",
+		"resourcemanager.projects.search",
+		"iam.serviceAccounts.get",
+		"iam.serviceAccounts.list",
+		"iam.serviceAccountKeys.get",
+		"iam.serviceAccountKeys.list",
+		"serviceusage.services.get",
+		"serviceusage.services.list",
+		"storage.buckets.get",
+		"storage.buckets.list",
+		"storage.objects.get",
+		"storage.objects.list",
+		"pubsub.topics.get",
+		"pubsub.topics.list",
+		"pubsub.subscriptions.get",
+		"pubsub.subscriptions.list",
+		"secretmanager.secrets.get",
+		"secretmanager.secrets.list",
+		"secretmanager.versions.get",
+		"secretmanager.versions.list",
+		"secretmanager.versions.access",
+		"cloudkms.cryptoKeys.get",
+		"cloudkms.cryptoKeys.list",
+		"cloudkms.keyRings.get",
+		"cloudkms.keyRings.list",
+		"logging.logEntries.list",
+		"logging.logs.list",
+		"run.services.get",
+		"run.services.list",
+		"cloudfunctions.functions.get",
+		"cloudfunctions.functions.list",
+		"cloudscheduler.jobs.get",
+		"cloudscheduler.jobs.list",
+		"cloudtasks.queues.get",
+		"cloudtasks.queues.list",
+		"cloudtasks.tasks.get",
+		"cloudtasks.tasks.list",
+		"bigquery.datasets.get",
+		"bigquery.datasets.list",
+		"bigquery.tables.get",
+		"bigquery.tables.list",
+		"monitoring.metricDescriptors.get",
+		"monitoring.metricDescriptors.list",
+		"monitoring.timeSeries.list",
+		"datastore.entities.get",
+		"datastore.entities.list",
+		"eventarc.triggers.get",
+		"eventarc.triggers.list",
+		"firestore.documents.get",
+		"firestore.documents.list":
+		return true
+	default:
 		return false
 	}
 }

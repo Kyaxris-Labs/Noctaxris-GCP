@@ -174,3 +174,78 @@ func TestIdentityServiceAccountDisableAndPatch(t *testing.T) {
 		t.Fatalf("project patch = %#v ok=%v err=%v", p, ok, err)
 	}
 }
+
+func TestIdentitySoftDeleteUndeleteAndKeyPagination(t *testing.T) {
+	st := openIdentityStore(t)
+	email := "soft@noctaxris-gcp-local.iam.gserviceaccount.com"
+	if err := st.CreateServiceAccount(store.ServiceAccount{
+		ProjectID: "noctaxris-gcp-local",
+		Email:     email,
+		UniqueID:  "3001",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		sealed, err := st.Seal([]byte("k"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := "projects/noctaxris-gcp-local/serviceAccounts/" + email + "/keys/k" + string(rune('a'+i))
+		if err := st.CreateServiceAccountKey(store.ServiceAccountKey{
+			Name:           name,
+			SAEmail:        email,
+			PrivateKeyData: sealed,
+			ValidAfterTime: "2020-01-01T00:00:00Z",
+			ValidBeforeTime: "9999-12-31T23:59:59Z",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page1, next, err := st.ListServiceAccountKeysPage(email, 2, "")
+	if err != nil || len(page1) != 2 || next == "" {
+		t.Fatalf("page1 len=%d next=%q err=%v", len(page1), next, err)
+	}
+	page2, next2, err := st.ListServiceAccountKeysPage(email, 2, next)
+	if err != nil || len(page2) != 1 || next2 != "" {
+		t.Fatalf("page2 len=%d next=%q err=%v", len(page2), next2, err)
+	}
+
+	ok, err := st.DeleteServiceAccount(email)
+	if err != nil || !ok {
+		t.Fatalf("soft delete ok=%v err=%v", ok, err)
+	}
+	if _, found, err := st.GetServiceAccount(email); err != nil || found {
+		t.Fatalf("active get after delete found=%v err=%v", found, err)
+	}
+	del, found, err := st.GetDeletedServiceAccountInProject("noctaxris-gcp-local", email)
+	if err != nil || !found || del.DeletedAt == "" {
+		t.Fatalf("deleted row = %#v found=%v err=%v", del, found, err)
+	}
+	restored, found, err := st.UndeleteServiceAccount(email)
+	if err != nil || !found || restored.DeletedAt != "" {
+		t.Fatalf("undelete = %#v found=%v err=%v", restored, found, err)
+	}
+}
+
+func TestIdentityListSearchProjectsAndBatchGet(t *testing.T) {
+	st := openIdentityStore(t)
+	list, err := st.ListProjects()
+	if err != nil || len(list) < 1 {
+		t.Fatalf("list projects = %d err=%v", len(list), err)
+	}
+	found, err := st.SearchProjects("noctaxris")
+	if err != nil || len(found) < 1 {
+		t.Fatalf("search = %d err=%v", len(found), err)
+	}
+	batch, err := st.BatchGetServiceUsage("noctaxris-gcp-local", []string{"storage.googleapis.com", "missing.googleapis.com"})
+	if err != nil || len(batch) != 2 {
+		t.Fatalf("batchGet = %#v err=%v", batch, err)
+	}
+	if batch[0].State != "ENABLED" || batch[1].State != "DISABLED" {
+		t.Fatalf("batch states = %#v", batch)
+	}
+	enabled, err := st.IsServiceEnabled("noctaxris-gcp-local", "iam.googleapis.com")
+	if err != nil || !enabled {
+		t.Fatalf("iam enabled = %v err=%v", enabled, err)
+	}
+}

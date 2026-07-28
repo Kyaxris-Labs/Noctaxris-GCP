@@ -10,7 +10,9 @@ const (
 	KMSStateEnabled   = "ENABLED"
 	KMSStateDestroyed = "DESTROYED"
 	KMSPurposeEncrypt = "ENCRYPT_DECRYPT"
+	KMSPurposeSign    = "ASYMMETRIC_SIGN"
 	KMSAlgoSymmetric  = "GOOGLE_SYMMETRIC_ENCRYPTION"
+	KMSAlgoRSAPSS2048 = "RSA_SIGN_PSS_2048_SHA256"
 )
 
 // KMSKeyRing is a stored Cloud KMS key ring.
@@ -23,21 +25,22 @@ type KMSKeyRing struct {
 
 // KMSCryptoKey is a stored crypto key (metadata only).
 type KMSCryptoKey struct {
-	Name      string
-	KeyRing   string
-	Purpose   string
-	Algorithm string
-	CreatedAt string
+	Name       string
+	KeyRing    string
+	Purpose    string
+	Algorithm  string
+	LabelsJSON string
+	CreatedAt  string
 }
 
 // KMSKeyVersion holds sealed key material and lifecycle state.
 type KMSKeyVersion struct {
-	Name                   string
-	CryptoKey              string
-	VersionID              string
-	State                  string
-	KeyMaterialCiphertext  []byte
-	CreatedAt              string
+	Name                  string
+	CryptoKey             string
+	VersionID             string
+	State                 string
+	KeyMaterialCiphertext []byte
+	CreatedAt             string
 }
 
 // CreateKMSKeyRing inserts a key ring. Returns false when the name already exists.
@@ -108,7 +111,14 @@ func (s *Store) CreateKMSCryptoKey(key KMSCryptoKey, version KMSKeyVersion) (cre
 		key.Purpose = KMSPurposeEncrypt
 	}
 	if key.Algorithm == "" {
-		key.Algorithm = KMSAlgoSymmetric
+		if key.Purpose == KMSPurposeSign {
+			key.Algorithm = KMSAlgoRSAPSS2048
+		} else {
+			key.Algorithm = KMSAlgoSymmetric
+		}
+	}
+	if key.LabelsJSON == "" {
+		key.LabelsJSON = "{}"
 	}
 	if key.CreatedAt == "" {
 		key.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -133,8 +143,8 @@ func (s *Store) CreateKMSCryptoKey(key KMSCryptoKey, version KMSKeyVersion) (cre
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.Exec(
-		`INSERT OR IGNORE INTO kms_keys (name, keyring, purpose, algorithm, created_at) VALUES (?, ?, ?, ?, ?)`,
-		key.Name, key.KeyRing, key.Purpose, key.Algorithm, key.CreatedAt,
+		`INSERT OR IGNORE INTO kms_keys (name, keyring, purpose, algorithm, labels_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		key.Name, key.KeyRing, key.Purpose, key.Algorithm, key.LabelsJSON, key.CreatedAt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("create kms crypto key: %w", err)
@@ -163,8 +173,8 @@ func (s *Store) CreateKMSCryptoKey(key KMSCryptoKey, version KMSKeyVersion) (cre
 func (s *Store) GetKMSCryptoKey(name string) (KMSCryptoKey, bool, error) {
 	var k KMSCryptoKey
 	err := s.db.QueryRow(
-		`SELECT name, keyring, purpose, algorithm, created_at FROM kms_keys WHERE name = ?`, name,
-	).Scan(&k.Name, &k.KeyRing, &k.Purpose, &k.Algorithm, &k.CreatedAt)
+		`SELECT name, keyring, purpose, algorithm, COALESCE(labels_json, '{}'), created_at FROM kms_keys WHERE name = ?`, name,
+	).Scan(&k.Name, &k.KeyRing, &k.Purpose, &k.Algorithm, &k.LabelsJSON, &k.CreatedAt)
 	if err == sql.ErrNoRows {
 		return KMSCryptoKey{}, false, nil
 	}
@@ -177,7 +187,7 @@ func (s *Store) GetKMSCryptoKey(name string) (KMSCryptoKey, bool, error) {
 // ListKMSCryptoKeys lists keys under a key ring.
 func (s *Store) ListKMSCryptoKeys(keyRing string) ([]KMSCryptoKey, error) {
 	rows, err := s.db.Query(
-		`SELECT name, keyring, purpose, algorithm, created_at FROM kms_keys WHERE keyring = ? ORDER BY name`,
+		`SELECT name, keyring, purpose, algorithm, COALESCE(labels_json, '{}'), created_at FROM kms_keys WHERE keyring = ? ORDER BY name`,
 		keyRing,
 	)
 	if err != nil {
@@ -187,12 +197,31 @@ func (s *Store) ListKMSCryptoKeys(keyRing string) ([]KMSCryptoKey, error) {
 	var out []KMSCryptoKey
 	for rows.Next() {
 		var k KMSCryptoKey
-		if err := rows.Scan(&k.Name, &k.KeyRing, &k.Purpose, &k.Algorithm, &k.CreatedAt); err != nil {
+		if err := rows.Scan(&k.Name, &k.KeyRing, &k.Purpose, &k.Algorithm, &k.LabelsJSON, &k.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, k)
 	}
 	return out, rows.Err()
+}
+
+// UpdateKMSCryptoKey patches labels (lab UpdateCryptoKey subset).
+func (s *Store) UpdateKMSCryptoKey(name, labelsJSON string) (KMSCryptoKey, bool, error) {
+	if labelsJSON == "" {
+		labelsJSON = "{}"
+	}
+	res, err := s.db.Exec(`UPDATE kms_keys SET labels_json = ? WHERE name = ?`, labelsJSON, name)
+	if err != nil {
+		return KMSCryptoKey{}, false, fmt.Errorf("update kms crypto key: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return KMSCryptoKey{}, false, err
+	}
+	if n == 0 {
+		return s.GetKMSCryptoKey(name)
+	}
+	return s.GetKMSCryptoKey(name)
 }
 
 // GetKMSKeyVersion loads a version by name.

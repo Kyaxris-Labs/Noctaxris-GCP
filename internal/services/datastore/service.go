@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"cloud.google.com/go/datastore/apiv1/datastorepb"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -212,7 +214,7 @@ func (s *Service) Lookup(ctx context.Context, req *datastorepb.LookupRequest) (*
 	return resp, nil
 }
 
-// RunQuery implements equality-only queries.
+// RunQuery supports structured equality AND filters or a GQL subset.
 func (s *Service) RunQuery(ctx context.Context, req *datastorepb.RunQueryRequest) (*datastorepb.RunQueryResponse, error) {
 	projectID := req.GetProjectId()
 	if projectID == "" {
@@ -221,28 +223,41 @@ func (s *Service) RunQuery(ctx context.Context, req *datastorepb.RunQueryRequest
 	if err := s.require(ctx, "datastore.entities.list", projectID); err != nil {
 		return nil, err
 	}
-	q := req.GetQuery()
-	if q == nil {
-		return nil, status.Error(codes.InvalidArgument, "query is required (GQL deferred)")
-	}
 	ns := ""
 	if req.GetPartitionId() != nil {
 		ns = req.GetPartitionId().NamespaceId
 	}
-	kind := ""
-	if len(q.Kind) > 0 {
-		kind = q.Kind[0].Name
+
+	var (
+		kind   string
+		propEq map[string]string
+		limit  int
+	)
+	switch {
+	case req.GetQuery() != nil:
+		q := req.GetQuery()
+		if len(q.Kind) > 0 {
+			kind = q.Kind[0].Name
+		}
+		propEq = map[string]string{}
+		if f := q.GetFilter(); f != nil {
+			if err := collectEqualityFilters(f, propEq); err != nil {
+				return nil, status.Error(codes.InvalidArgument, err.Error())
+			}
+		}
+		limit = int(q.GetLimit().GetValue())
+	case req.GetGqlQuery() != nil:
+		var err error
+		kind, propEq, limit, err = parseGQLSubset(req.GetGqlQuery())
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	default:
+		return nil, status.Error(codes.InvalidArgument, "query or gql_query is required")
 	}
 	if kind == "" {
 		return nil, status.Error(codes.InvalidArgument, "kind is required")
 	}
-	propEq := map[string]string{}
-	if f := q.GetFilter(); f != nil {
-		if err := collectEqualityFilters(f, propEq); err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		}
-	}
-	limit := int(q.GetLimit().GetValue())
 	entities, err := s.Store.QueryDatastoreEntities(store.QueryDatastoreEntitiesFilter{
 		ProjectID: projectID, Namespace: ns, Kind: kind, PropEquals: propEq, Limit: limit,
 	})
@@ -255,6 +270,60 @@ func (s *Service) RunQuery(ctx context.Context, req *datastorepb.RunQueryRequest
 	}
 	batch.MoreResults = datastorepb.QueryResultBatch_NO_MORE_RESULTS
 	return &datastorepb.RunQueryResponse{Batch: batch}, nil
+}
+
+var (
+	reGQL         = regexp.MustCompile(`(?is)^\s*SELECT\s+\*\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+WHERE\s+(.+?))?(?:\s+LIMIT\s+(\d+))?\s*$`)
+	reGQLEq       = regexp.MustCompile(`(?i)^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	reGQLAndSplit = regexp.MustCompile(`(?i)\s+AND\s+`)
+)
+
+func parseGQLSubset(g *datastorepb.GqlQuery) (kind string, propEq map[string]string, limit int, err error) {
+	q := strings.TrimSpace(strings.TrimSuffix(g.GetQueryString(), ";"))
+	m := reGQL.FindStringSubmatch(q)
+	if m == nil {
+		return "", nil, 0, fmt.Errorf("lab GQL supports: SELECT * FROM Kind [WHERE a = lit AND b = lit] [LIMIT n]")
+	}
+	kind = m[1]
+	propEq = map[string]string{}
+	if m[2] != "" {
+		if !g.GetAllowLiterals() {
+			return "", nil, 0, fmt.Errorf("allow_literals must be true for literal GQL filters in this lab")
+		}
+		parts := reGQLAndSplit.Split(m[2], -1)
+		for _, part := range parts {
+			em := reGQLEq.FindStringSubmatch(strings.TrimSpace(part))
+			if em == nil {
+				return "", nil, 0, fmt.Errorf("unsupported GQL filter clause %q", part)
+			}
+			rawVal := strings.TrimSpace(em[2])
+			var encoded string
+			if strings.HasPrefix(rawVal, "'") && strings.HasSuffix(rawVal, "'") && len(rawVal) >= 2 {
+				s := rawVal[1 : len(rawVal)-1]
+				b, _ := json.Marshal(s)
+				encoded = string(b)
+			} else if strings.HasPrefix(rawVal, `"`) && strings.HasSuffix(rawVal, `"`) && len(rawVal) >= 2 {
+				s := rawVal[1 : len(rawVal)-1]
+				b, _ := json.Marshal(s)
+				encoded = string(b)
+			} else if rawVal == "true" || rawVal == "false" {
+				b, _ := json.Marshal(rawVal == "true")
+				encoded = string(b)
+			} else {
+				var num any
+				if err := json.Unmarshal([]byte(rawVal), &num); err != nil {
+					return "", nil, 0, fmt.Errorf("unsupported GQL literal %q", rawVal)
+				}
+				b, _ := json.Marshal(num)
+				encoded = string(b)
+			}
+			propEq[em[1]] = encoded
+		}
+	}
+	if m[3] != "" {
+		_, _ = fmt.Sscanf(m[3], "%d", &limit)
+	}
+	return kind, propEq, limit, nil
 }
 
 func collectEqualityFilters(f *datastorepb.Filter, out map[string]string) error {
@@ -283,7 +352,7 @@ func collectEqualityFilters(f *datastorepb.Filter, out map[string]string) error 
 	}
 }
 
-// Commit applies insert/upsert/update/delete mutations (lab Put/Delete).
+// Commit applies insert/upsert/update/delete mutations. Transactional mode consumes a BeginTransaction token.
 func (s *Service) Commit(ctx context.Context, req *datastorepb.CommitRequest) (*datastorepb.CommitResponse, error) {
 	projectID := req.GetProjectId()
 	if projectID == "" {
@@ -291,6 +360,19 @@ func (s *Service) Commit(ctx context.Context, req *datastorepb.CommitRequest) (*
 	}
 	if err := s.require(ctx, "datastore.entities.write", projectID); err != nil {
 		return nil, err
+	}
+	if req.GetMode() == datastorepb.CommitRequest_TRANSACTIONAL || len(req.GetTransaction()) > 0 {
+		tok := req.GetTransaction()
+		if len(tok) == 0 {
+			return nil, status.Error(codes.InvalidArgument, "transaction is required for TRANSACTIONAL commit")
+		}
+		ok, err := s.Store.ConsumeDatastoreTransaction(string(tok), projectID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "%v", err)
+		}
+		if !ok {
+			return nil, status.Error(codes.InvalidArgument, "transaction not found or already used")
+		}
 	}
 	resp := &datastorepb.CommitResponse{}
 	for _, m := range req.GetMutations() {
@@ -328,7 +410,6 @@ func (s *Service) putEntity(projectID string, e *datastorepb.Entity, insertOnly 
 		return status.Error(codes.InvalidArgument, "entity key required")
 	}
 	ns, kind, path, keyID, keyName := keyPath(e.GetKey())
-	// Allocate incomplete numeric ids.
 	incomplete := false
 	if len(e.GetKey().Path) > 0 {
 		last := e.GetKey().Path[len(e.GetKey().Path)-1]
@@ -363,4 +444,99 @@ func (s *Service) putEntity(projectID string, e *datastorepb.Entity, insertOnly 
 		return status.Errorf(codes.Internal, "%v", err)
 	}
 	return nil
+}
+
+// AllocateIds allocates numeric ids for incomplete keys.
+func (s *Service) AllocateIds(ctx context.Context, req *datastorepb.AllocateIdsRequest) (*datastorepb.AllocateIdsResponse, error) {
+	projectID := req.GetProjectId()
+	if projectID == "" {
+		return nil, status.Error(codes.InvalidArgument, "project_id is required")
+	}
+	if err := s.require(ctx, "datastore.entities.write", projectID); err != nil {
+		return nil, err
+	}
+	if len(req.GetKeys()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "keys is required")
+	}
+	out := make([]*datastorepb.Key, 0, len(req.GetKeys()))
+	for _, k := range req.GetKeys() {
+		if k == nil || len(k.Path) == 0 {
+			return nil, status.Error(codes.InvalidArgument, "incomplete key required")
+		}
+		last := k.Path[len(k.Path)-1]
+		if last.GetId() != 0 || last.GetName() != "" {
+			return nil, status.Error(codes.InvalidArgument, "AllocateIds requires incomplete keys")
+		}
+		ns, kind, _, _, _ := keyPath(k)
+		id, err := s.Store.NextDatastoreID(projectID, ns, kind)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "%v", err)
+		}
+		// Reserve the id so subsequent allocations advance.
+		path := kind + "/id:" + fmt.Sprintf("%d", id)
+		if err := s.Store.PutDatastoreEntity(store.DatastoreEntity{
+			ProjectID: projectID, Namespace: ns, Kind: kind, KeyPath: path,
+			KeyID: id, PropertiesJSON: "{}",
+		}); err != nil {
+			return nil, status.Errorf(codes.Internal, "%v", err)
+		}
+		nk := &datastorepb.Key{
+			PartitionId: k.PartitionId,
+			Path:        make([]*datastorepb.Key_PathElement, len(k.Path)),
+		}
+		if nk.PartitionId == nil {
+			nk.PartitionId = &datastorepb.PartitionId{ProjectId: projectID}
+		} else if nk.PartitionId.ProjectId == "" {
+			nk.PartitionId.ProjectId = projectID
+		}
+		for i, pe := range k.Path {
+			cp := &datastorepb.Key_PathElement{Kind: pe.Kind}
+			if i == len(k.Path)-1 {
+				cp.IdType = &datastorepb.Key_PathElement_Id{Id: id}
+			} else {
+				cp.IdType = pe.IdType
+			}
+			nk.Path[i] = cp
+		}
+		out = append(out, nk)
+	}
+	return &datastorepb.AllocateIdsResponse{Keys: out}, nil
+}
+
+// BeginTransaction returns a lab UUID token. No isolation is provided.
+func (s *Service) BeginTransaction(ctx context.Context, req *datastorepb.BeginTransactionRequest) (*datastorepb.BeginTransactionResponse, error) {
+	projectID := req.GetProjectId()
+	if projectID == "" {
+		return nil, status.Error(codes.InvalidArgument, "project_id is required")
+	}
+	if err := s.require(ctx, "datastore.entities.write", projectID); err != nil {
+		return nil, err
+	}
+	token := uuid.NewString()
+	if err := s.Store.PutDatastoreTransaction(token, projectID, req.GetDatabaseId()); err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return &datastorepb.BeginTransactionResponse{Transaction: []byte(token)}, nil
+}
+
+// Rollback clears a lab transaction token.
+func (s *Service) Rollback(ctx context.Context, req *datastorepb.RollbackRequest) (*datastorepb.RollbackResponse, error) {
+	projectID := req.GetProjectId()
+	if projectID == "" {
+		return nil, status.Error(codes.InvalidArgument, "project_id is required")
+	}
+	if len(req.GetTransaction()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "transaction is required")
+	}
+	if err := s.require(ctx, "datastore.entities.write", projectID); err != nil {
+		return nil, err
+	}
+	ok, err := s.Store.DeleteDatastoreTransaction(string(req.GetTransaction()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	if !ok {
+		return nil, status.Error(codes.InvalidArgument, "transaction not found")
+	}
+	return &datastorepb.RollbackResponse{}, nil
 }

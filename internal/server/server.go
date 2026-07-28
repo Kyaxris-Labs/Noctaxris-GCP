@@ -71,6 +71,7 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 	s.registerDocsCrypto()
 	s.registerExpandCompute()
 	s.registerExpandAnalytics()
+	s.registerExpandStage2()
 	return s
 }
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ type ServiceAccount struct {
 	UniqueID    string
 	DisplayName string
 	Disabled    bool
+	DeletedAt   string
 	CreatedAt   string
 }
 
@@ -61,6 +63,55 @@ func (s *Store) GetProject(id string) (Project, bool, error) {
 		return Project{}, false, err
 	}
 	return p, true, nil
+}
+
+// ListProjects returns all seeded projects ordered by id.
+func (s *Store) ListProjects() ([]Project, error) {
+	rows, err := s.db.Query(
+		`SELECT id, display_name, state, created_at FROM projects ORDER BY id`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Project
+	for rows.Next() {
+		var p Project
+		if err := rows.Scan(&p.ID, &p.DisplayName, &p.State, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// SearchProjects returns projects whose id or display name contains query (case-insensitive).
+// Empty query returns all projects.
+func (s *Store) SearchProjects(query string) ([]Project, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return s.ListProjects()
+	}
+	like := "%" + strings.ToLower(query) + "%"
+	rows, err := s.db.Query(
+		`SELECT id, display_name, state, created_at FROM projects
+		 WHERE lower(id) LIKE ? OR lower(display_name) LIKE ?
+		 ORDER BY id`,
+		like, like,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Project
+	for rows.Next() {
+		var p Project
+		if err := rows.Scan(&p.ID, &p.DisplayName, &p.State, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // UpdateProjectDisplayName sets the project display name.
@@ -112,8 +163,8 @@ func (s *Store) CreateServiceAccount(sa ServiceAccount) error {
 		disabled = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO service_accounts (project_id, email, unique_id, display_name, disabled, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO service_accounts (project_id, email, unique_id, display_name, disabled, deleted_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, '', ?)`,
 		sa.ProjectID, sa.Email, sa.UniqueID, sa.DisplayName, disabled, sa.CreatedAt,
 	)
 	if err != nil {
@@ -125,48 +176,73 @@ func (s *Store) CreateServiceAccount(sa ServiceAccount) error {
 	return nil
 }
 
-// GetServiceAccount loads a service account by email.
+func scanServiceAccount(row interface {
+	Scan(dest ...any) error
+}) (ServiceAccount, error) {
+	var sa ServiceAccount
+	var disabled int
+	err := row.Scan(&sa.ProjectID, &sa.Email, &sa.UniqueID, &sa.DisplayName, &disabled, &sa.DeletedAt, &sa.CreatedAt)
+	if err != nil {
+		return ServiceAccount{}, err
+	}
+	sa.Disabled = disabled != 0
+	return sa, nil
+}
+
+const saSelectCols = `project_id, email, unique_id, display_name, disabled, deleted_at, created_at`
+
+// GetServiceAccount loads an active (non-deleted) service account by email.
 func (s *Store) GetServiceAccount(email string) (ServiceAccount, bool, error) {
-	var sa ServiceAccount
-	var disabled int
-	err := s.db.QueryRow(
-		`SELECT project_id, email, unique_id, display_name, disabled, created_at FROM service_accounts WHERE email = ?`,
+	sa, err := scanServiceAccount(s.db.QueryRow(
+		`SELECT `+saSelectCols+` FROM service_accounts WHERE email = ? AND deleted_at = ''`,
 		email,
-	).Scan(&sa.ProjectID, &sa.Email, &sa.UniqueID, &sa.DisplayName, &disabled, &sa.CreatedAt)
+	))
 	if err == sql.ErrNoRows {
 		return ServiceAccount{}, false, nil
 	}
 	if err != nil {
 		return ServiceAccount{}, false, err
 	}
-	sa.Disabled = disabled != 0
 	return sa, true, nil
 }
 
-// GetServiceAccountInProject loads a service account by project and email or unique id.
+// GetServiceAccountInProject loads an active service account by project and email or unique id.
 func (s *Store) GetServiceAccountInProject(projectID, emailOrID string) (ServiceAccount, bool, error) {
-	var sa ServiceAccount
-	var disabled int
-	err := s.db.QueryRow(
-		`SELECT project_id, email, unique_id, display_name, disabled, created_at FROM service_accounts
-		 WHERE project_id = ? AND (email = ? OR unique_id = ?)`,
+	sa, err := scanServiceAccount(s.db.QueryRow(
+		`SELECT `+saSelectCols+` FROM service_accounts
+		 WHERE project_id = ? AND deleted_at = '' AND (email = ? OR unique_id = ?)`,
 		projectID, emailOrID, emailOrID,
-	).Scan(&sa.ProjectID, &sa.Email, &sa.UniqueID, &sa.DisplayName, &disabled, &sa.CreatedAt)
+	))
 	if err == sql.ErrNoRows {
 		return ServiceAccount{}, false, nil
 	}
 	if err != nil {
 		return ServiceAccount{}, false, err
 	}
-	sa.Disabled = disabled != 0
 	return sa, true, nil
 }
 
-// ListServiceAccounts returns service accounts for a project.
+// GetDeletedServiceAccountInProject loads a soft-deleted service account for undelete.
+func (s *Store) GetDeletedServiceAccountInProject(projectID, emailOrID string) (ServiceAccount, bool, error) {
+	sa, err := scanServiceAccount(s.db.QueryRow(
+		`SELECT `+saSelectCols+` FROM service_accounts
+		 WHERE project_id = ? AND deleted_at != '' AND (email = ? OR unique_id = ?)`,
+		projectID, emailOrID, emailOrID,
+	))
+	if err == sql.ErrNoRows {
+		return ServiceAccount{}, false, nil
+	}
+	if err != nil {
+		return ServiceAccount{}, false, err
+	}
+	return sa, true, nil
+}
+
+// ListServiceAccounts returns active service accounts for a project.
 func (s *Store) ListServiceAccounts(projectID string) ([]ServiceAccount, error) {
 	rows, err := s.db.Query(
-		`SELECT project_id, email, unique_id, display_name, disabled, created_at FROM service_accounts
-		 WHERE project_id = ? ORDER BY email`,
+		`SELECT `+saSelectCols+` FROM service_accounts
+		 WHERE project_id = ? AND deleted_at = '' ORDER BY email`,
 		projectID,
 	)
 	if err != nil {
@@ -175,12 +251,10 @@ func (s *Store) ListServiceAccounts(projectID string) ([]ServiceAccount, error) 
 	defer rows.Close()
 	var out []ServiceAccount
 	for rows.Next() {
-		var sa ServiceAccount
-		var disabled int
-		if err := rows.Scan(&sa.ProjectID, &sa.Email, &sa.UniqueID, &sa.DisplayName, &disabled, &sa.CreatedAt); err != nil {
+		sa, err := scanServiceAccount(rows)
+		if err != nil {
 			return nil, err
 		}
-		sa.Disabled = disabled != 0
 		out = append(out, sa)
 	}
 	return out, rows.Err()
@@ -192,7 +266,10 @@ func (s *Store) SetServiceAccountDisabled(email string, disabled bool) (ServiceA
 	if disabled {
 		flag = 1
 	}
-	res, err := s.db.Exec(`UPDATE service_accounts SET disabled = ? WHERE email = ?`, flag, email)
+	res, err := s.db.Exec(
+		`UPDATE service_accounts SET disabled = ? WHERE email = ? AND deleted_at = ''`,
+		flag, email,
+	)
 	if err != nil {
 		return ServiceAccount{}, false, err
 	}
@@ -208,7 +285,10 @@ func (s *Store) SetServiceAccountDisabled(email string, disabled bool) (ServiceA
 
 // UpdateServiceAccountDisplayName patches the display name of a service account.
 func (s *Store) UpdateServiceAccountDisplayName(email, displayName string) (ServiceAccount, bool, error) {
-	res, err := s.db.Exec(`UPDATE service_accounts SET display_name = ? WHERE email = ?`, displayName, email)
+	res, err := s.db.Exec(
+		`UPDATE service_accounts SET display_name = ? WHERE email = ? AND deleted_at = ''`,
+		displayName, email,
+	)
 	if err != nil {
 		return ServiceAccount{}, false, err
 	}
@@ -222,18 +302,13 @@ func (s *Store) UpdateServiceAccountDisplayName(email, displayName string) (Serv
 	return s.GetServiceAccount(email)
 }
 
-// DeleteServiceAccount removes a service account and its keys.
+// DeleteServiceAccount soft-deletes a service account (sets deleted_at). Keys are retained for undelete.
 func (s *Store) DeleteServiceAccount(email string) (bool, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.Exec(`DELETE FROM sa_keys WHERE sa_email = ?`, email); err != nil {
-		return false, err
-	}
-	res, err := tx.Exec(`DELETE FROM service_accounts WHERE email = ?`, email)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.Exec(
+		`UPDATE service_accounts SET deleted_at = ? WHERE email = ? AND deleted_at = ''`,
+		now, email,
+	)
 	if err != nil {
 		return false, err
 	}
@@ -241,10 +316,26 @@ func (s *Store) DeleteServiceAccount(email string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if n == 0 {
-		return false, nil
+	return n > 0, nil
+}
+
+// UndeleteServiceAccount clears deleted_at for a soft-deleted service account.
+func (s *Store) UndeleteServiceAccount(email string) (ServiceAccount, bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE service_accounts SET deleted_at = '' WHERE email = ? AND deleted_at != ''`,
+		email,
+	)
+	if err != nil {
+		return ServiceAccount{}, false, err
 	}
-	return true, tx.Commit()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return ServiceAccount{}, false, err
+	}
+	if n == 0 {
+		return ServiceAccount{}, false, nil
+	}
+	return s.GetServiceAccount(email)
 }
 
 // CreateServiceAccountKey inserts a sealed key row.
@@ -295,24 +386,52 @@ func (s *Store) GetServiceAccountKey(name string) (ServiceAccountKey, bool, erro
 
 // ListServiceAccountKeys lists keys for a service account email.
 func (s *Store) ListServiceAccountKeys(saEmail string) ([]ServiceAccountKey, error) {
+	keys, _, err := s.ListServiceAccountKeysPage(saEmail, 0, "")
+	return keys, err
+}
+
+// ListServiceAccountKeysPage lists keys with pageSize / pageToken pagination.
+// pageToken is an integer offset. Empty nextPageToken means no further page.
+func (s *Store) ListServiceAccountKeysPage(saEmail string, pageSize int, pageToken string) ([]ServiceAccountKey, string, error) {
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	offset := 0
+	if pageToken != "" {
+		n, err := strconv.Atoi(pageToken)
+		if err != nil || n < 0 {
+			return nil, "", fmt.Errorf("invalid pageToken")
+		}
+		offset = n
+	}
 	rows, err := s.db.Query(
 		`SELECT name, sa_email, key_algorithm, private_key_type, private_key_data, valid_after_time, valid_before_time, created_at
-		 FROM sa_keys WHERE sa_email = ? ORDER BY created_at`,
-		saEmail,
+		 FROM sa_keys WHERE sa_email = ? ORDER BY created_at LIMIT ? OFFSET ?`,
+		saEmail, pageSize, offset,
 	)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	var out []ServiceAccountKey
 	for rows.Next() {
 		var k ServiceAccountKey
 		if err := rows.Scan(&k.Name, &k.SAEmail, &k.KeyAlgorithm, &k.PrivateKeyType, &k.PrivateKeyData, &k.ValidAfterTime, &k.ValidBeforeTime, &k.CreatedAt); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		out = append(out, k)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) == pageSize {
+		next = strconv.Itoa(offset + pageSize)
+	}
+	return out, next, nil
 }
 
 // DeleteServiceAccountKey removes a key by resource name.
@@ -394,6 +513,33 @@ func (s *Store) BatchEnableServiceUsage(projectID string, serviceNames []string)
 	return tx.Commit()
 }
 
+// BatchGetServiceUsage loads usage rows for the given service names (order preserved).
+// Missing rows are returned as DISABLED.
+func (s *Store) BatchGetServiceUsage(projectID string, serviceNames []string) ([]ServiceUsage, error) {
+	if len(serviceNames) == 0 {
+		return nil, fmt.Errorf("names required")
+	}
+	if len(serviceNames) > 30 {
+		return nil, fmt.Errorf("at most 30 services per batchGet")
+	}
+	out := make([]ServiceUsage, 0, len(serviceNames))
+	for _, name := range serviceNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, fmt.Errorf("empty service name")
+		}
+		u, ok, err := s.GetServiceUsage(projectID, name)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			u = ServiceUsage{ProjectID: projectID, ServiceName: name, State: "DISABLED"}
+		}
+		out = append(out, u)
+	}
+	return out, nil
+}
+
 // GetServiceUsage loads one service usage row.
 func (s *Store) GetServiceUsage(projectID, serviceName string) (ServiceUsage, bool, error) {
 	var u ServiceUsage
@@ -408,6 +554,16 @@ func (s *Store) GetServiceUsage(projectID, serviceName string) (ServiceUsage, bo
 		return ServiceUsage{}, false, err
 	}
 	return u, true, nil
+}
+
+// IsServiceEnabled reports whether the named API is ENABLED for the project.
+// Missing rows are treated as not enabled.
+func (s *Store) IsServiceEnabled(projectID, serviceName string) (bool, error) {
+	u, ok, err := s.GetServiceUsage(projectID, serviceName)
+	if err != nil {
+		return false, err
+	}
+	return ok && u.State == "ENABLED", nil
 }
 
 // SetServiceUsageState sets ENABLED or DISABLED for a service, inserting if missing.
@@ -426,6 +582,9 @@ func (s *Store) SetServiceUsageState(projectID, serviceName, state string) error
 
 // ErrAlreadyExists is returned when a unique constraint is violated on insert.
 var ErrAlreadyExists = fmt.Errorf("already exists")
+
+// ErrServiceDisabled is returned when a call site requires an ENABLED service usage row.
+var ErrServiceDisabled = fmt.Errorf("service is disabled")
 
 func isUniqueViolation(err error) bool {
 	if err == nil {

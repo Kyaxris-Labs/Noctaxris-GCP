@@ -26,6 +26,11 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/triggers", s.wrap(principalFrom, s.listTriggers))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/triggers/{trigger}", s.wrap(principalFrom, s.getTrigger))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/triggers/{trigger}", s.wrap(principalFrom, s.deleteTrigger))
+
+	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/channels", s.wrap(principalFrom, s.createChannel))
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/channels", s.wrap(principalFrom, s.listChannels))
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/channels/{channel}", s.wrap(principalFrom, s.getChannel))
+	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/channels/{channel}", s.wrap(principalFrom, s.deleteChannel))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -67,13 +72,28 @@ func triggerResource(t *store.EventarcTrigger) map[string]any {
 	_ = json.Unmarshal([]byte(t.DestinationJSON), &dest)
 	var transport any
 	_ = json.Unmarshal([]byte(t.TransportJSON), &transport)
-	return map[string]any{
+	out := map[string]any{
 		"name":         t.Name,
 		"uid":          t.TriggerID,
 		"createTime":   t.CreatedAt,
 		"eventFilters": filters,
 		"destination":  dest,
 		"transport":    transport,
+	}
+	if t.Channel != "" {
+		out["channel"] = t.Channel
+	}
+	return out
+}
+
+func channelResource(c *store.EventarcChannel) map[string]any {
+	return map[string]any{
+		"name":        c.Name,
+		"uid":         c.UID,
+		"createTime":  c.CreatedAt,
+		"provider":    c.Provider,
+		"pubsubTopic": c.PubsubTopic,
+		"state":       c.State,
 	}
 }
 
@@ -89,6 +109,7 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 		EventFilters json.RawMessage `json:"eventFilters"`
 		Destination  json.RawMessage `json:"destination"`
 		Transport    json.RawMessage `json:"transport"`
+		Channel      string          `json:"channel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")
@@ -116,10 +137,11 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 	if len(body.Transport) > 0 {
 		transportJSON = string(body.Transport)
 	}
-	// Validate supported event types.
+	// Validate supported event types; allow extra attribute filters / values maps.
 	var filters []struct {
-		Attribute string `json:"attribute"`
-		Value     string `json:"value"`
+		Attribute string            `json:"attribute"`
+		Value     string            `json:"value"`
+		Values    map[string]string `json:"values"`
 	}
 	_ = json.Unmarshal([]byte(filtersJSON), &filters)
 	hasType := false
@@ -141,7 +163,7 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 	}
 	t, created, err := s.Store.CreateEventarcTrigger(store.EventarcTrigger{
 		ProjectID: project, Location: location, TriggerID: triggerID,
-		FiltersJSON: filtersJSON, DestinationJSON: destJSON, TransportJSON: transportJSON,
+		FiltersJSON: filtersJSON, DestinationJSON: destJSON, TransportJSON: transportJSON, Channel: body.Channel,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -217,4 +239,97 @@ func writeAuthz(w http.ResponseWriter, err error) {
 		return
 	}
 	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+}
+
+func (s *Service) createChannel(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project, location := r.PathValue("project"), r.PathValue("location")
+	if err := s.require(p, "eventarc.channels.create", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	channelID := r.URL.Query().Get("channelId")
+	var body struct {
+		Name        string `json:"name"`
+		Provider    string `json:"provider"`
+		PubsubTopic string `json:"pubsubTopic"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if channelID == "" && body.Name != "" {
+		parts := strings.Split(body.Name, "/")
+		channelID = parts[len(parts)-1]
+	}
+	if channelID == "" {
+		gcperrors.InvalidArgument(w, "channelId query parameter or name is required")
+		return
+	}
+	c, created, err := s.Store.CreateEventarcChannel(store.EventarcChannel{
+		ProjectID: project, Location: location, ChannelID: channelID,
+		Provider: body.Provider, PubsubTopic: body.PubsubTopic,
+	})
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !created {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "channel already exists")
+		return
+	}
+	writeJSON(w, http.StatusOK, channelResource(c))
+}
+
+func (s *Service) getChannel(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project, location, channel := r.PathValue("project"), r.PathValue("location"), r.PathValue("channel")
+	if err := s.require(p, "eventarc.channels.get", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	name := "projects/" + project + "/locations/" + location + "/channels/" + channel
+	c, ok, err := s.Store.GetEventarcChannel(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "channel not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, channelResource(c))
+}
+
+func (s *Service) listChannels(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project, location := r.PathValue("project"), r.PathValue("location")
+	if err := s.require(p, "eventarc.channels.list", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	list, err := s.Store.ListEventarcChannels(project, location)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(list))
+	for i := range list {
+		out = append(out, channelResource(&list[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"channels": out})
+}
+
+func (s *Service) deleteChannel(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project, location, channel := r.PathValue("project"), r.PathValue("location"), r.PathValue("channel")
+	if err := s.require(p, "eventarc.channels.delete", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	name := "projects/" + project + "/locations/" + location + "/channels/" + channel
+	ok, err := s.Store.DeleteEventarcChannel(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "channel not found")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("{}"))
 }

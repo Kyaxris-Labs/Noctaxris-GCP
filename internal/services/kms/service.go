@@ -1,11 +1,16 @@
 package kms
 
 import (
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,6 +40,7 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/{rest...}", s.wrap(principalFrom, s.dispatch))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/{rest...}", s.wrap(principalFrom, s.dispatch))
+	mux.HandleFunc("PATCH /v1/projects/{project}/locations/{location}/{rest...}", s.wrap(principalFrom, s.dispatch))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -88,10 +94,14 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, p authn.Princ
 		s.listCryptoKeys(w, r, p, project, location, parts[1])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "keyRings" && parts[2] == "cryptoKeys":
 		s.getCryptoKey(w, r, p, project, location, parts[1], parts[3])
+	case r.Method == http.MethodPatch && len(parts) == 4 && parts[0] == "keyRings" && parts[2] == "cryptoKeys":
+		s.updateCryptoKey(w, r, p, project, location, parts[1], parts[3])
 	case r.Method == http.MethodGet && len(parts) == 5 && parts[0] == "keyRings" && parts[2] == "cryptoKeys" && parts[4] == "cryptoKeyVersions":
 		s.listKeyVersions(w, r, p, project, location, parts[1], parts[3])
 	case r.Method == http.MethodGet && len(parts) == 6 && parts[0] == "keyRings" && parts[2] == "cryptoKeys" && parts[4] == "cryptoKeyVersions":
 		s.getKeyVersion(w, r, p, project, location, parts[1], parts[3], parts[5])
+	case r.Method == http.MethodGet && len(parts) == 7 && parts[0] == "keyRings" && parts[2] == "cryptoKeys" && parts[4] == "cryptoKeyVersions" && parts[6] == "publicKey":
+		s.getPublicKey(w, r, p, project, location, parts[1], parts[3], parts[5])
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "keyRings" && parts[2] == "cryptoKeys":
 		key, action := splitAction(parts[3])
 		switch action {
@@ -99,6 +109,10 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, p authn.Princ
 			s.encrypt(w, r, p, project, location, parts[1], key, "")
 		case "decrypt":
 			s.decrypt(w, r, p, project, location, parts[1], key, "")
+		case "getIamPolicy":
+			s.getIamPolicy(w, r, p, project, location, parts[1], key)
+		case "setIamPolicy":
+			s.setIamPolicy(w, r, p, project, location, parts[1], key)
 		default:
 			gcperrors.NotFound(w, "unknown KMS method")
 		}
@@ -113,6 +127,8 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, p authn.Princ
 			s.destroyVersion(w, r, p, project, location, parts[1], parts[3], ver)
 		case "restore":
 			s.restoreVersion(w, r, p, project, location, parts[1], parts[3], ver)
+		case "asymmetricSign":
+			s.asymmetricSign(w, r, p, project, location, parts[1], parts[3], ver)
 		default:
 			gcperrors.NotFound(w, "unknown KMS method")
 		}
@@ -207,15 +223,38 @@ func (s *Service) createCryptoKey(w http.ResponseWriter, r *http.Request, p auth
 		return
 	}
 	var body struct {
-		Purpose string `json:"purpose"`
+		Purpose         string            `json:"purpose"`
+		Labels          map[string]string `json:"labels"`
+		VersionTemplate *struct {
+			Algorithm       string `json:"algorithm"`
+			ProtectionLevel string `json:"protectionLevel"`
+		} `json:"versionTemplate"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	purpose := body.Purpose
 	if purpose == "" {
-		purpose = "ENCRYPT_DECRYPT"
+		purpose = store.KMSPurposeEncrypt
 	}
-	if purpose != "ENCRYPT_DECRYPT" {
-		gcperrors.InvalidArgument(w, "only ENCRYPT_DECRYPT is supported in this lab")
+	algorithm := store.KMSAlgoSymmetric
+	if body.VersionTemplate != nil && body.VersionTemplate.Algorithm != "" {
+		algorithm = body.VersionTemplate.Algorithm
+	}
+	switch purpose {
+	case store.KMSPurposeEncrypt:
+		if algorithm != store.KMSAlgoSymmetric && algorithm != "" {
+			// Symmetric encrypt/decrypt ignores non-symmetric algorithms; keep lab default.
+			algorithm = store.KMSAlgoSymmetric
+		}
+	case store.KMSPurposeSign:
+		if algorithm == "" || algorithm == store.KMSAlgoSymmetric {
+			algorithm = store.KMSAlgoRSAPSS2048
+		}
+		if algorithm != store.KMSAlgoRSAPSS2048 {
+			gcperrors.InvalidArgument(w, "only RSA_SIGN_PSS_2048_SHA256 is supported for ASYMMETRIC_SIGN")
+			return
+		}
+	default:
+		gcperrors.InvalidArgument(w, "supported purposes: ENCRYPT_DECRYPT, ASYMMETRIC_SIGN")
 		return
 	}
 	krName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s", project, location, keyRing)
@@ -228,19 +267,42 @@ func (s *Service) createCryptoKey(w http.ResponseWriter, r *http.Request, p auth
 	}
 	keyName := krName + "/cryptoKeys/" + cryptoKeyID
 	verName := keyName + "/cryptoKeyVersions/1"
-	material := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, material); err != nil {
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return
+
+	var material []byte
+	if purpose == store.KMSPurposeSign {
+		priv, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		material, err = x509.MarshalPKCS8PrivateKey(priv)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+	} else {
+		material = make([]byte, 32)
+		if _, err := io.ReadFull(rand.Reader, material); err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
 	}
 	sealed, err := s.Store.Seal(material)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
+	labelsJSON := "{}"
+	if body.Labels != nil {
+		raw, _ := json.Marshal(body.Labels)
+		labelsJSON = string(raw)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	created, err := s.Store.CreateKMSCryptoKey(
-		store.KMSCryptoKey{Name: keyName, KeyRing: krName, Purpose: purpose, CreatedAt: now},
+		store.KMSCryptoKey{
+			Name: keyName, KeyRing: krName, Purpose: purpose, Algorithm: algorithm,
+			LabelsJSON: labelsJSON, CreatedAt: now,
+		},
 		store.KMSKeyVersion{
 			Name: verName, CryptoKey: keyName, VersionID: "1",
 			State: store.KMSStateEnabled, KeyMaterialCiphertext: sealed, CreatedAt: now,
@@ -254,10 +316,28 @@ func (s *Service) createCryptoKey(w http.ResponseWriter, r *http.Request, p auth
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "crypto key already exists")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name": keyName, "purpose": purpose, "createTime": now,
-		"primary": map[string]any{"name": verName, "state": "ENABLED", "createTime": now},
-	})
+	writeJSON(w, http.StatusOK, cryptoKeyResource(keyName, purpose, algorithm, labelsJSON, now, verName, "ENABLED", now))
+}
+
+func cryptoKeyResource(name, purpose, algorithm, labelsJSON, createTime, primaryName, primaryState, primaryCreate string) map[string]any {
+	var labels map[string]string
+	_ = json.Unmarshal([]byte(labelsJSON), &labels)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	out := map[string]any{
+		"name": name, "purpose": purpose, "createTime": createTime, "labels": labels,
+		"versionTemplate": map[string]any{
+			"algorithm": algorithm, "protectionLevel": "SOFTWARE",
+		},
+	}
+	if primaryName != "" {
+		out["primary"] = map[string]any{
+			"name": primaryName, "state": primaryState, "createTime": primaryCreate,
+			"algorithm": algorithm, "protectionLevel": "SOFTWARE",
+		}
+	}
+	return out
 }
 
 func (s *Service) getCryptoKey(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing, cryptoKey string) {
@@ -280,13 +360,57 @@ func (s *Service) getCryptoKey(w http.ResponseWriter, _ *http.Request, p authn.P
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	out := map[string]any{"name": k.Name, "purpose": k.Purpose, "createTime": k.CreatedAt}
+	primaryName, primaryState, primaryCreate := "", "", ""
 	if pok {
-		out["primary"] = map[string]any{
-			"name": primary.Name, "state": primary.State, "createTime": primary.CreatedAt,
-		}
+		primaryName, primaryState, primaryCreate = primary.Name, primary.State, primary.CreatedAt
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, cryptoKeyResource(k.Name, k.Purpose, k.Algorithm, k.LabelsJSON, k.CreatedAt, primaryName, primaryState, primaryCreate))
+}
+
+func (s *Service) updateCryptoKey(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, keyRing, cryptoKey string) {
+	if err := s.require(p, "cloudkms.cryptoKeys.update", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	k, ok, err := s.Store.GetKMSCryptoKey(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKey not found")
+		return
+	}
+	var body struct {
+		Labels map[string]string `json:"labels"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	labelsJSON := k.LabelsJSON
+	updateMask := r.URL.Query().Get("updateMask")
+	if body.Labels != nil && (updateMask == "" || strings.Contains(updateMask, "labels")) {
+		raw, _ := json.Marshal(body.Labels)
+		labelsJSON = string(raw)
+	}
+	updated, ok, err := s.Store.UpdateKMSCryptoKey(name, labelsJSON)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKey not found")
+		return
+	}
+	primary, pok, err := s.Store.PrimaryKMSKeyVersion(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	primaryName, primaryState, primaryCreate := "", "", ""
+	if pok {
+		primaryName, primaryState, primaryCreate = primary.Name, primary.State, primary.CreatedAt
+	}
+	writeJSON(w, http.StatusOK, cryptoKeyResource(updated.Name, updated.Purpose, updated.Algorithm, updated.LabelsJSON, updated.CreatedAt, primaryName, primaryState, primaryCreate))
 }
 
 func (s *Service) listCryptoKeys(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing string) {
@@ -302,9 +426,63 @@ func (s *Service) listCryptoKeys(w http.ResponseWriter, _ *http.Request, p authn
 	}
 	items := make([]map[string]any, 0, len(list))
 	for _, k := range list {
-		items = append(items, map[string]any{"name": k.Name, "purpose": k.Purpose, "createTime": k.CreatedAt})
+		items = append(items, cryptoKeyResource(k.Name, k.Purpose, k.Algorithm, k.LabelsJSON, k.CreatedAt, "", "", ""))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cryptoKeys": items})
+}
+
+func (s *Service) getIamPolicy(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing, cryptoKey string) {
+	if err := s.require(p, "cloudkms.cryptoKeys.getIamPolicy", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	if _, ok, err := s.Store.GetKMSCryptoKey(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "CryptoKey not found")
+		return
+	}
+	raw, found, err := s.Store.GetIAMPolicyJSON(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, authz.Policy{Etag: "ACAB", Bindings: []authz.Binding{}})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (s *Service) setIamPolicy(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, keyRing, cryptoKey string) {
+	if err := s.require(p, "cloudkms.cryptoKeys.setIamPolicy", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	if _, ok, err := s.Store.GetKMSCryptoKey(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "CryptoKey not found")
+		return
+	}
+	var req struct {
+		Policy authz.Policy `json:"policy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid setIamPolicy body")
+		return
+	}
+	if err := s.Store.PutIAMPolicyJSON(name, req.Policy); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, req.Policy)
 }
 
 func (s *Service) encrypt(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
@@ -313,6 +491,19 @@ func (s *Service) encrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 		return
 	}
 	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	k, ok, err := s.Store.GetKMSCryptoKey(keyName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKey not found")
+		return
+	}
+	if k.Purpose != store.KMSPurposeEncrypt {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "encrypt requires ENCRYPT_DECRYPT purpose")
+		return
+	}
 	verName := keyName + "/cryptoKeyVersions/1"
 	if version != "" {
 		verName = keyName + "/cryptoKeyVersions/" + version
@@ -363,6 +554,19 @@ func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 		return
 	}
 	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	k, ok, err := s.Store.GetKMSCryptoKey(keyName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKey not found")
+		return
+	}
+	if k.Purpose != store.KMSPurposeEncrypt {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "decrypt requires ENCRYPT_DECRYPT purpose")
+		return
+	}
 	verName := keyName + "/cryptoKeyVersions/1"
 	if version != "" {
 		verName = keyName + "/cryptoKeyVersions/" + version
@@ -404,6 +608,160 @@ func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"plaintext": base64.StdEncoding.EncodeToString(plain),
+	})
+}
+
+func (s *Service) getPublicKey(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
+	if err := s.require(p, "cloudkms.cryptoKeyVersions.viewPublicKey", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	k, ok, err := s.Store.GetKMSCryptoKey(keyName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKey not found")
+		return
+	}
+	if k.Purpose != store.KMSPurposeSign {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition,
+			"GetPublicKey is only supported for ASYMMETRIC_SIGN keys; ENCRYPT_DECRYPT is symmetric")
+		return
+	}
+	verName := keyName + "/cryptoKeyVersions/" + version
+	v, ok, err := s.Store.GetKMSKeyVersion(verName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKeyVersion not found")
+		return
+	}
+	if v.State == store.KMSStateDestroyed {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "crypto key version is DESTROYED")
+		return
+	}
+	material, err := s.Store.Unseal(v.KeyMaterialCiphertext)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	privAny, err := x509.ParsePKCS8PrivateKey(material)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	priv, ok := privAny.(*rsa.PrivateKey)
+	if !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "expected RSA private key")
+		return
+	}
+	pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pem": string(pemBytes), "algorithm": k.Algorithm, "name": verName, "protectionLevel": "SOFTWARE",
+	})
+}
+
+func (s *Service) asymmetricSign(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
+	if err := s.require(p, "cloudkms.cryptoKeyVersions.useToSign", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	k, ok, err := s.Store.GetKMSCryptoKey(keyName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKey not found")
+		return
+	}
+	if k.Purpose != store.KMSPurposeSign {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "asymmetricSign requires ASYMMETRIC_SIGN purpose")
+		return
+	}
+	verName := keyName + "/cryptoKeyVersions/" + version
+	var body struct {
+		Digest *struct {
+			SHA256 string `json:"sha256"`
+		} `json:"digest"`
+		Data string `json:"data"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	var digest []byte
+	switch {
+	case body.Digest != nil && body.Digest.SHA256 != "":
+		var err error
+		digest, err = base64.StdEncoding.DecodeString(body.Digest.SHA256)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "digest.sha256 must be base64")
+			return
+		}
+		if len(digest) != sha256.Size {
+			gcperrors.InvalidArgument(w, "digest.sha256 must be 32 bytes")
+			return
+		}
+	case body.Data != "":
+		raw, err := base64.StdEncoding.DecodeString(body.Data)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "data must be base64")
+			return
+		}
+		sum := sha256.Sum256(raw)
+		digest = sum[:]
+	default:
+		gcperrors.InvalidArgument(w, "digest.sha256 or data is required")
+		return
+	}
+	v, ok, err := s.Store.GetKMSKeyVersion(verName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "CryptoKeyVersion not found")
+		return
+	}
+	if v.State == store.KMSStateDestroyed {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "crypto key version is DESTROYED")
+		return
+	}
+	material, err := s.Store.Unseal(v.KeyMaterialCiphertext)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	privAny, err := x509.ParsePKCS8PrivateKey(material)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	priv, ok := privAny.(*rsa.PrivateKey)
+	if !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "expected RSA private key")
+		return
+	}
+	sig, err := rsa.SignPSS(rand.Reader, priv, crypto.SHA256, digest, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"signature": base64.StdEncoding.EncodeToString(sig),
+		"name":      verName,
 	})
 }
 

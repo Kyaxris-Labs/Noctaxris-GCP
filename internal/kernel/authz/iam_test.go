@@ -133,3 +133,41 @@ func TestTestIamPermissions(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestViewerGrantsCommonServiceReads(t *testing.T) {
+	resource := "projects/noctaxris-gcp-local"
+	email := "viewer@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			resource: mustPolicy(t, "roles/viewer", "serviceAccount:"+email),
+		},
+	}
+	reads := []string{
+		"storage.objects.get",
+		"storage.objects.list",
+		"pubsub.topics.list",
+		"secretmanager.secrets.get",
+		"cloudkms.cryptoKeys.get",
+		"logging.logEntries.list",
+		"serviceusage.services.get",
+		"iam.serviceAccounts.list",
+		"resourcemanager.projects.search",
+		"secretmanager.versions.access",
+	}
+	for _, perm := range reads {
+		ok, err := e.Evaluate(email, false, perm, resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Fatalf("viewer should grant %s", perm)
+		}
+	}
+	ok, err := e.Evaluate(email, false, "storage.buckets.create", resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("viewer must not grant create")
+	}
+}

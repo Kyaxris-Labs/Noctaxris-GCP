@@ -1,10 +1,10 @@
 # Cloud KMS
 
-Lab-complete Cloud KMS v1 REST for symmetric encrypt/decrypt keys.
+Lab-complete Cloud KMS v1 REST for symmetric encrypt/decrypt and SOFTWARE RSA sign/verify.
 
 ## Status
 
-**lab** — key rings, crypto keys (`ENCRYPT_DECRYPT`), version list/get, encrypt/decrypt (SOFTWARE AES-GCM), destroy and restore version.
+**lab** — key rings; crypto keys (`ENCRYPT_DECRYPT`, `ASYMMETRIC_SIGN` with `RSA_SIGN_PSS_2048_SHA256`); version list/get; encrypt/decrypt (AES-GCM); asymmetricSign + GetPublicKey; UpdateCryptoKey (labels); destroy/restore version; cryptoKey getIamPolicy/setIamPolicy.
 
 ## Location
 
@@ -14,7 +14,7 @@ Lab default location is **`global`**. `us-central1` also works as a location str
 
 REST on the shared listener (`http://127.0.0.1:4588`).
 
-Colon method suffixes (`:encrypt`, `:decrypt`, `:destroy`, `:restore`) are parsed from the trailing path segment because ServeMux wildcards cannot embed `:` inside a segment.
+Colon method suffixes (`:encrypt`, `:decrypt`, `:destroy`, `:restore`, `:asymmetricSign`, `:getIamPolicy`, `:setIamPolicy`) are parsed from the trailing path segment because ServeMux wildcards cannot embed `:` inside a segment.
 
 | Method | Path |
 |--------|------|
@@ -24,27 +24,51 @@ Colon method suffixes (`:encrypt`, `:decrypt`, `:destroy`, `:restore`) are parse
 | `POST` | `/v1/projects/{p}/locations/{loc}/keyRings/{ring}/cryptoKeys?cryptoKeyId=` |
 | `GET` | `/v1/projects/{p}/locations/{loc}/keyRings/{ring}/cryptoKeys` |
 | `GET` | `/v1/projects/{p}/locations/{loc}/keyRings/{ring}/cryptoKeys/{key}` |
+| `PATCH` | `.../cryptoKeys/{key}?updateMask=labels` |
+| `POST` | `.../cryptoKeys/{key}:getIamPolicy` / `:setIamPolicy` |
 | `GET` | `.../cryptoKeys/{key}/cryptoKeyVersions` |
 | `GET` | `.../cryptoKeyVersions/{n}` |
-| `POST` | `.../cryptoKeys/{key}:encrypt` |
-| `POST` | `.../cryptoKeys/{key}:decrypt` |
-| `POST` | `.../cryptoKeyVersions/{n}:destroy` |
-| `POST` | `.../cryptoKeyVersions/{n}:restore` |
+| `GET` | `.../cryptoKeyVersions/{n}/publicKey` |
+| `POST` | `.../cryptoKeys/{key}:encrypt` / `:decrypt` |
+| `POST` | `.../cryptoKeyVersions/{n}:asymmetricSign` |
+| `POST` | `.../cryptoKeyVersions/{n}:destroy` / `:restore` |
 | `POST` | `.../cryptoKeyVersions/{n}:encrypt` / `:decrypt` |
 
-Encrypt/decrypt request bodies use base64 `plaintext` / `ciphertext` (Google JSON API shape).
+### Symmetric (`ENCRYPT_DECRYPT`)
 
-Key material is AES-256-GCM. Raw key bytes are sealed at rest with the store master key (`Seal`).
+Request bodies use base64 `plaintext` / `ciphertext`. Key material is AES-256-GCM, sealed at rest with the store master key.
 
-Destroying a version sets state `DESTROYED`. `GetCryptoKey.primary.state` reflects that. Later encrypt/decrypt return `FAILED_PRECONDITION`. Lab `:restore` returns the version to `ENABLED`.
+`GetPublicKey` on symmetric keys returns `FAILED_PRECONDITION` (no public key).
+
+### Asymmetric (`ASYMMETRIC_SIGN`)
+
+Create with:
+
+```json
+{
+  "purpose": "ASYMMETRIC_SIGN",
+  "versionTemplate": {
+    "algorithm": "RSA_SIGN_PSS_2048_SHA256",
+    "protectionLevel": "SOFTWARE"
+  }
+}
+```
+
+`asymmetricSign` accepts `digest.sha256` (base64, 32 bytes) or base64 `data` (hashed with SHA-256). Signature is RSA-PSS with salt length equal to hash. Clients verify locally with `GetPublicKey` PEM.
+
+### UpdateCryptoKey / IAM
+
+`PATCH` updates `labels` when `updateMask` is empty or contains `labels`. Per-cryptoKey IAM uses the shared `iam_policies` table keyed by the cryptoKey resource name.
+
+Destroying a version sets state `DESTROYED`. Later crypto ops return `FAILED_PRECONDITION`. Lab `:restore` returns the version to `ENABLED`.
 
 ## Authz
 
 Checked on `projects/{project}`:
 
 - `cloudkms.keyRings.create|get|list`
-- `cloudkms.cryptoKeys.create|get|list`
-- `cloudkms.cryptoKeyVersions.get|list|useToEncrypt|useToDecrypt|destroy|restore`
+- `cloudkms.cryptoKeys.create|get|list|update|getIamPolicy|setIamPolicy`
+- `cloudkms.cryptoKeyVersions.get|list|useToEncrypt|useToDecrypt|useToSign|viewPublicKey|destroy|restore`
 
 ## Client configuration
 
@@ -66,8 +90,7 @@ gcloud config set api_endpoint_overrides/cloudkms http://127.0.0.1:4588/
 
 ## Deferred depth
 
-- Asymmetric keys, MAC, raw encrypt variants
-- Import jobs, automatic rotation, IAM on key resources
+- `ASYMMETRIC_DECRYPT`, MAC keys, HSM protection levels, import jobs, automatic rotation
 - gRPC `KeyManagementService` (REST is the lab path; protos not wired)
 
 ## Verification / CLI smoke

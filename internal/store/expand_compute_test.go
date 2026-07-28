@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
@@ -78,5 +79,14 @@ func TestExpandComputeStoreCRUD(t *testing.T) {
 	}
 	if strings.Contains(task.HTTPRequestJSON, "oidcToken") {
 		t.Fatalf("oidc stored: %s", task.HTTPRequestJSON)
+	}
+
+	next := store.NextCronRunRFC3339("0 9 * * 1", "UTC", time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC))
+	if next == "" {
+		t.Fatal("expected next cron run")
+	}
+	cleaned, aud := store.StripSchedulerOIDC(`{"uri":"http://x","oidcToken":{"audience":"aud1","serviceAccountEmail":"sa"}}`)
+	if aud != "aud1" || strings.Contains(cleaned, "oidcToken") {
+		t.Fatalf("strip oidc: cleaned=%s aud=%s", cleaned, aud)
 	}
 }

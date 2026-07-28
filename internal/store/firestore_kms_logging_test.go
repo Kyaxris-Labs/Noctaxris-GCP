@@ -91,6 +91,30 @@ func TestKMSKeyLifecycle(t *testing.T) {
 	if v.State != store.KMSStateDestroyed {
 		t.Fatalf("state = %q", v.State)
 	}
+
+	signMaterial := []byte("not-used-here")
+	sealedSign, err := st.Seal(signMaterial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signKey := krName + "/cryptoKeys/sign1"
+	created, err = st.CreateKMSCryptoKey(
+		store.KMSCryptoKey{
+			Name: signKey, KeyRing: krName, Purpose: store.KMSPurposeSign,
+			Algorithm: store.KMSAlgoRSAPSS2048, LabelsJSON: `{"a":"b"}`,
+		},
+		store.KMSKeyVersion{
+			Name: signKey + "/cryptoKeyVersions/1", CryptoKey: signKey, VersionID: "1",
+			State: store.KMSStateEnabled, KeyMaterialCiphertext: sealedSign,
+		},
+	)
+	if err != nil || !created {
+		t.Fatalf("create sign key created=%v err=%v", created, err)
+	}
+	updated, ok, err := st.UpdateKMSCryptoKey(signKey, `{"a":"c"}`)
+	if err != nil || !ok || updated.LabelsJSON != `{"a":"c"}` {
+		t.Fatalf("update key %#v ok=%v err=%v", updated, ok, err)
+	}
 }
 
 func TestLogEntriesWriteList(t *testing.T) {
@@ -124,5 +148,24 @@ func TestLogEntriesWriteList(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].InsertID != "i1" {
 		t.Fatalf("text contains got %#v", got)
+	}
+
+	sk, created, err := st.CreateLogSink(store.LogSink{
+		ProjectID: "p1", SinkID: "s1", Destination: "storage.googleapis.com/b", Filter: "severity=ERROR",
+	})
+	if err != nil || !created {
+		t.Fatalf("create sink created=%v err=%v", created, err)
+	}
+	gotSink, ok, err := st.GetLogSink(sk.Name)
+	if err != nil || !ok || gotSink.Destination != "storage.googleapis.com/b" {
+		t.Fatalf("get sink %#v ok=%v err=%v", gotSink, ok, err)
+	}
+	updated, ok, err := st.UpdateLogSink(sk.Name, "storage.googleapis.com/b2", "severity=INFO")
+	if err != nil || !ok || updated.Filter != "severity=INFO" {
+		t.Fatalf("update sink %#v ok=%v err=%v", updated, ok, err)
+	}
+	ok, err = st.DeleteLogSink(sk.Name)
+	if err != nil || !ok {
+		t.Fatalf("delete sink ok=%v err=%v", ok, err)
 	}
 }

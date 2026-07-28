@@ -4,7 +4,7 @@ Lab-complete Firestore v1 gRPC on the shared Noctaxris-GCP port (`127.0.0.1:4588
 
 ## Status
 
-**lab** — document CRUD with field masks, list, batch get, batch write, commit with lab transaction tokens, and simple `RunQuery` filters (`EQUAL`, `IN`, `ARRAY_CONTAINS`).
+**lab** — document CRUD with field masks, list, batch get, batch write, commit with lab transaction tokens and FieldTransforms, collection-group `RunQuery` with ORDER BY / LIMIT / inequality, and PartitionQuery stub.
 
 ## Wire protocol
 
@@ -30,17 +30,18 @@ projects/{project}/databases/(default)/documents/{collection}/{docId}
 | `ListDocuments` | Immediate child docs in a collection |
 | `BatchGetDocuments` | Server stream; missing names reported |
 | `BatchWrite` | Non-transactional update/delete writes; honors `update_mask` |
-| `Commit` | Applies writes; accepts BeginTransaction UUID token (consumed once); no isolation |
+| `Commit` | Applies writes; `serverTimestamp` / `increment` FieldTransforms; accepts BeginTransaction UUID token (consumed once); no isolation |
 | `BeginTransaction` | Returns a lab UUID token for the database |
 | `Rollback` | Clears a lab transaction token |
-| `RunQuery` | `StructuredQuery` with `EQUAL`, `IN`, or `ARRAY_CONTAINS` (or no filter) |
+| `RunQuery` | Collection or collection-group (`all_descendants`); `EQUAL` / `IN` / `ARRAY_CONTAINS` / single-field inequality; `ORDER BY` + `LIMIT` |
+| `PartitionQuery` | Returns one empty cursor partition (single logical partition stub) |
 
 ## Not implemented
 
 | RPC | Response |
 |-----|----------|
 | `Listen` / bidirectional `Write` | `UNIMPLEMENTED` |
-| Aggregations, partitions, pipelines | `UNIMPLEMENTED` (embedded default) |
+| Aggregations, pipelines | `UNIMPLEMENTED` (embedded default) |
 
 ## Authz
 
@@ -72,8 +73,8 @@ Bearer token required (root or registered access token). Cleartext h2c on the sh
 
 - Multi-database ids beyond `(default)`
 - Real transaction isolation, conflict detection, and snapshot listeners (`Listen`)
-- Composite indexes, collection groups, nested field-path masks
-- Transform writes (`serverTimestamp`, increments)
+- Composite indexes, nested field-path masks, multi-field inequalities
+- Additional transforms (`arrayUnion`, `maximum` / `minimum`)
 
 ## Verification / CLI smoke
 

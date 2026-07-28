@@ -15,6 +15,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
+	"github.com/google/uuid"
 )
 
 // Service serves Cloud Logging v2 REST (lab subset).
@@ -31,8 +32,16 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v2/entries:write", s.wrap(principalFrom, s.writeEntries))
 	mux.HandleFunc("POST /v2/entries:list", s.wrap(principalFrom, s.listEntries))
+	mux.HandleFunc("POST /v2/entries:tail", s.wrap(principalFrom, s.tailEntries))
+	mux.HandleFunc("POST /v2/entries:copy", s.wrap(principalFrom, s.copyEntries))
 	mux.HandleFunc("GET /v2/projects/{project}/logs", s.wrap(principalFrom, s.listLogs))
 	mux.HandleFunc("DELETE /v2/projects/{project}/logs/{log}", s.wrap(principalFrom, s.deleteLog))
+	mux.HandleFunc("POST /v2/projects/{project}/sinks", s.wrap(principalFrom, s.createSink))
+	mux.HandleFunc("GET /v2/projects/{project}/sinks", s.wrap(principalFrom, s.listSinks))
+	mux.HandleFunc("GET /v2/projects/{project}/sinks/{sink}", s.wrap(principalFrom, s.getSink))
+	mux.HandleFunc("PUT /v2/projects/{project}/sinks/{sink}", s.wrap(principalFrom, s.updateSink))
+	mux.HandleFunc("PATCH /v2/projects/{project}/sinks/{sink}", s.wrap(principalFrom, s.updateSink))
+	mux.HandleFunc("DELETE /v2/projects/{project}/sinks/{sink}", s.wrap(principalFrom, s.deleteSink))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -61,6 +70,12 @@ func (s *Service) require(p authn.Principal, permission, projectID string) error
 
 var errDenied = fmt.Errorf("permission denied")
 
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 type writeReq struct {
 	LogName  string          `json:"logName"`
 	Resource json.RawMessage `json:"resource"`
@@ -68,13 +83,13 @@ type writeReq struct {
 }
 
 type logEntryIn struct {
-	LogName      string          `json:"logName"`
-	InsertID     string          `json:"insertId"`
-	Severity     string          `json:"severity"`
-	Timestamp    string          `json:"timestamp"`
-	TextPayload  string          `json:"textPayload"`
-	JSONPayload  json.RawMessage `json:"jsonPayload"`
-	Resource     json.RawMessage `json:"resource"`
+	LogName     string          `json:"logName"`
+	InsertID    string          `json:"insertId"`
+	Severity    string          `json:"severity"`
+	Timestamp   string          `json:"timestamp"`
+	TextPayload string          `json:"textPayload"`
+	JSONPayload json.RawMessage `json:"jsonPayload"`
+	Resource    json.RawMessage `json:"resource"`
 }
 
 type listReq struct {
@@ -87,15 +102,15 @@ type listReq struct {
 }
 
 var (
-	reLogNameExact   = regexp.MustCompile(`(?i)^logName\s*=\s*"([^"]+)"$`)
-	reTextContains   = regexp.MustCompile(`(?i)^textPayload\s*:\s*"([^"]+)"$`)
-	reLogNameEq      = regexp.MustCompile(`(?i)logName\s*=\s*"([^"]+)"`)
-	reTextColon      = regexp.MustCompile(`(?i)textPayload\s*:\s*"([^"]+)"`)
-	reSeverityExact  = regexp.MustCompile(`(?i)severity\s*=\s*"?([A-Za-z]+)"?`)
-	reTimestampGTE   = regexp.MustCompile(`(?i)timestamp\s*>=\s*"([^"]+)"`)
-	reTimestampGT    = regexp.MustCompile(`(?i)timestamp\s*>\s*"([^"]+)"`)
-	reTimestampLT    = regexp.MustCompile(`(?i)timestamp\s*<\s*"([^"]+)"`)
-	reTimestampLTE   = regexp.MustCompile(`(?i)timestamp\s*<=\s*"([^"]+)"`)
+	reLogNameExact  = regexp.MustCompile(`(?i)^logName\s*=\s*"([^"]+)"$`)
+	reTextContains  = regexp.MustCompile(`(?i)^textPayload\s*:\s*"([^"]+)"$`)
+	reLogNameEq     = regexp.MustCompile(`(?i)logName\s*=\s*"([^"]+)"`)
+	reTextColon     = regexp.MustCompile(`(?i)textPayload\s*:\s*"([^"]+)"`)
+	reSeverityExact = regexp.MustCompile(`(?i)severity\s*=\s*"?([A-Za-z]+)"?`)
+	reTimestampGTE  = regexp.MustCompile(`(?i)timestamp\s*>=\s*"([^"]+)"`)
+	reTimestampGT   = regexp.MustCompile(`(?i)timestamp\s*>\s*"([^"]+)"`)
+	reTimestampLT   = regexp.MustCompile(`(?i)timestamp\s*<\s*"([^"]+)"`)
+	reTimestampLTE  = regexp.MustCompile(`(?i)timestamp\s*<=\s*"([^"]+)"`)
 )
 
 func (s *Service) writeEntries(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -185,21 +200,9 @@ func (s *Service) listEntries(w http.ResponseWriter, r *http.Request, p authn.Pr
 		gcperrors.InvalidArgument(w, "invalid JSON body")
 		return
 	}
-	projectID := ""
-	for _, rn := range req.ResourceNames {
-		if strings.HasPrefix(rn, "projects/") {
-			parts := strings.Split(rn, "/")
-			if len(parts) >= 2 {
-				projectID = parts[1]
-				break
-			}
-		}
-	}
-	if projectID == "" && len(req.ProjectIds) > 0 {
-		projectID = req.ProjectIds[0]
-	}
-	if projectID == "" {
-		gcperrors.InvalidArgument(w, "resourceNames or projectIds is required")
+	projectID, err := projectFromListReq(req)
+	if err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
 		return
 	}
 	if err := s.require(p, "logging.logEntries.list", projectID); err != nil {
@@ -226,47 +229,243 @@ func (s *Service) listEntries(w http.ResponseWriter, r *http.Request, p authn.Pr
 		}
 		offset = n
 	}
-	exactLog, textContains, severity, tsGTE, tsLT := parseFilter(req.Filter)
-	entries, err := s.Store.ListLogEntries(store.ListLogEntriesFilter{
-		ProjectID: projectID, ExactLogName: exactLog, TextPayloadContain: textContains,
-		Severity: severity, TimestampGTE: tsGTE, TimestampLT: tsLT,
-		PageSize: pageSize, Offset: offset,
+	entries, err := s.queryEntries(projectID, req.Filter, pageSize, offset)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	resp := map[string]any{"entries": entriesToMaps(entries)}
+	if len(entries) == pageSize {
+		resp["nextPageToken"] = strconv.Itoa(offset + pageSize)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// tailEntries is a one-shot lab stand-in for TailLogEntries (no streaming).
+func (s *Service) tailEntries(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	var req listReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	projectID, err := projectFromListReq(req)
+	if err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	if err := s.require(p, "logging.logEntries.list", projectID); err != nil {
+		if err == errDenied {
+			gcperrors.PermissionDenied(w, "")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	pageSize := req.PageSize
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	entries, err := s.queryEntries(projectID, req.Filter, pageSize, 0)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	// One-shot theatre: return a single non-streaming response with current matches.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries": entriesToMaps(entries),
+		"labNote": "TailLogEntries is one-shot (no stream) in this lab",
+	})
+}
+
+// copyEntries stores no export; returns a completed LRO theatre response.
+func (s *Service) copyEntries(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	var req struct {
+		Name          string   `json:"name"`
+		Destination   string   `json:"destination"`
+		Filter        string   `json:"filter"`
+		ResourceNames []string `json:"resourceNames"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	projectID := ""
+	for _, rn := range req.ResourceNames {
+		if strings.HasPrefix(rn, "projects/") {
+			parts := strings.Split(rn, "/")
+			if len(parts) >= 2 {
+				projectID = parts[1]
+				break
+			}
+		}
+	}
+	if projectID == "" && strings.HasPrefix(req.Name, "projects/") {
+		parts := strings.Split(req.Name, "/")
+		if len(parts) >= 2 {
+			projectID = parts[1]
+		}
+	}
+	if projectID == "" {
+		gcperrors.InvalidArgument(w, "resourceNames or name with project is required")
+		return
+	}
+	if err := s.require(p, "logging.entries.copy", projectID); err != nil {
+		if err == errDenied {
+			gcperrors.PermissionDenied(w, "")
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	opName := fmt.Sprintf("projects/%s/locations/global/operations/copy-%s", projectID, uuid.NewString())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": opName,
+		"done": true,
+		"response": map[string]any{
+			"@type":       "type.googleapis.com/google.logging.v2.CopyLogEntriesResponse",
+			"logEntries":  0,
+			"destination": req.Destination,
+			"filter":      req.Filter,
+			"labNote":     "entries.copy is metadata theatre; no export performed",
+		},
+	})
+}
+
+func (s *Service) createSink(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "logging.sinks.create", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	sinkID := r.URL.Query().Get("sinkId")
+	if sinkID == "" {
+		gcperrors.InvalidArgument(w, "sinkId is required")
+		return
+	}
+	var body struct {
+		Destination string `json:"destination"`
+		Filter      string `json:"filter"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	sk, created, err := s.Store.CreateLogSink(store.LogSink{
+		ProjectID: project, SinkID: sinkID, Destination: body.Destination, Filter: body.Filter,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	out := make([]map[string]any, 0, len(entries))
-	for _, e := range entries {
-		item := map[string]any{
-			"insertId":  e.InsertID,
-			"logName":   e.LogName,
-			"severity":  e.Severity,
-			"timestamp": e.Timestamp,
-		}
-		var payload map[string]any
-		_ = json.Unmarshal([]byte(e.PayloadJSON), &payload)
-		if tp, ok := payload["textPayload"]; ok {
-			item["textPayload"] = tp
-		}
-		if jp, ok := payload["jsonPayload"]; ok {
-			item["jsonPayload"] = jp
-		}
-		if e.ResourceJSON != "" && e.ResourceJSON != "{}" {
-			var res any
-			if json.Unmarshal([]byte(e.ResourceJSON), &res) == nil {
-				item["resource"] = res
-			}
-		}
-		out = append(out, item)
+	if !created {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "sink already exists")
+		return
 	}
-	resp := map[string]any{"entries": out}
-	if len(entries) == pageSize {
-		resp["nextPageToken"] = strconv.Itoa(offset + pageSize)
+	writeJSON(w, http.StatusOK, sinkResource(sk))
+}
+
+func (s *Service) getSink(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	sinkID := r.PathValue("sink")
+	if err := s.require(p, "logging.sinks.get", project); err != nil {
+		writeAuthz(w, err)
+		return
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	name := "projects/" + project + "/sinks/" + sinkID
+	sk, ok, err := s.Store.GetLogSink(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "sink not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, sinkResource(sk))
+}
+
+func (s *Service) listSinks(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "logging.sinks.list", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	list, err := s.Store.ListLogSinks(project)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(list))
+	for i := range list {
+		out = append(out, sinkResource(&list[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sinks": out})
+}
+
+func (s *Service) updateSink(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	sinkID := r.PathValue("sink")
+	if err := s.require(p, "logging.sinks.update", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	name := "projects/" + project + "/sinks/" + sinkID
+	existing, ok, err := s.Store.GetLogSink(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "sink not found")
+		return
+	}
+	var body struct {
+		Destination *string `json:"destination"`
+		Filter      *string `json:"filter"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	dest, filter := existing.Destination, existing.Filter
+	if body.Destination != nil {
+		dest = *body.Destination
+	}
+	if body.Filter != nil {
+		filter = *body.Filter
+	}
+	sk, ok, err := s.Store.UpdateLogSink(name, dest, filter)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "sink not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, sinkResource(sk))
+}
+
+func (s *Service) deleteSink(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	sinkID := r.PathValue("sink")
+	if err := s.require(p, "logging.sinks.delete", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	name := "projects/" + project + "/sinks/" + sinkID
+	ok, err := s.Store.DeleteLogSink(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "sink not found")
+		return
+	}
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func sinkResource(sk *store.LogSink) map[string]any {
+	return map[string]any{
+		"name":           sk.Name,
+		"destination":    sk.Destination,
+		"filter":         sk.Filter,
+		"writerIdentity": sk.WriterIdentity,
+		"createTime":     sk.CreatedAt,
+		"updateTime":     sk.UpdatedAt,
+	}
 }
 
 func (s *Service) deleteLog(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -314,9 +513,59 @@ func (s *Service) listLogs(w http.ResponseWriter, r *http.Request, p authn.Princ
 	if names == nil {
 		names = []string{}
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{"logNames": names})
+	writeJSON(w, http.StatusOK, map[string]any{"logNames": names})
+}
+
+func (s *Service) queryEntries(projectID, filter string, pageSize, offset int) ([]store.LogEntry, error) {
+	exactLog, textContains, severity, tsGTE, tsLT := parseFilter(filter)
+	return s.Store.ListLogEntries(store.ListLogEntriesFilter{
+		ProjectID: projectID, ExactLogName: exactLog, TextPayloadContain: textContains,
+		Severity: severity, TimestampGTE: tsGTE, TimestampLT: tsLT,
+		PageSize: pageSize, Offset: offset,
+	})
+}
+
+func entriesToMaps(entries []store.LogEntry) []map[string]any {
+	out := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		item := map[string]any{
+			"insertId":  e.InsertID,
+			"logName":   e.LogName,
+			"severity":  e.Severity,
+			"timestamp": e.Timestamp,
+		}
+		var payload map[string]any
+		_ = json.Unmarshal([]byte(e.PayloadJSON), &payload)
+		if tp, ok := payload["textPayload"]; ok {
+			item["textPayload"] = tp
+		}
+		if jp, ok := payload["jsonPayload"]; ok {
+			item["jsonPayload"] = jp
+		}
+		if e.ResourceJSON != "" && e.ResourceJSON != "{}" {
+			var res any
+			if json.Unmarshal([]byte(e.ResourceJSON), &res) == nil {
+				item["resource"] = res
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func projectFromListReq(req listReq) (string, error) {
+	for _, rn := range req.ResourceNames {
+		if strings.HasPrefix(rn, "projects/") {
+			parts := strings.Split(rn, "/")
+			if len(parts) >= 2 && parts[1] != "" {
+				return parts[1], nil
+			}
+		}
+	}
+	if len(req.ProjectIds) > 0 && req.ProjectIds[0] != "" {
+		return req.ProjectIds[0], nil
+	}
+	return "", fmt.Errorf("resourceNames or projectIds is required")
 }
 
 func parseFilter(filter string) (exactLogName, textContains, severity, timestampGTE, timestampLT string) {
@@ -366,4 +615,12 @@ func newInsertID(i int) string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return fmt.Sprintf("%s-%d", hex.EncodeToString(b[:]), i)
+}
+
+func writeAuthz(w http.ResponseWriter, err error) {
+	if err == errDenied {
+		gcperrors.PermissionDenied(w, "")
+		return
+	}
+	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
+	"github.com/google/uuid"
 )
 
 // DefaultLocation is the lab default Functions location.
@@ -28,6 +29,7 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/functions", s.wrap(principalFrom, s.listFunctions))
 	mux.HandleFunc("POST /v2/projects/{project}/locations/{location}/functions", s.wrap(principalFrom, s.createFunction))
+	mux.HandleFunc("POST /v2/projects/{project}/locations/{location}/functions:generateUploadUrl", s.wrap(principalFrom, s.generateUploadUrl))
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/functions/{function}", s.wrap(principalFrom, s.getOrInvoke))
 	mux.HandleFunc("PATCH /v2/projects/{project}/locations/{location}/functions/{function}", s.wrap(principalFrom, s.patchFunction))
 	mux.HandleFunc("DELETE /v2/projects/{project}/locations/{location}/functions/{function}", s.wrap(principalFrom, s.deleteFunction))
@@ -139,6 +141,23 @@ func (s *Service) createFunction(w http.ResponseWriter, r *http.Request, p authn
 	writeJSON(w, http.StatusOK, toFunctionJSON(fn))
 }
 
+func (s *Service) generateUploadUrl(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	if err := s.require(p, "cloudfunctions.functions.create", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	id := uuid.NewString()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"uploadUrl": fmt.Sprintf("http://127.0.0.1:4588/v2/projects/%s/locations/%s/functions:upload/%s", project, location, id),
+		"storageSource": map[string]any{
+			"bucket": "noctaxris-gcp-functions-lab",
+			"object": fmt.Sprintf("uploads/%s/%s.zip", project, id),
+		},
+	})
+}
+
 func (s *Service) listFunctions(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
@@ -163,8 +182,15 @@ func (s *Service) getOrInvoke(w http.ResponseWriter, r *http.Request, p authn.Pr
 	location := r.PathValue("location")
 	seg := r.PathValue("function")
 	id, action := splitAction(seg)
-	if action == "invoke" {
+	switch action {
+	case "invoke":
 		s.invoke(w, r, p, project, location, id)
+		return
+	case "getIamPolicy":
+		s.getIamPolicy(w, r, p, project, location, id)
+		return
+	case "setIamPolicy":
+		s.setIamPolicy(w, r, p, project, location, id)
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -196,12 +222,29 @@ func (s *Service) patchFunction(w http.ResponseWriter, r *http.Request, p authn.
 		writeAuthzErr(w, err)
 		return
 	}
+	existing, ok, err := s.Store.GetCloudFunction(functionName(project, location, id))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Function not found")
+		return
+	}
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	cfgRaw := ""
+	cfgRaw := existing.ConfigJSON
 	labResp := ""
 	if body != nil {
-		b, _ := json.Marshal(body)
+		var existingCfg map[string]any
+		_ = json.Unmarshal([]byte(existing.ConfigJSON), &existingCfg)
+		if existingCfg == nil {
+			existingCfg = map[string]any{}
+		}
+		for k, v := range body {
+			existingCfg[k] = v
+		}
+		b, _ := json.Marshal(existingCfg)
 		cfgRaw = string(b)
 		if v, ok := body["labResponse"].(map[string]any); ok {
 			raw, _ := json.Marshal(v)
@@ -244,6 +287,60 @@ func (s *Service) deleteFunction(w http.ResponseWriter, r *http.Request, p authn
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
+func (s *Service) getIamPolicy(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, id string) {
+	if err := s.require(p, "cloudfunctions.functions.getIamPolicy", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := functionName(project, location, id)
+	if _, ok, err := s.Store.GetCloudFunction(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Function not found")
+		return
+	}
+	raw, found, err := s.Store.GetIAMPolicyJSON(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, authz.Policy{Etag: "ACAB", Bindings: []authz.Binding{}})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (s *Service) setIamPolicy(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, id string) {
+	if err := s.require(p, "cloudfunctions.functions.setIamPolicy", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := functionName(project, location, id)
+	if _, ok, err := s.Store.GetCloudFunction(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "Function not found")
+		return
+	}
+	var req struct {
+		Policy authz.Policy `json:"policy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid setIamPolicy body")
+		return
+	}
+	if err := s.Store.PutIAMPolicyJSON(name, req.Policy); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, req.Policy)
+}
+
 func (s *Service) invoke(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, id string) {
 	if err := s.require(p, "cloudfunctions.functions.invoke", project); err != nil {
 		writeAuthzErr(w, err)
@@ -272,11 +369,11 @@ func toFunctionJSON(fn store.CloudFunction) map[string]any {
 	var cfg any
 	_ = json.Unmarshal([]byte(fn.ConfigJSON), &cfg)
 	out := map[string]any{
-		"name":       fn.Name,
-		"state":      fn.State,
-		"createTime": fn.CreatedAt,
-		"updateTime": fn.UpdatedAt,
-		"url":        fn.URI,
+		"name":        fn.Name,
+		"state":       fn.State,
+		"createTime":  fn.CreatedAt,
+		"updateTime":  fn.UpdatedAt,
+		"url":         fn.URI,
 		"environment": "GEN_2",
 	}
 	if m, ok := cfg.(map[string]any); ok {
@@ -285,6 +382,12 @@ func toFunctionJSON(fn store.CloudFunction) map[string]any {
 		}
 		if sc, ok := m["serviceConfig"]; ok {
 			out["serviceConfig"] = sc
+		}
+		if labels, ok := m["labels"]; ok {
+			out["labels"] = labels
+		}
+		if desc, ok := m["description"]; ok {
+			out["description"] = desc
 		}
 	}
 	return out

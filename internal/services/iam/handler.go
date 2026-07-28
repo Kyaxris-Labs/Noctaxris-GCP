@@ -2,6 +2,7 @@ package iam
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +82,17 @@ func (h *Handler) createServiceAccount(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("project")
 	resource := "projects/" + projectID
 	if _, ok := h.require(w, r, "iam.serviceAccounts.create", resource); !ok {
+		return
+	}
+	// Optional Service Usage gate: refuse creates when iam.googleapis.com is DISABLED.
+	enabled, err := h.Store.IsServiceEnabled(projectID, "iam.googleapis.com")
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !enabled {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition,
+			"Service iam.googleapis.com is disabled for this project.")
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -237,10 +250,16 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 	raw := decodeAccount(r.PathValue("account"))
 	account, action := splitColonAction(raw)
 	if account == "" || action == "" {
-		gcperrors.InvalidArgument(w, "expected serviceAccounts/{account}:enable|disable|getIamPolicy|setIamPolicy|testIamPermissions")
+		gcperrors.InvalidArgument(w, "expected serviceAccounts/{account}:enable|disable|undelete|signBlob|getIamPolicy|setIamPolicy|testIamPermissions")
 		return
 	}
 	projectResource := "projects/" + projectID
+
+	if action == "undelete" {
+		h.undeleteServiceAccount(w, r, projectID, projectResource, account)
+		return
+	}
+
 	sa, ok, err := h.Store.GetServiceAccountInProject(projectID, account)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -283,6 +302,8 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("{}"))
+	case "signBlob":
+		h.signBlob(w, r, projectResource, sa)
 	case "getIamPolicy":
 		h.getIamPolicy(w, r, projectResource, saResource)
 	case "setIamPolicy":
@@ -292,6 +313,75 @@ func (h *Handler) serviceAccountPost(w http.ResponseWriter, r *http.Request) {
 	default:
 		gcperrors.InvalidArgument(w, "unknown method on service account")
 	}
+}
+
+func (h *Handler) undeleteServiceAccount(w http.ResponseWriter, r *http.Request, projectID, projectResource, account string) {
+	if _, ok := h.require(w, r, "iam.serviceAccounts.undelete", projectResource); !ok {
+		return
+	}
+	sa, ok, err := h.Store.GetDeletedServiceAccountInProject(projectID, account)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Deleted service account does not exist.")
+		return
+	}
+	restored, ok, err := h.Store.UndeleteServiceAccount(sa.Email)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Deleted service account does not exist.")
+		return
+	}
+	writeJSON(w, http.StatusOK, saJSON(restored))
+}
+
+func (h *Handler) signBlob(w http.ResponseWriter, r *http.Request, projectResource string, sa store.ServiceAccount) {
+	if _, ok := h.require(w, r, "iam.serviceAccounts.signBlob", projectResource); !ok {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		BytesToSign string `json:"bytesToSign"`
+		Payload     string `json:"payload"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	b64 := req.BytesToSign
+	if b64 == "" {
+		b64 = req.Payload
+	}
+	if b64 == "" {
+		gcperrors.InvalidArgument(w, "bytesToSign (or payload) is required")
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		// Accept URL-safe base64 as well.
+		raw, err = base64.URLEncoding.DecodeString(b64)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "bytesToSign must be base64")
+			return
+		}
+	}
+	sum := sha256.Sum256(raw)
+	sig := base64.StdEncoding.EncodeToString(sum[:])
+	writeJSON(w, http.StatusOK, map[string]any{
+		"keyId":     "lab-sha256",
+		"signature": sig,
+		// IAM Credentials API field name (same digest; not an RSA signature).
+		"signedBlob": sig,
+	})
 }
 
 func (h *Handler) getIamPolicy(w http.ResponseWriter, r *http.Request, projectResource, saResource string) {
@@ -502,8 +592,21 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		gcperrors.NotFound(w, "Service account does not exist.")
 		return
 	}
-	keys, err := h.Store.ListServiceAccountKeys(sa.Email)
+	pageSize := 0
+	if v := r.URL.Query().Get("pageSize"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			gcperrors.InvalidArgument(w, "invalid pageSize")
+			return
+		}
+		pageSize = n
+	}
+	keys, next, err := h.Store.ListServiceAccountKeysPage(sa.Email, pageSize, r.URL.Query().Get("pageToken"))
 	if err != nil {
+		if strings.Contains(err.Error(), "pageToken") {
+			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
@@ -511,7 +614,11 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	for _, k := range keys {
 		out = append(out, keyMetaJSON(k))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
+	resp := map[string]any{"keys": out}
+	if next != "" {
+		resp["nextPageToken"] = next
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) getKey(w http.ResponseWriter, r *http.Request) {

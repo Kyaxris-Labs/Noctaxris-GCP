@@ -1,10 +1,10 @@
 # BigQuery
 
-Lab BigQuery REST v2 for datasets, tables, streaming inserts, and a limited query engine.
+Lab BigQuery REST v2 for datasets, tables, streaming inserts, tabledata list, jobs get, and a limited query engine.
 
 ## Status
 
-**lab** — datasets/tables CRUD, `insertAll` (max 500 rows), `jobs.query` subset.
+**lab** — datasets/tables CRUD, `insertAll` (max 500 rows, optional `skipInvalidRows`), `tabledata.list`, `jobs.query` / `jobs.get`, dryRun, CREATE TABLE via query, JOIN lite.
 
 ## Wire protocol
 
@@ -19,17 +19,23 @@ Lab BigQuery REST v2 for datasets, tables, streaming inserts, and a limited quer
 | `GET` | `/bigquery/v2/projects/{project}/datasets/{dataset}/tables/{table}` |
 | `DELETE` | `/bigquery/v2/projects/{project}/datasets/{dataset}/tables/{table}` |
 | `POST` | `/bigquery/v2/projects/{project}/datasets/{dataset}/tables/{table}/insertAll` |
+| `GET` | `/bigquery/v2/projects/{project}/datasets/{dataset}/tables/{table}/data` |
 | `POST` | `/bigquery/v2/projects/{project}/queries` |
+| `GET` | `/bigquery/v2/projects/{project}/jobs/{job}` |
 
-Rows from `insertAll` are stored as JSON in SQLite.
+Rows from `insertAll` are stored as JSON in SQLite. Jobs from `jobs.query` are stored for `jobs.get`.
 
 ### Query engine
 
 ```sql
 SELECT col|* FROM dataset.table [WHERE col = value] [LIMIT n]
+SELECT a.x, b.y FROM dataset.t1 a JOIN dataset.t2 b ON a.id = b.id [LIMIT n]
+CREATE TABLE dataset.table (col TYPE [REQUIRED|NULLABLE], ...)
 ```
 
-Only that shape is accepted. Joins, aggregations, nested fields, and DML are deferred.
+`dryRun: true` validates/parses and returns schema without rows (or without creating the table for CREATE TABLE).
+
+`insertAll` with `skipInvalidRows: true` skips rows missing REQUIRED schema fields and reports `insertErrors`.
 
 ## Authz
 
@@ -37,7 +43,7 @@ Checked on `projects/{project}`:
 
 - `bigquery.datasets.*`
 - `bigquery.tables.*`
-- `bigquery.jobs.create`
+- `bigquery.jobs.create` / `bigquery.jobs.get`
 
 ## Client configuration
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -417,11 +418,21 @@ func (s *Service) applyWrite(projectID string, w *firestorepb.Write) (*firestore
 		if err != nil {
 			return wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
 		}
+		var transformResults []*firestorepb.Value
+		if len(w.GetUpdateTransforms()) > 0 {
+			fieldsJSON, transformResults, err = applyFieldTransforms(fieldsJSON, w.GetUpdateTransforms(), now)
+			if err != nil {
+				return wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
+			}
+			wr.TransformResults = transformResults
+		}
 		d := store.FirestoreDoc{
 			Path: doc.GetName(), ProjectID: projectID, CollectionID: coll, DocumentID: docID,
 			FieldsJSON: fieldsJSON, CreateTime: createTime, UpdateTime: createTime,
 		}
 		if ok {
+			d.UpdateTime = now.AsTime().UTC().Format(time.RFC3339Nano)
+		} else {
 			d.UpdateTime = now.AsTime().UTC().Format(time.RFC3339Nano)
 		}
 		if err := s.Store.PutFirestoreDoc(d); err != nil {
@@ -435,6 +446,38 @@ func (s *Service) applyWrite(projectID string, w *firestorepb.Write) (*firestore
 		}
 		if !ok {
 			return wr, &rpcstatus.Status{Code: int32(codes.NotFound), Message: "not found"}
+		}
+		return wr, &rpcstatus.Status{Code: int32(codes.OK)}
+	case *firestorepb.Write_Transform:
+		tr := op.Transform
+		if tr == nil || tr.GetDocument() == "" {
+			return wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: "transform document required"}
+		}
+		_, coll, docID, err := parseDocPath(tr.GetDocument())
+		if err != nil {
+			return wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
+		}
+		existing, ok, err := s.Store.GetFirestoreDoc(tr.GetDocument())
+		if err != nil {
+			return wr, &rpcstatus.Status{Code: int32(codes.Internal), Message: err.Error()}
+		}
+		existingJSON := "{}"
+		createTime := now.AsTime().UTC().Format(time.RFC3339Nano)
+		if ok {
+			existingJSON = existing.FieldsJSON
+			createTime = existing.CreateTime
+		}
+		fieldsJSON, transformResults, err := applyFieldTransforms(existingJSON, tr.GetFieldTransforms(), now)
+		if err != nil {
+			return wr, &rpcstatus.Status{Code: int32(codes.InvalidArgument), Message: err.Error()}
+		}
+		wr.TransformResults = transformResults
+		d := store.FirestoreDoc{
+			Path: tr.GetDocument(), ProjectID: projectID, CollectionID: coll, DocumentID: docID,
+			FieldsJSON: fieldsJSON, CreateTime: createTime, UpdateTime: now.AsTime().UTC().Format(time.RFC3339Nano),
+		}
+		if err := s.Store.PutFirestoreDoc(d); err != nil {
+			return wr, &rpcstatus.Status{Code: int32(codes.Internal), Message: err.Error()}
 		}
 		return wr, &rpcstatus.Status{Code: int32(codes.OK)}
 	default:
@@ -475,7 +518,8 @@ func (s *Service) Commit(ctx context.Context, req *firestorepb.CommitRequest) (*
 	return &firestorepb.CommitResponse{WriteResults: results, CommitTime: timestamppb.Now()}, nil
 }
 
-// RunQuery implements a lab subset: EQUAL, IN, and ARRAY_CONTAINS field filters.
+// RunQuery implements a lab subset: collection or collection-group scans with
+// EQUAL / IN / ARRAY_CONTAINS / single-field inequality, ORDER BY, and LIMIT.
 func (s *Service) RunQuery(req *firestorepb.RunQueryRequest, stream firestorepb.Firestore_RunQueryServer) error {
 	parent := req.GetParent()
 	if parent == "" {
@@ -492,26 +536,42 @@ func (s *Service) RunQuery(req *firestorepb.RunQueryRequest, stream firestorepb.
 	if sq == nil || len(sq.GetFrom()) == 0 {
 		return status.Error(codes.InvalidArgument, "structured_query.from is required")
 	}
-	coll := sq.GetFrom()[0].GetCollectionId()
+	from := sq.GetFrom()[0]
+	coll := from.GetCollectionId()
 	filter, hasFilter, err := extractSimpleFilter(sq.GetWhere())
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
-	docs, err := s.Store.ListFirestoreDocs(projectID, parent, coll, 1000)
+	var docs []store.FirestoreDoc
+	if from.GetAllDescendants() {
+		docs, err = s.Store.ListFirestoreDocsByCollection(projectID, coll, 1000)
+	} else {
+		docs, err = s.Store.ListFirestoreDocs(projectID, parent, coll, 1000)
+	}
 	if err != nil {
 		return status.Errorf(codes.Internal, "%v", err)
 	}
-	readTime := timestamppb.Now()
+	matched := make([]store.FirestoreDoc, 0, len(docs))
 	for _, d := range docs {
 		if hasFilter {
-			match, err := matchSimpleFilter(d.FieldsJSON, filter)
+			ok, err := matchSimpleFilter(d.FieldsJSON, filter)
 			if err != nil {
 				return status.Errorf(codes.Internal, "%v", err)
 			}
-			if !match {
+			if !ok {
 				continue
 			}
 		}
+		matched = append(matched, d)
+	}
+	if err := orderFirestoreDocs(matched, sq.GetOrderBy()); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	if lim := sq.GetLimit(); lim != nil && lim.GetValue() >= 0 && int(lim.GetValue()) < len(matched) {
+		matched = matched[:lim.GetValue()]
+	}
+	readTime := timestamppb.Now()
+	for _, d := range matched {
 		p, err := s.toProto(d)
 		if err != nil {
 			return status.Errorf(codes.Internal, "%v", err)
@@ -521,6 +581,27 @@ func (s *Service) RunQuery(req *firestorepb.RunQueryRequest, stream firestorepb.
 		}
 	}
 	return nil
+}
+
+// PartitionQuery returns a single empty cursor partition (lab stub: one logical partition).
+func (s *Service) PartitionQuery(ctx context.Context, req *firestorepb.PartitionQueryRequest) (*firestorepb.PartitionQueryResponse, error) {
+	parent := req.GetParent()
+	if parent == "" {
+		return nil, status.Error(codes.InvalidArgument, "parent is required")
+	}
+	projectID, err := projectFromName(parent)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if _, err := s.require(ctx, "datastore.entities.list", projectID); err != nil {
+		return nil, err
+	}
+	if req.GetStructuredQuery() == nil || len(req.GetStructuredQuery().GetFrom()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "structured_query.from is required")
+	}
+	return &firestorepb.PartitionQueryResponse{
+		Partitions: []*firestorepb.Cursor{{}},
+	}, nil
 }
 
 type simpleFilter struct {
@@ -541,7 +622,11 @@ func extractSimpleFilter(filter *firestorepb.StructuredQuery_Filter) (simpleFilt
 	switch op {
 	case firestorepb.StructuredQuery_FieldFilter_EQUAL,
 		firestorepb.StructuredQuery_FieldFilter_IN,
-		firestorepb.StructuredQuery_FieldFilter_ARRAY_CONTAINS:
+		firestorepb.StructuredQuery_FieldFilter_ARRAY_CONTAINS,
+		firestorepb.StructuredQuery_FieldFilter_LESS_THAN,
+		firestorepb.StructuredQuery_FieldFilter_LESS_THAN_OR_EQUAL,
+		firestorepb.StructuredQuery_FieldFilter_GREATER_THAN,
+		firestorepb.StructuredQuery_FieldFilter_GREATER_THAN_OR_EQUAL:
 		return simpleFilter{field: ff.GetField().GetFieldPath(), op: op, want: ff.GetValue()}, true, nil
 	default:
 		return simpleFilter{}, false, fmt.Errorf("unsupported field filter op %v", op)
@@ -560,6 +645,24 @@ func matchSimpleFilter(fieldsJSON string, f simpleFilter) (bool, error) {
 	switch f.op {
 	case firestorepb.StructuredQuery_FieldFilter_EQUAL:
 		return valuesEqual(got, f.want)
+	case firestorepb.StructuredQuery_FieldFilter_LESS_THAN,
+		firestorepb.StructuredQuery_FieldFilter_LESS_THAN_OR_EQUAL,
+		firestorepb.StructuredQuery_FieldFilter_GREATER_THAN,
+		firestorepb.StructuredQuery_FieldFilter_GREATER_THAN_OR_EQUAL:
+		cmp, err := compareValues(got, f.want)
+		if err != nil {
+			return false, err
+		}
+		switch f.op {
+		case firestorepb.StructuredQuery_FieldFilter_LESS_THAN:
+			return cmp < 0, nil
+		case firestorepb.StructuredQuery_FieldFilter_LESS_THAN_OR_EQUAL:
+			return cmp <= 0, nil
+		case firestorepb.StructuredQuery_FieldFilter_GREATER_THAN:
+			return cmp > 0, nil
+		default:
+			return cmp >= 0, nil
+		}
 	case firestorepb.StructuredQuery_FieldFilter_IN:
 		arr := f.want.GetArrayValue()
 		if arr == nil {
@@ -608,6 +711,139 @@ func valuesEqual(a, b *firestorepb.Value) (bool, error) {
 		return false, err
 	}
 	return string(gb) == string(wb), nil
+}
+
+func compareValues(a, b *firestorepb.Value) (int, error) {
+	if a == nil || b == nil {
+		return 0, fmt.Errorf("cannot compare nil values")
+	}
+	if ai, ok := asNumber(a); ok {
+		if bi, ok := asNumber(b); ok {
+			switch {
+			case ai < bi:
+				return -1, nil
+			case ai > bi:
+				return 1, nil
+			default:
+				return 0, nil
+			}
+		}
+	}
+	as := a.GetStringValue()
+	bs := b.GetStringValue()
+	if a.GetValueType() != nil && b.GetValueType() != nil {
+		if _, ok := a.GetValueType().(*firestorepb.Value_StringValue); ok {
+			if _, ok := b.GetValueType().(*firestorepb.Value_StringValue); ok {
+				return strings.Compare(as, bs), nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("unsupported inequality value types")
+}
+
+func asNumber(v *firestorepb.Value) (float64, bool) {
+	switch t := v.GetValueType().(type) {
+	case *firestorepb.Value_IntegerValue:
+		return float64(t.IntegerValue), true
+	case *firestorepb.Value_DoubleValue:
+		return t.DoubleValue, true
+	default:
+		return 0, false
+	}
+}
+
+func orderFirestoreDocs(docs []store.FirestoreDoc, orders []*firestorepb.StructuredQuery_Order) error {
+	if len(orders) == 0 {
+		return nil
+	}
+	field := orders[0].GetField().GetFieldPath()
+	if field == "" {
+		return fmt.Errorf("order_by field is required")
+	}
+	desc := orders[0].GetDirection() == firestorepb.StructuredQuery_DESCENDING
+	sort.SliceStable(docs, func(i, j int) bool {
+		fi, _ := fieldsFromJSON(docs[i].FieldsJSON)
+		fj, _ := fieldsFromJSON(docs[j].FieldsJSON)
+		vi, oki := fi[field]
+		vj, okj := fj[field]
+		if !oki && !okj {
+			return docs[i].Path < docs[j].Path
+		}
+		if !oki {
+			return !desc
+		}
+		if !okj {
+			return desc
+		}
+		cmp, err := compareValues(vi, vj)
+		if err != nil {
+			return docs[i].Path < docs[j].Path
+		}
+		if desc {
+			return cmp > 0
+		}
+		return cmp < 0
+	})
+	return nil
+}
+
+func applyFieldTransforms(fieldsJSON string, transforms []*firestorepb.DocumentTransform_FieldTransform, now *timestamppb.Timestamp) (string, []*firestorepb.Value, error) {
+	fields, err := fieldsFromJSON(fieldsJSON)
+	if err != nil {
+		return "", nil, err
+	}
+	results := make([]*firestorepb.Value, 0, len(transforms))
+	for _, t := range transforms {
+		path := topLevelField(t.GetFieldPath())
+		if path == "" {
+			return "", nil, fmt.Errorf("field_path is required")
+		}
+		var result *firestorepb.Value
+		switch tt := t.GetTransformType().(type) {
+		case *firestorepb.DocumentTransform_FieldTransform_SetToServerValue:
+			if tt.SetToServerValue != firestorepb.DocumentTransform_FieldTransform_REQUEST_TIME {
+				return "", nil, fmt.Errorf("only REQUEST_TIME server value is supported")
+			}
+			result = &firestorepb.Value{ValueType: &firestorepb.Value_TimestampValue{TimestampValue: now}}
+			fields[path] = result
+		case *firestorepb.DocumentTransform_FieldTransform_Increment:
+			inc := tt.Increment
+			cur := fields[path]
+			var next float64
+			if cur != nil {
+				if n, ok := asNumber(cur); ok {
+					next = n
+				}
+			}
+			n, ok := asNumber(inc)
+			if !ok {
+				return "", nil, fmt.Errorf("increment value must be numeric")
+			}
+			next += n
+			if isIntegerValue(inc) && (cur == nil || isIntegerValue(cur)) {
+				result = &firestorepb.Value{ValueType: &firestorepb.Value_IntegerValue{IntegerValue: int64(next)}}
+			} else {
+				result = &firestorepb.Value{ValueType: &firestorepb.Value_DoubleValue{DoubleValue: next}}
+			}
+			fields[path] = result
+		default:
+			return "", nil, fmt.Errorf("unsupported field transform")
+		}
+		results = append(results, result)
+	}
+	out, err := fieldsToJSON(fields)
+	if err != nil {
+		return "", nil, err
+	}
+	return out, results, nil
+}
+
+func isIntegerValue(v *firestorepb.Value) bool {
+	if v == nil {
+		return false
+	}
+	_, ok := v.GetValueType().(*firestorepb.Value_IntegerValue)
+	return ok
 }
 
 func applyFieldMaskJSON(existingJSON string, incoming map[string]*firestorepb.Value, mask *firestorepb.DocumentMask) (string, error) {

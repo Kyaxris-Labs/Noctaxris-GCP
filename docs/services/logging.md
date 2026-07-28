@@ -1,21 +1,28 @@
 # Cloud Logging
 
-Lab-complete Cloud Logging v2 REST for writing and listing log entries.
+Lab-complete Cloud Logging v2 REST for writing and listing log entries, sink metadata, and light theatre APIs.
 
 ## Status
 
-**lab** — `entries:write`, `entries:list`, list log names, delete log, and a small filter subset (including severity and timestamp inequalities).
+**lab** — `entries:write`, `entries:list`, list/delete logs, filter subset, sinks CRUD (metadata only; no export), one-shot `entries:tail`, `entries:copy` LRO theatre.
 
 ## Wire protocol
 
-Colon custom methods use literal path segments (`entries:write`, `entries:list`) because ServeMux wildcards cannot embed `:` inside a segment.
+Colon custom methods use literal path segments (`entries:write`, `entries:list`, `entries:tail`, `entries:copy`) because ServeMux wildcards cannot embed `:` inside a segment.
 
 | Method | Path |
 |--------|------|
 | `POST` | `/v2/entries:write` |
 | `POST` | `/v2/entries:list` |
+| `POST` | `/v2/entries:tail` |
+| `POST` | `/v2/entries:copy` |
 | `GET` | `/v2/projects/{project}/logs` |
 | `DELETE` | `/v2/projects/{project}/logs/{log}` |
+| `POST` | `/v2/projects/{project}/sinks?sinkId=` |
+| `GET` | `/v2/projects/{project}/sinks` |
+| `GET` | `/v2/projects/{project}/sinks/{sink}` |
+| `PUT` / `PATCH` | `/v2/projects/{project}/sinks/{sink}` |
+| `DELETE` | `/v2/projects/{project}/sinks/{sink}` |
 
 `{log}` is the log id (URL-decoded by the server). Full log name is `projects/{project}/logs/{log}`.
 
@@ -25,7 +32,7 @@ Body fields used: `logName`, optional default `resource`, `entries[]` with `logN
 
 Missing `insertId` / `timestamp` are filled by the emulator.
 
-### List
+### List / Tail
 
 Body fields used: `resourceNames` (or deprecated `projectIds`), `filter`, `pageSize`, `pageToken`.
 
@@ -34,6 +41,16 @@ Body fields used: `resourceNames` (or deprecated `projectIds`), `filter`, `pageS
 | Default page size | 50 |
 | Max page size | 1000 |
 | Page token | numeric offset (lab) |
+
+`entries:tail` is **one-shot**: returns currently matching entries (same filter subset as list). No streaming / long-poll.
+
+### Copy
+
+`entries:copy` returns a completed LRO (`done: true`) with destination/filter echoed. No bytes are exported.
+
+### Sinks
+
+Store `name`, `destination`, `filter`, theatre `writerIdentity`, timestamps. No real export to GCS/BigQuery/Pub/Sub.
 
 ### Filter subset
 
@@ -57,8 +74,10 @@ Checked on `projects/{project}`:
 
 - `logging.logEntries.create`
 - `logging.logEntries.list`
+- `logging.entries.copy`
 - `logging.logs.delete`
 - `logging.logs.list`
+- `logging.sinks.create|get|list|update|delete`
 
 ## Client configuration
 
@@ -78,9 +97,9 @@ Send `Authorization: Bearer <token>` on every call.
 
 ## Deferred depth
 
-- Sinks, metrics, buckets/views, exclusions
-- Full query language, histogram APIs, tail
-- gRPC `LoggingServiceV2` (REST is the lab path; protos not wired)
+- Real sink export, log-based metrics, buckets/views, exclusions
+- Full query language, histogram APIs, streaming TailLogEntries
+- gRPC `LoggingServiceV2` (REST is the lab path; protos not wired in this module)
 
 ## Verification / CLI smoke
 

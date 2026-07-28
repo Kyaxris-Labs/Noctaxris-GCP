@@ -219,12 +219,17 @@ func (s *Service) patchJob(w http.ResponseWriter, r *http.Request, p authn.Princ
 	}
 	if updated.HTTPTargetJSON == "" {
 		updated.HTTPTargetJSON = existing.HTTPTargetJSON
+		updated.OIDCAudience = existing.OIDCAudience
 	}
 	if updated.PubsubTargetJSON == "" {
 		updated.PubsubTargetJSON = existing.PubsubTargetJSON
 	}
+	if updated.OIDCAudience == "" {
+		updated.OIDCAudience = existing.OIDCAudience
+	}
 	updated.LastAttemptTime = existing.LastAttemptTime
 	updated.CreatedAt = existing.CreatedAt
+	updated.NextRunTime = store.NextCronRunRFC3339(updated.Schedule, updated.TimeZone, time.Now().UTC())
 	if _, err := s.Store.UpdateSchedulerJob(updated); err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -327,9 +332,10 @@ func parseJobBody(project, location, jobID string, body map[string]any) store.Sc
 	state, _ := body["state"].(string)
 	httpJSON := ""
 	pubsubJSON := ""
+	oidcAud := ""
 	if ht, ok := body["httpTarget"].(map[string]any); ok {
 		raw, _ := json.Marshal(ht)
-		httpJSON = string(raw)
+		httpJSON, oidcAud = store.StripSchedulerOIDC(string(raw))
 	}
 	if pt, ok := body["pubsubTarget"].(map[string]any); ok {
 		raw, _ := json.Marshal(pt)
@@ -346,6 +352,8 @@ func parseJobBody(project, location, jobID string, body map[string]any) store.Sc
 		State:            state,
 		HTTPTargetJSON:   httpJSON,
 		PubsubTargetJSON: pubsubJSON,
+		OIDCAudience:     oidcAud,
+		NextRunTime:      store.NextCronRunRFC3339(schedule, tz, time.Now().UTC()),
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -359,12 +367,18 @@ func toJobJSON(job store.SchedulerJob) map[string]any {
 		"state":           job.State,
 		"userUpdateTime":  job.UpdatedAt,
 		"lastAttemptTime": job.LastAttemptTime,
-		"scheduleTime":    job.LastAttemptTime,
+		"scheduleTime":    job.NextRunTime,
+	}
+	if job.NextRunTime != "" {
+		out["scheduleTime"] = job.NextRunTime
 	}
 	if job.HTTPTargetJSON != "" {
 		var ht any
 		_ = json.Unmarshal([]byte(job.HTTPTargetJSON), &ht)
 		out["httpTarget"] = ht
+	}
+	if job.OIDCAudience != "" {
+		out["oidcTokenAudience"] = job.OIDCAudience
 	}
 	if job.PubsubTargetJSON != "" {
 		var pt any

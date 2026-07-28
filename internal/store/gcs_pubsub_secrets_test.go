@@ -3,6 +3,7 @@ package store_test
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
@@ -149,12 +150,12 @@ func TestPubSubUpdateModifyPushFields(t *testing.T) {
 	if err != nil || !ok || tgot.Labels["a"] != "2" {
 		t.Fatalf("topic labels = %#v", tgot)
 	}
-	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "http://127.0.0.1:9/push", nil); err != nil || !created {
+	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "http://127.0.0.1:9/push", nil, ""); err != nil || !created {
 		t.Fatalf("sub: %v %v", created, err)
 	}
 	ack := 30
 	ep := ""
-	updated, err := st.UpdateSubscription(sub, &ack, &ep, &map[string]string{"s": "1"})
+	updated, err := st.UpdateSubscription(sub, &ack, &ep, &map[string]string{"s": "1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,3 +215,124 @@ func TestSecretVersionRoundTrip(t *testing.T) {
 		t.Fatal("expected destroy refuse")
 	}
 }
+
+func TestGCSRewriteListDelimiterResumable(t *testing.T) {
+	st := openTestStore(t)
+	if _, created, err := st.CreateBucket("lab-bucket", "noctaxris-gcp-local", "US", "STANDARD"); err != nil || !created {
+		t.Fatalf("create bucket: %v %v", created, err)
+	}
+	src, err := st.PutObjectBytes("lab-bucket", "a/src.txt", "text/plain", []byte("rewrite-me"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutObjectBytes("lab-bucket", "a/other.txt", "text/plain", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutObjectBytes("lab-bucket", "b/nested.txt", "text/plain", []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	rewritten, err := st.RewriteObject("lab-bucket", "a/src.txt", 0, "lab-bucket", "a/dst.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := st.ReadObjectBytes(rewritten)
+	if err != nil || string(data) != "rewrite-me" {
+		t.Fatalf("rewrite data=%q err=%v", data, err)
+	}
+	if _, ok, _ := st.GetObject("lab-bucket", "a/src.txt", 0); !ok {
+		t.Fatal("source should remain after rewrite")
+	}
+	if err := st.CheckGenerationMatch("lab-bucket", "a/src.txt", src.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CheckGenerationMatch("lab-bucket", "a/src.txt", src.Generation+1); err != store.ErrPreconditionFailed {
+		t.Fatalf("expected precondition fail, got %v", err)
+	}
+	listed, err := st.ListObjectsDelimited("lab-bucket", "", "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Prefixes) < 2 {
+		t.Fatalf("prefixes = %#v", listed.Prefixes)
+	}
+	sess, err := st.CreateUploadSession("lab-bucket", "resumable.txt", "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := st.CompleteUploadSession(sess.UploadID, []byte("chunk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obj.Name != "resumable.txt" || obj.Size != 5 {
+		t.Fatalf("resumable = %#v", obj)
+	}
+}
+
+func TestPubSubFilterAndSeek(t *testing.T) {
+	st := openTestStore(t)
+	topic := "projects/noctaxris-gcp-local/topics/t-filter"
+	sub := "projects/noctaxris-gcp-local/subscriptions/s-filter"
+	if _, created, err := st.CreateTopic(topic, "noctaxris-gcp-local"); err != nil || !created {
+		t.Fatalf("topic: %v %v", created, err)
+	}
+	if _, created, err := st.CreateSubscriptionFull(sub, topic, "noctaxris-gcp-local", 10, "", nil, `attributes.region = "us"`); err != nil || !created {
+		t.Fatalf("sub: %v %v", created, err)
+	}
+	if _, _, err := st.PublishFanout(topic, []byte("eu"), map[string]string{"region": "eu"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.PublishFanout(topic, []byte("us"), map[string]string{"region": "us"}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := st.Pull(sub, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || string(msgs[0].Data) != "us" {
+		t.Fatalf("filtered pull = %#v", msgs)
+	}
+	if err := st.SeekToTime(sub, time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err = st.Pull(sub, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("after seek expected 1, got %#v", msgs)
+	}
+}
+
+func TestSecretReplicationCMEKAndVersionFilter(t *testing.T) {
+	st := openTestStore(t)
+	name := "projects/noctaxris-gcp-local/secrets/cmek-sec"
+	rep := map[string]any{"automatic": map[string]any{}}
+	sec, created, err := st.CreateSecretWithMeta(name, "noctaxris-gcp-local", nil, nil, rep, "projects/p/locations/global/keyRings/r/cryptoKeys/k")
+	if err != nil || !created {
+		t.Fatalf("create: %v %v", created, err)
+	}
+	if sec.CMEKKmsKeyName == "" || sec.Replication["automatic"] == nil {
+		t.Fatalf("secret = %#v", sec)
+	}
+	if _, err := st.AddSecretVersion(name, []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddSecretVersion(name, []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetSecretVersionState(name, "1", store.SecretVersionDisabled); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := st.ListSecretVersions(name, store.SecretVersionEnabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enabled) != 1 || enabled[0].VersionID != "2" {
+		t.Fatalf("enabled = %#v", enabled)
+	}
+	disabled, err := st.ListSecretVersions(name, store.SecretVersionDisabled)
+	if err != nil || len(disabled) != 1 {
+		t.Fatalf("disabled = %#v err=%v", disabled, err)
+	}
+}
+

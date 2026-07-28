@@ -290,10 +290,13 @@ func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscrip
 	if sub.GetPushConfig() != nil {
 		push = sub.GetPushConfig().GetPushEndpoint()
 	}
-	created, ok, err := s.Store.CreateSubscriptionFull(sub.GetName(), sub.GetTopic(), projectID, ack, push, sub.GetLabels())
+	created, ok, err := s.Store.CreateSubscriptionFull(sub.GetName(), sub.GetTopic(), projectID, ack, push, sub.GetLabels(), sub.GetFilter())
 	if err != nil {
 		if strings.Contains(err.Error(), "topic not found") {
 			return nil, status.Error(codes.NotFound, "topic not found")
+		}
+		if strings.Contains(err.Error(), "invalid filter") {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
@@ -374,6 +377,7 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 	var ack *int
 	var push *string
 	var labels *map[string]string
+	var filter *string
 	for _, p := range paths {
 		switch p {
 		case "ack_deadline_seconds":
@@ -391,12 +395,18 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 				l = map[string]string{}
 			}
 			labels = &l
+		case "filter":
+			f := req.GetSubscription().GetFilter()
+			filter = &f
 		}
 	}
-	updated, err := s.Store.UpdateSubscription(name, ack, push, labels)
+	updated, err := s.Store.UpdateSubscription(name, ack, push, labels, filter)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, status.Error(codes.NotFound, "subscription not found")
+		}
+		if strings.Contains(err.Error(), "invalid filter") {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
@@ -449,7 +459,8 @@ func (s *Service) ModifyAckDeadline(ctx context.Context, req *pubsubpb.ModifyAck
 	return &emptypb.Empty{}, nil
 }
 
-// StreamingPull delivers the current backlog once, then ends the stream (lab-minimal).
+// StreamingPull delivers messages until the client cancels or the stream ends.
+// Client requests may carry ack_ids and modify_deadline_* continuously.
 func (s *Service) StreamingPull(stream pubsubpb.Subscriber_StreamingPullServer) error {
 	req, err := stream.Recv()
 	if err != nil {
@@ -467,19 +478,91 @@ func (s *Service) StreamingPull(stream pubsubpb.Subscriber_StreamingPullServer) 
 	if max <= 0 {
 		max = 100
 	}
-	msgs, err := s.Store.Pull(subName, max)
-	if err != nil {
-		if strings.Contains(err.Error(), "subscription not found") {
-			return status.Error(codes.NotFound, "subscription not found")
-		}
-		return status.Errorf(codes.Internal, "%v", err)
+	if err := s.applyStreamingClientRequest(subName, req); err != nil {
+		return err
 	}
-	if len(msgs) > 0 {
-		if err := stream.Send(streamingPullResponse(msgs)); err != nil {
+
+	errCh := make(chan error, 1)
+	go func() {
+		for {
+			next, err := stream.Recv()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if err := s.applyStreamingClientRequest(subName, next); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		case err := <-errCh:
+			if err == io.EOF {
+				return nil
+			}
 			return err
+		case <-ticker.C:
+			msgs, err := s.Store.Pull(subName, max)
+			if err != nil {
+				if strings.Contains(err.Error(), "subscription not found") {
+					return status.Error(codes.NotFound, "subscription not found")
+				}
+				return status.Errorf(codes.Internal, "%v", err)
+			}
+			if len(msgs) == 0 {
+				continue
+			}
+			if err := stream.Send(streamingPullResponse(msgs)); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (s *Service) applyStreamingClientRequest(subName string, req *pubsubpb.StreamingPullRequest) error {
+	if len(req.GetAckIds()) > 0 {
+		if err := s.Store.Acknowledge(subName, req.GetAckIds()); err != nil {
+			return status.Errorf(codes.Internal, "%v", err)
+		}
+	}
+	ackIDs := req.GetModifyDeadlineAckIds()
+	secs := req.GetModifyDeadlineSeconds()
+	if len(ackIDs) != len(secs) {
+		return status.Error(codes.InvalidArgument, "modify_deadline_ack_ids and modify_deadline_seconds length mismatch")
+	}
+	for i := range ackIDs {
+		if err := s.Store.ModifyAckDeadline(subName, []string{ackIDs[i]}, int(secs[i])); err != nil {
+			return status.Errorf(codes.Internal, "%v", err)
 		}
 	}
 	return nil
+}
+
+func (s *Service) Seek(ctx context.Context, req *pubsubpb.SeekRequest) (*pubsubpb.SeekResponse, error) {
+	projectID := projectFromResource(req.GetSubscription())
+	if projectID == "" {
+		return nil, gcperrors.GRPC(gcperrors.StatusInvalidArgument, "invalid subscription name")
+	}
+	if err := s.require(ctx, "pubsub.subscriptions.consume", projectResource(projectID)); err != nil {
+		return nil, err
+	}
+	if req.GetTime() == nil {
+		return nil, status.Error(codes.InvalidArgument, "seek time required (snapshots not supported)")
+	}
+	if err := s.Store.SeekToTime(req.GetSubscription(), req.GetTime().AsTime()); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, status.Error(codes.NotFound, "subscription not found")
+		}
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return &pubsubpb.SeekResponse{}, nil
 }
 
 func pullResponse(msgs []store.PubSubMessage) *pubsubpb.PullResponse {
@@ -525,6 +608,7 @@ func subscriptionPB(sub *store.PubSubSubscription) *pubsubpb.Subscription {
 		Topic:              sub.Topic,
 		AckDeadlineSeconds: int32(sub.AckDeadlineSeconds),
 		Labels:             sub.Labels,
+		Filter:             sub.Filter,
 	}
 	if sub.PushEndpoint != "" {
 		out.PushConfig = &pubsubpb.PushConfig{PushEndpoint: sub.PushEndpoint}

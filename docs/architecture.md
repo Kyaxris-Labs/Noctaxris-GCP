@@ -10,7 +10,7 @@ flowchart TB
   end
 
   subgraph process [noctaxris-gcp]
-    H2C[h2c HTTP server]
+    H2C[h2c listener :4588]
     MW[Request ID + Bearer authn]
     REST[REST ServeMux]
     GRPC[grpc.Server]
@@ -18,10 +18,19 @@ flowchart TB
     STORE[(SQLite state.db)]
     AEAD[ChaCha20-Poly1305]
     AUDIT[audit.jsonl]
+
+    subgraph services [Registered services]
+      ID[CRM / IAM / Service Usage]
+      DATA[GCS / Pub/Sub / Secret Manager]
+      DOC[Firestore / KMS / Logging]
+      CMP[Run / Functions / Scheduler / Tasks]
+      AN[BQ / Firebase Auth / Monitoring / Datastore / Eventarc]
+      EXP[Artifact Registry / Cloud Build / Workflows / Spanner / App Engine]
+    end
   end
 
   subgraph volumes [Volumes]
-    DATA[noctaxris-gcp-data]
+    DATAVOL[noctaxris-gcp-data]
     SECRETS[noctaxris-gcp-secrets / master.key]
   end
 
@@ -29,14 +38,27 @@ flowchart TB
   H2C --> MW
   MW -->|application/grpc| GRPC
   MW -->|other| REST
-  REST --> AUTHZ
-  GRPC --> AUTHZ
+  REST --> ID
+  REST --> DATA
+  REST --> DOC
+  REST --> CMP
+  REST --> AN
+  REST --> EXP
+  GRPC --> DATA
+  GRPC --> DOC
+  GRPC --> AN
+  ID --> AUTHZ
+  DATA --> AUTHZ
+  DOC --> AUTHZ
+  CMP --> AUTHZ
+  AN --> AUTHZ
+  EXP --> AUTHZ
   AUTHZ --> STORE
-  STORE --> DATA
+  STORE --> DATAVOL
   AEAD --> SECRETS
   STORE --> AEAD
   REST --> AUDIT
-  AUDIT --> DATA
+  AUDIT --> DATAVOL
 ```
 
 ## Kernel packages
@@ -53,15 +75,16 @@ flowchart TB
 
 ## Service registration
 
-`server.New` wires registration helpers after health routes:
+`server.New` wires registration helpers after health routes, in this order:
 
 | Helper | Surface |
 |--------|---------|
-| `registerIdentity` | Cloud Resource Manager, IAM Admin, Service Usage (REST); creates gRPC server + Bearer interceptors |
-| `registerData` | Cloud Storage (REST), Pub/Sub (gRPC), Secret Manager (REST + gRPC) |
+| `registerIdentity` | Cloud Resource Manager (projects, org seed, folders), IAM Admin, Service Usage (REST); creates gRPC server + Bearer interceptors |
+| `registerData` | Cloud Storage (REST), Pub/Sub (gRPC + REST), Secret Manager (REST + gRPC) |
 | `registerDocsCrypto` | Firestore (gRPC), Cloud KMS (REST), Cloud Logging (REST) |
 | `registerExpandCompute` | Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks (REST) |
 | `registerExpandAnalytics` | BigQuery (REST), Firebase Auth / Identity Toolkit (REST), Cloud Monitoring (REST), Datastore (gRPC), Eventarc (REST) |
+| `registerExpandStage2` | Artifact Registry, Cloud Build, Workflows, Cloud Spanner, App Engine (REST) |
 
 ## Request path
 

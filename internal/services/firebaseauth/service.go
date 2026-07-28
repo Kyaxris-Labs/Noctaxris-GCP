@@ -34,6 +34,8 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/accounts:delete", s.wrapOptional(principalFrom, s.deleteAccount))
 	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/accounts:update", s.wrapOptional(principalFrom, s.updateAccount))
 	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken", s.wrapOptional(principalFrom, s.signInCustomToken))
+	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/accounts:sendOobCode", s.wrapOptional(principalFrom, s.sendOobCode))
+	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/accounts:resetPassword", s.wrapOptional(principalFrom, s.resetPassword))
 
 	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/projects/{project}/accounts", s.wrap(principalFrom, s.adminCreate))
 	mux.HandleFunc("GET /identitytoolkit.googleapis.com/v1/projects/{project}/accounts", s.wrap(principalFrom, s.adminList))
@@ -41,6 +43,8 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("PATCH /identitytoolkit.googleapis.com/v1/projects/{project}/accounts/{localId}", s.wrap(principalFrom, s.adminPatch))
 	mux.HandleFunc("DELETE /identitytoolkit.googleapis.com/v1/projects/{project}/accounts/{localId}", s.wrap(principalFrom, s.adminDelete))
 	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/projects/{project}/accounts:createCustomToken", s.wrap(principalFrom, s.createCustomToken))
+	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/projects/{project}/accounts:setCustomUserClaims", s.wrap(principalFrom, s.setCustomUserClaims))
+	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/projects/{project}/accounts:verifyIdToken", s.wrap(principalFrom, s.verifyIdToken))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -128,19 +132,43 @@ func userRecord(u *store.FirebaseUser, idToken string) map[string]any {
 func mintIDToken(u *store.FirebaseUser) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
 	claims := map[string]any{
-		"user_id":        u.LocalID,
-		"sub":            u.LocalID,
-		"email":          u.Email,
-		"firebase":       map[string]any{"sign_in_provider": "password"},
-		"iat":            time.Now().Unix(),
-		"exp":            time.Now().Add(time.Hour).Unix(),
-		"aud":            u.ProjectID,
-		"iss":            "https://securetoken.google.com/" + u.ProjectID,
+		"user_id":     u.LocalID,
+		"sub":         u.LocalID,
+		"email":       u.Email,
+		"firebase":    map[string]any{"sign_in_provider": "password"},
+		"iat":         time.Now().Unix(),
+		"exp":         time.Now().Add(time.Hour).Unix(),
+		"aud":         u.ProjectID,
+		"iss":         "https://securetoken.google.com/" + u.ProjectID,
+	}
+	if u.CustomAttributes != "" && u.CustomAttributes != "{}" {
+		var custom map[string]any
+		if err := json.Unmarshal([]byte(u.CustomAttributes), &custom); err == nil {
+			for k, v := range custom {
+				claims[k] = v
+			}
+		}
 	}
 	raw, _ := json.Marshal(claims)
 	payload := base64.RawURLEncoding.EncodeToString(raw)
 	// Unsigned lab JWT (empty signature segment).
 	return header + "." + payload + "."
+}
+
+func parseLabJWT(token string) (map[string]any, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid token")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return nil, err
+	}
+	return claims, nil
 }
 
 func mintCustomToken(projectID, uid string, claims map[string]any) string {
@@ -234,6 +262,7 @@ func (s *Service) lookup(w http.ResponseWriter, r *http.Request, _ authn.Princip
 	var body struct {
 		LocalID         []string `json:"localId"`
 		Email           []string `json:"email"`
+		IDToken         string   `json:"idToken"`
 		TargetProjectID string   `json:"targetProjectId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -242,6 +271,27 @@ func (s *Service) lookup(w http.ResponseWriter, r *http.Request, _ authn.Princip
 	}
 	project := s.projectFromBody(r, body.TargetProjectID)
 	users := []map[string]any{}
+	if body.IDToken != "" {
+		claims, err := parseLabJWT(body.IDToken)
+		if err != nil {
+			gcperrors.InvalidArgument(w, "invalid idToken")
+			return
+		}
+		uid, _ := claims["user_id"].(string)
+		if uid == "" {
+			uid, _ = claims["sub"].(string)
+		}
+		if uid != "" {
+			u, ok, err := s.Store.GetFirebaseUserByLocalID(uid)
+			if err != nil {
+				gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+				return
+			}
+			if ok && u.ProjectID == project {
+				users = append(users, userRecord(u, ""))
+			}
+		}
+	}
 	for _, id := range body.LocalID {
 		u, ok, err := s.Store.GetFirebaseUserByLocalID(id)
 		if err != nil {
@@ -263,6 +313,95 @@ func (s *Service) lookup(w http.ResponseWriter, r *http.Request, _ authn.Princip
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": users})
+}
+
+func (s *Service) sendOobCode(w http.ResponseWriter, r *http.Request, _ authn.Principal) {
+	var body struct {
+		RequestType     string `json:"requestType"`
+		Email           string `json:"email"`
+		TargetProjectID string `json:"targetProjectId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	if body.RequestType != "PASSWORD_RESET" {
+		gcperrors.InvalidArgument(w, "supported requestType: PASSWORD_RESET")
+		return
+	}
+	if body.Email == "" {
+		gcperrors.InvalidArgument(w, "email is required")
+		return
+	}
+	project := s.projectFromBody(r, body.TargetProjectID)
+	u, ok, err := s.Store.GetFirebaseUserByEmail(project, body.Email)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusInvalidArgument, "EMAIL_NOT_FOUND")
+		return
+	}
+	code := "lab-oob-" + uuid.NewString()
+	if err := s.Store.CreateFirebaseOOBCode(store.FirebaseOOBCode{
+		OOBCode: code, ProjectID: project, Email: body.Email, RequestType: body.RequestType, LocalID: u.LocalID,
+	}); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"email":       body.Email,
+		"requestType": body.RequestType,
+		"oobCode":     code, // lab theatre: returned so tests can complete reset without mail
+	})
+}
+
+func (s *Service) resetPassword(w http.ResponseWriter, r *http.Request, _ authn.Principal) {
+	var body struct {
+		OOBCode     string `json:"oobCode"`
+		NewPassword string `json:"newPassword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	if body.OOBCode == "" || body.NewPassword == "" {
+		gcperrors.InvalidArgument(w, "oobCode and newPassword are required")
+		return
+	}
+	c, ok, err := s.Store.ConsumeFirebaseOOBCode(body.OOBCode)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusInvalidArgument, "INVALID_OOB_CODE")
+		return
+	}
+	u, ok, err := s.Store.GetFirebaseUserByLocalID(c.LocalID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "user not found")
+		return
+	}
+	hash, err := hashPassword(body.NewPassword)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	u.PasswordHash = hash
+	if err := s.Store.UpdateFirebaseUser(*u); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"email":   u.Email,
+		"requestType": "PASSWORD_RESET",
+	})
 }
 
 func (s *Service) deleteAccount(w http.ResponseWriter, r *http.Request, _ authn.Principal) {
@@ -423,7 +562,15 @@ func (s *Service) adminList(w http.ResponseWriter, r *http.Request, p authn.Prin
 		writeAuthz(w, err)
 		return
 	}
-	list, err := s.Store.ListFirebaseUsers(project)
+	pageSize := 0
+	if n := r.URL.Query().Get("maxResults"); n != "" {
+		fmt.Sscanf(n, "%d", &pageSize)
+	}
+	pageToken := r.URL.Query().Get("nextPageToken")
+	if pageToken == "" {
+		pageToken = r.URL.Query().Get("pageToken")
+	}
+	list, next, err := s.Store.ListFirebaseUsersPage(project, pageSize, pageToken)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -432,7 +579,11 @@ func (s *Service) adminList(w http.ResponseWriter, r *http.Request, p authn.Prin
 	for i := range list {
 		users = append(users, userRecord(&list[i], ""))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"users": users})
+	out := map[string]any{"users": users}
+	if next != "" {
+		out["nextPageToken"] = next
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Service) adminGet(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -531,6 +682,101 @@ func (s *Service) createCustomToken(w http.ResponseWriter, r *http.Request, p au
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": mintCustomToken(project, body.UID, body.Claims),
+	})
+}
+
+func (s *Service) setCustomUserClaims(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "firebaseauth.users.update", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	var body struct {
+		LocalID          string         `json:"localId"`
+		CustomAttributes map[string]any `json:"customAttributes"`
+		Claims           map[string]any `json:"claims"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	if body.LocalID == "" {
+		gcperrors.InvalidArgument(w, "localId is required")
+		return
+	}
+	u, ok, err := s.Store.GetFirebaseUserByLocalID(body.LocalID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok || u.ProjectID != project {
+		gcperrors.NotFound(w, "user not found")
+		return
+	}
+	claims := body.CustomAttributes
+	if claims == nil {
+		claims = body.Claims
+	}
+	if claims == nil {
+		claims = map[string]any{}
+	}
+	raw, _ := json.Marshal(claims)
+	u.CustomAttributes = string(raw)
+	if err := s.Store.UpdateFirebaseUser(*u); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, userRecord(u, ""))
+}
+
+func (s *Service) verifyIdToken(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "firebaseauth.users.get", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	var body struct {
+		IDToken string `json:"idToken"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	if body.IDToken == "" {
+		gcperrors.InvalidArgument(w, "idToken is required")
+		return
+	}
+	claims, err := parseLabJWT(body.IDToken)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "invalid idToken")
+		return
+	}
+	uid, _ := claims["user_id"].(string)
+	if uid == "" {
+		uid, _ = claims["sub"].(string)
+	}
+	if uid == "" {
+		gcperrors.InvalidArgument(w, "idToken missing sub")
+		return
+	}
+	u, ok, err := s.Store.GetFirebaseUserByLocalID(uid)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok || u.ProjectID != project {
+		gcperrors.NotFound(w, "user not found")
+		return
+	}
+	if aud, _ := claims["aud"].(string); aud != "" && aud != project {
+		gcperrors.InvalidArgument(w, "idToken audience mismatch")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"uid":    u.LocalID,
+		"email":  u.Email,
+		"claims": claims,
+		"valid":  true,
 	})
 }
 

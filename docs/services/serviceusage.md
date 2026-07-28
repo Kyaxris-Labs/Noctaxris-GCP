@@ -1,6 +1,7 @@
 # Service Usage
 
-Lab-complete enable, disable, batchEnable, get, and list for project services.
+Lab-complete enable, disable, batchEnable, batchGet, get, and list for project
+services.
 
 ## Lab actions
 
@@ -8,6 +9,7 @@ Lab-complete enable, disable, batchEnable, get, and list for project services.
 |--------|--------|------|
 | List services | `GET` | `/v1/projects/{project}/services` |
 | Get service | `GET` | `/v1/projects/{project}/services/{service}` |
+| Batch get | `GET` | `/v1/projects/{project}/services:batchGet` |
 | Enable | `POST` | `/v1/projects/{project}/services/{service}:enable` |
 | Disable | `POST` | `/v1/projects/{project}/services/{service}:disable` |
 | Batch enable | `POST` | `/v1/projects/{project}/services:batchEnable` |
@@ -20,22 +22,36 @@ List accepts `filter=state:ENABLED` or `filter=state:DISABLED`.
 Batch enable body: `{"serviceIds":["storage.googleapis.com",...]}` (max 20).
 The store update is atomic.
 
+Batch get accepts `names` query values (resource names or bare service ids,
+max 30). POST with body `{"names":[...]}` is also accepted.
+
+Get/list/batchGet include `config.name` and, for known seeded APIs,
+`config.title`.
+
 Permissions: `serviceusage.services.list|get|enable|disable` on
 `projects/{project}`.
 
-EnsureRoot seeds Wave 1 APIs as `ENABLED` for the default project.
+EnsureRoot seeds known lab APIs as `ENABLED` for the default project
+(CRM, IAM, Service Usage, Storage, Pub/Sub, Secret Manager, Firestore, KMS,
+Logging, Run, Functions, Scheduler, Tasks, BigQuery, Identity Toolkit,
+Monitoring, Datastore, Eventarc, App Engine, Artifact Registry, Cloud Build,
+Workflows, Spanner).
+
+IAM create service account refuses with `FAILED_PRECONDITION` when
+`iam.googleapis.com` is DISABLED (example Service Usage gate).
 
 ## Emulator limits
 
-- No batchGet / batchDisable.
+- No batchDisable.
 - Enable/disable/batchEnable return a completed Operation immediately (no async LRO worker).
 - Get of an unknown service returns `DISABLED` rather than only catalog hits.
-- Config payloads are minimal (`name` only).
+- Config payloads include `name` and a static `title` for seeded APIs only.
 - gRPC `ServiceUsage` is not registered yet; use REST.
 
-## gcloud smoke
+## Verification / CLI smoke
 
 ```bash
+go test ./internal/server/ -run ServiceUsage -count=1
 gcloud config set api_endpoint_overrides/serviceusage http://127.0.0.1:4588/
 gcloud services list --enabled --project=noctaxris-gcp-local
 gcloud services enable storage.googleapis.com --project=noctaxris-gcp-local

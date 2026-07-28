@@ -14,7 +14,10 @@ There is no official Go `*_EMULATOR_HOST` for Secret Manager; point clients with
 | Area | Surface |
 |------|---------|
 | Secrets | Create / Get / List / Delete / Patch (Update) (REST + gRPC) |
+| Replication | Stored on create (`replication` JSON theatre; default automatic) |
+| CMEK | `customerManagedEncryption.kmsKeyName` stored; seal still uses process master key |
 | Versions | AddVersion; Access including `latest`; List / Get |
+| List filter | `?filter=state:ENABLED` (or DISABLED / DESTROYED) |
 | State | Enable / Disable / Destroy (destroyed Access refused) |
 | Per-secret IAM | getIamPolicy / setIamPolicy / testIamPermissions (REST + gRPC) |
 
@@ -24,6 +27,7 @@ REST paths (project-scoped):
 - `GET|PATCH|DELETE /v1/projects/{project}/secrets/{secret}`
 - `POST /v1/projects/{project}/secrets/{secret}:addVersion`
 - `POST .../secrets/{secret}:getIamPolicy|:setIamPolicy|:testIamPermissions`
+- `GET /v1/projects/{project}/secrets/{secret}/versions?filter=state:ENABLED`
 - `GET /v1/projects/{project}/secrets/{secret}/versions/{version}:access`
 - `POST .../versions/{version}:enable|disable|destroy`
 
@@ -35,9 +39,10 @@ REST paths (project-scoped):
 
 ## Emulator limits
 
-- No replication / regional secrets / CMEK customer keys (lab seal only)
+- CMEK name is stored only; encryption always uses the lab master key
 - No rotation schedules or Pub/Sub notifications
 - Destroy clears ciphertext and refuses Access
+- Regional secrets under `projects/*/locations/*` are not modeled
 
 ## Pointing clients
 
@@ -56,7 +61,7 @@ Terraform:
 
 ```hcl
 provider "google" {
-  secret_manager_custom_endpoint = "http://127.0.0.1:4588/"
+  secret_manager_custom_endpoint = "http://127.0.0.1:4588/v1/"
 }
 ```
 
@@ -68,7 +73,7 @@ export EP=http://127.0.0.1:4588
 export PROJECT=noctaxris-gcp-local
 
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{}' \
+  -d '{"replication":{"automatic":{}},"customerManagedEncryption":{"kmsKeyName":"projects/p/locations/global/keyRings/r/cryptoKeys/k"}}' \
   "$EP/v1/projects/$PROJECT/secrets?secretId=lab-secret"
 
 curl -sS -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -82,10 +87,13 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 
 curl -sS -H "Authorization: Bearer $TOKEN" \
   "$EP/v1/projects/$PROJECT/secrets/lab-secret/versions/latest:access"
+
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  "$EP/v1/projects/$PROJECT/secrets/lab-secret/versions?filter=state:ENABLED"
 ```
 
 ## Deferred depth
 
-- CMEK / regional secret resources under `projects/*/locations/*`
+- CMEK-backed seal using Cloud KMS lab keys
+- Regional secret resources under `projects/*/locations/*`
 - Automatic rotation and Pub/Sub rotation notifications
-- Customer-managed replication policies

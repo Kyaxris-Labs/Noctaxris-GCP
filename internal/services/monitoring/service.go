@@ -30,6 +30,12 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v3/projects/{project}/metricDescriptors/{rest...}", s.wrap(principalFrom, s.getDescriptor))
 	mux.HandleFunc("POST /v3/projects/{project}/timeSeries", s.wrap(principalFrom, s.createTimeSeries))
 	mux.HandleFunc("GET /v3/projects/{project}/timeSeries", s.wrap(principalFrom, s.listTimeSeries))
+	mux.HandleFunc("POST /v3/projects/{project}/timeSeries:delete", s.wrap(principalFrom, s.deleteTimeSeries))
+	mux.HandleFunc("POST /v3/projects/{project}/alertPolicies", s.wrap(principalFrom, s.createAlertPolicy))
+	mux.HandleFunc("GET /v3/projects/{project}/alertPolicies", s.wrap(principalFrom, s.listAlertPolicies))
+	mux.HandleFunc("GET /v3/projects/{project}/alertPolicies/{policy}", s.wrap(principalFrom, s.getAlertPolicy))
+	mux.HandleFunc("PATCH /v3/projects/{project}/alertPolicies/{policy}", s.wrap(principalFrom, s.patchAlertPolicy))
+	mux.HandleFunc("DELETE /v3/projects/{project}/alertPolicies/{policy}", s.wrap(principalFrom, s.deleteAlertPolicy))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -301,6 +307,233 @@ func (s *Service) listTimeSeries(w http.ResponseWriter, r *http.Request, p authn
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"timeSeries": out})
+}
+
+func (s *Service) deleteTimeSeries(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "monitoring.timeSeries.delete", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	filter := r.URL.Query().Get("filter")
+	if filter == "" {
+		var body struct {
+			Filter string `json:"filter"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		filter = body.Filter
+	}
+	metricType := parseMetricTypeFilter(filter)
+	if metricType == "" && strings.TrimSpace(filter) != "" {
+		gcperrors.InvalidArgument(w, `filter must include metric.type="..."`)
+		return
+	}
+	n, err := s.Store.DeleteTimeSeriesPoints(project, metricType)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"labDeletedPoints": n})
+}
+
+func alertPolicyResource(p *store.AlertPolicyRow) map[string]any {
+	var conditions any = []any{}
+	_ = json.Unmarshal([]byte(p.ConditionsJSON), &conditions)
+	var doc any = map[string]any{}
+	_ = json.Unmarshal([]byte(p.DocumentationJSON), &doc)
+	var labels map[string]string
+	_ = json.Unmarshal([]byte(p.UserLabelsJSON), &labels)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	return map[string]any{
+		"name":          p.Name,
+		"displayName":   p.DisplayName,
+		"enabled":       p.Enabled,
+		"combiner":      p.Combiner,
+		"conditions":    conditions,
+		"documentation": doc,
+		"userLabels":    labels,
+		"creationRecord": map[string]any{
+			"mutateTime": p.CreatedAt,
+		},
+		"mutationRecord": map[string]any{
+			"mutateTime": p.UpdatedAt,
+		},
+	}
+}
+
+func (s *Service) createAlertPolicy(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "monitoring.alertPolicies.create", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	var body struct {
+		DisplayName   string          `json:"displayName"`
+		Enabled       *bool           `json:"enabled"`
+		Combiner      string          `json:"combiner"`
+		Conditions    json.RawMessage `json:"conditions"`
+		Documentation json.RawMessage `json:"documentation"`
+		UserLabels    map[string]string `json:"userLabels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	policyID := r.URL.Query().Get("alertPolicyId")
+	if policyID == "" {
+		policyID = fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	}
+	enabled := true
+	if body.Enabled != nil {
+		enabled = *body.Enabled
+	}
+	condJSON := "[]"
+	if len(body.Conditions) > 0 {
+		condJSON = string(body.Conditions)
+	}
+	docJSON := "{}"
+	if len(body.Documentation) > 0 {
+		docJSON = string(body.Documentation)
+	}
+	labelsJSON := "{}"
+	if body.UserLabels != nil {
+		raw, _ := json.Marshal(body.UserLabels)
+		labelsJSON = string(raw)
+	}
+	row, created, err := s.Store.CreateAlertPolicy(store.AlertPolicyRow{
+		ProjectID: project, PolicyID: policyID, DisplayName: body.DisplayName, Enabled: enabled,
+		Combiner: body.Combiner, ConditionsJSON: condJSON, DocumentationJSON: docJSON, UserLabelsJSON: labelsJSON,
+	})
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !created {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "alert policy already exists")
+		return
+	}
+	writeJSON(w, http.StatusOK, alertPolicyResource(row))
+}
+
+func (s *Service) getAlertPolicy(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	policyID := r.PathValue("policy")
+	if err := s.require(p, "monitoring.alertPolicies.get", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	name := "projects/" + project + "/alertPolicies/" + policyID
+	row, ok, err := s.Store.GetAlertPolicy(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "alert policy not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, alertPolicyResource(row))
+}
+
+func (s *Service) listAlertPolicies(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "monitoring.alertPolicies.list", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	list, err := s.Store.ListAlertPolicies(project)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(list))
+	for i := range list {
+		out = append(out, alertPolicyResource(&list[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"alertPolicies": out})
+}
+
+func (s *Service) patchAlertPolicy(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	policyID := r.PathValue("policy")
+	if err := s.require(p, "monitoring.alertPolicies.update", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	name := "projects/" + project + "/alertPolicies/" + policyID
+	existing, ok, err := s.Store.GetAlertPolicy(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "alert policy not found")
+		return
+	}
+	var body struct {
+		DisplayName   *string           `json:"displayName"`
+		Enabled       *bool             `json:"enabled"`
+		Combiner      *string           `json:"combiner"`
+		Conditions    json.RawMessage   `json:"conditions"`
+		Documentation json.RawMessage   `json:"documentation"`
+		UserLabels    map[string]string `json:"userLabels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	row := *existing
+	if body.DisplayName != nil {
+		row.DisplayName = *body.DisplayName
+	}
+	if body.Enabled != nil {
+		row.Enabled = *body.Enabled
+	}
+	if body.Combiner != nil {
+		row.Combiner = *body.Combiner
+	}
+	if len(body.Conditions) > 0 {
+		row.ConditionsJSON = string(body.Conditions)
+	}
+	if len(body.Documentation) > 0 {
+		row.DocumentationJSON = string(body.Documentation)
+	}
+	if body.UserLabels != nil {
+		raw, _ := json.Marshal(body.UserLabels)
+		row.UserLabelsJSON = string(raw)
+	}
+	updated, ok, err := s.Store.UpdateAlertPolicy(row)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "alert policy not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, alertPolicyResource(updated))
+}
+
+func (s *Service) deleteAlertPolicy(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	policyID := r.PathValue("policy")
+	if err := s.require(p, "monitoring.alertPolicies.delete", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	name := "projects/" + project + "/alertPolicies/" + policyID
+	ok, err := s.Store.DeleteAlertPolicy(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "alert policy not found")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func parseMetricTypeFilter(filter string) string {

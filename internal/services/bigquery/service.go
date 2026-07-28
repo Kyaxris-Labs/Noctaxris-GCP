@@ -13,6 +13,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
+	"github.com/google/uuid"
 )
 
 const maxInsertAllRows = 500
@@ -26,7 +27,6 @@ type Service struct {
 type principalFunc func(*http.Request) (authn.Principal, bool)
 
 // Mount registers BigQuery REST routes.
-// Colon methods (jobs.query uses /queries) are path-based; insertAll is a path segment.
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /bigquery/v2/projects/{project}/datasets", s.wrap(principalFrom, s.listDatasets))
 	mux.HandleFunc("POST /bigquery/v2/projects/{project}/datasets", s.wrap(principalFrom, s.createDataset))
@@ -37,7 +37,9 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /bigquery/v2/projects/{project}/datasets/{dataset}/tables/{table}", s.wrap(principalFrom, s.getTable))
 	mux.HandleFunc("DELETE /bigquery/v2/projects/{project}/datasets/{dataset}/tables/{table}", s.wrap(principalFrom, s.deleteTable))
 	mux.HandleFunc("POST /bigquery/v2/projects/{project}/datasets/{dataset}/tables/{table}/insertAll", s.wrap(principalFrom, s.insertAll))
+	mux.HandleFunc("GET /bigquery/v2/projects/{project}/datasets/{dataset}/tables/{table}/data", s.wrap(principalFrom, s.tabledataList))
 	mux.HandleFunc("POST /bigquery/v2/projects/{project}/queries", s.wrap(principalFrom, s.jobsQuery))
+	mux.HandleFunc("GET /bigquery/v2/projects/{project}/jobs/{job}", s.wrap(principalFrom, s.jobsGet))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -332,6 +334,12 @@ func (s *Service) deleteTable(w http.ResponseWriter, r *http.Request, p authn.Pr
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type schemaField struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Mode string `json:"mode"`
+}
+
 func (s *Service) insertAll(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, dataset, table := r.PathValue("project"), r.PathValue("dataset"), r.PathValue("table")
 	if err := s.require(p, "bigquery.tables.updateData", project); err != nil {
@@ -339,7 +347,8 @@ func (s *Service) insertAll(w http.ResponseWriter, r *http.Request, p authn.Prin
 		return
 	}
 	var body struct {
-		Rows []struct {
+		SkipInvalidRows bool `json:"skipInvalidRows"`
+		Rows            []struct {
 			InsertID string         `json:"insertId"`
 			JSON     map[string]any `json:"json"`
 		} `json:"rows"`
@@ -356,28 +365,178 @@ func (s *Service) insertAll(w http.ResponseWriter, r *http.Request, p authn.Prin
 		gcperrors.InvalidArgument(w, fmt.Sprintf("at most %d rows per insertAll", maxInsertAllRows))
 		return
 	}
+	tbl, ok, err := s.Store.GetBQTable(project, dataset, table)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "table not found")
+		return
+	}
+	var schema []schemaField
+	_ = json.Unmarshal([]byte(tbl.SchemaJSON), &schema)
+
 	rows := make([]map[string]any, 0, len(body.Rows))
 	ids := make([]string, 0, len(body.Rows))
-	for _, row := range body.Rows {
+	var insertErrors []map[string]any
+	for i, row := range body.Rows {
 		if row.JSON == nil {
-			row.JSON = map[string]any{}
+			if body.SkipInvalidRows {
+				insertErrors = append(insertErrors, map[string]any{
+					"index": i,
+					"errors": []map[string]string{{
+						"reason": "invalid", "message": "json is required",
+					}},
+				})
+				continue
+			}
+			gcperrors.InvalidArgument(w, fmt.Sprintf("row %d: json is required", i))
+			return
+		}
+		if errMsg := validateInsertRow(row.JSON, schema); errMsg != "" {
+			if body.SkipInvalidRows {
+				insertErrors = append(insertErrors, map[string]any{
+					"index": i,
+					"errors": []map[string]string{{
+						"reason": "invalid", "message": errMsg,
+					}},
+				})
+				continue
+			}
+			gcperrors.InvalidArgument(w, fmt.Sprintf("row %d: %s", i, errMsg))
+			return
 		}
 		rows = append(rows, row.JSON)
 		ids = append(ids, row.InsertID)
 	}
-	if err := s.Store.InsertBQRows(project, dataset, table, rows, ids); err != nil {
-		if strings.Contains(err.Error(), "table not found") {
-			gcperrors.NotFound(w, "table not found")
+	if len(rows) > 0 {
+		if err := s.Store.InsertBQRows(project, dataset, table, rows, ids); err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 			return
 		}
+	}
+	resp := map[string]any{"kind": "bigquery#tableDataInsertAllResponse"}
+	if len(insertErrors) > 0 {
+		resp["insertErrors"] = insertErrors
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func validateInsertRow(row map[string]any, schema []schemaField) string {
+	for _, f := range schema {
+		if strings.EqualFold(f.Mode, "REQUIRED") {
+			v, ok := row[f.Name]
+			if !ok || v == nil {
+				return "missing required field " + f.Name
+			}
+		}
+	}
+	return ""
+}
+
+func (s *Service) tabledataList(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project, dataset, table := r.PathValue("project"), r.PathValue("dataset"), r.PathValue("table")
+	if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	if _, ok, err := s.Store.GetBQTable(project, dataset, table); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "table not found")
+		return
+	}
+	startIndex, _ := strconv.Atoi(r.URL.Query().Get("startIndex"))
+	maxResults := 0
+	if v := r.URL.Query().Get("maxResults"); v != "" {
+		maxResults, _ = strconv.Atoi(v)
+	}
+	if maxResults <= 0 {
+		maxResults = 1000
+	}
+	total, err := s.Store.CountBQRows(project, dataset, table)
+	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"kind": "bigquery#tableDataInsertAllResponse"})
+	rows, err := s.Store.ListBQRowsPage(project, dataset, table, startIndex, maxResults)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	outRows := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		cols := make([]string, 0, len(row))
+		for k := range row {
+			cols = append(cols, k)
+		}
+		f := make([]map[string]any, 0, len(cols))
+		for _, c := range cols {
+			f = append(f, map[string]any{"v": fmt.Sprint(row[c])})
+		}
+		outRows = append(outRows, map[string]any{"f": f})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":       "bigquery#tableDataList",
+		"totalRows":  strconv.Itoa(total),
+		"rows":       outRows,
+		"startIndex": strconv.Itoa(startIndex),
+	})
+}
+
+func (s *Service) jobsGet(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project, jobID := r.PathValue("project"), r.PathValue("job")
+	if err := s.require(p, "bigquery.jobs.get", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	j, ok, err := s.Store.GetBQJob(project, jobID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "job not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, jobResource(j))
+}
+
+func jobResource(j *store.BQJob) map[string]any {
+	cfg := map[string]any{
+		"jobType": "QUERY",
+		"query":   map[string]any{"query": j.Query, "useLegacySql": false},
+	}
+	status := map[string]any{"state": j.State}
+	if j.ErrorJSON != "" {
+		var errObj any
+		_ = json.Unmarshal([]byte(j.ErrorJSON), &errObj)
+		status["errorResult"] = errObj
+	}
+	return map[string]any{
+		"kind": "bigquery#job",
+		"id":   j.ProjectID + ":" + j.JobID,
+		"jobReference": map[string]string{
+			"projectId": j.ProjectID,
+			"jobId":     j.JobID,
+			"location":  j.Location,
+		},
+		"configuration": cfg,
+		"status":        status,
+		"statistics": map[string]any{
+			"creationTime": strconv.FormatInt(parseMillis(j.CreatedAt), 10),
+			"startTime":    strconv.FormatInt(parseMillis(j.CreatedAt), 10),
+			"endTime":      strconv.FormatInt(parseMillis(j.CreatedAt), 10),
+		},
+	}
 }
 
 var (
 	reSelect = regexp.MustCompile(`(?is)^\s*SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)(?:\s+WHERE\s+([a-zA-Z0-9_]+)\s*=\s*(.+?))?(?:\s+LIMIT\s+(\d+))?\s*$`)
+	reJoin   = regexp.MustCompile(`(?is)^\s*SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s+(?:AS\s+)?([a-zA-Z0-9_]+)\s+JOIN\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s+(?:AS\s+)?([a-zA-Z0-9_]+)\s+ON\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)(?:\s+LIMIT\s+(\d+))?\s*$`)
+	reCreate = regexp.MustCompile(`(?is)^\s*CREATE\s+TABLE\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\((.+)\)\s*$`)
 )
 
 func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -387,16 +546,122 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 		return
 	}
 	var body struct {
-		Query string `json:"query"`
+		Query  string `json:"query"`
+		DryRun bool   `json:"dryRun"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")
 		return
 	}
 	q := strings.TrimSpace(strings.TrimSuffix(body.Query, ";"))
+	jobID := "lab-" + uuid.NewString()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if m := reCreate.FindStringSubmatch(q); m != nil {
+		datasetID, tableID, colsRaw := m[1], m[2], m[3]
+		schemaFields, err := parseCreateColumns(colsRaw)
+		if err != nil {
+			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
+		schemaJSON, _ := json.Marshal(schemaFields)
+		if body.DryRun {
+			_ = s.Store.PutBQJob(store.BQJob{
+				ProjectID: project, JobID: jobID, Query: q, DryRun: true, State: "DONE", CreatedAt: now,
+			})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"kind":         "bigquery#queryResponse",
+				"jobComplete":  true,
+				"dryRun":       true,
+				"jobReference": map[string]string{"projectId": project, "jobId": jobID},
+				"schema":       map[string]any{"fields": schemaFields},
+				"totalRows":    "0",
+				"rows":         []any{},
+			})
+			return
+		}
+		if _, ok, err := s.Store.GetBQDataset(project, datasetID); err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		} else if !ok {
+			if _, _, err := s.Store.CreateBQDataset(store.BQDataset{ProjectID: project, DatasetID: datasetID}); err != nil {
+				gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+				return
+			}
+		}
+		t, created, err := s.Store.CreateBQTable(store.BQTable{
+			ProjectID: project, DatasetID: datasetID, TableID: tableID, SchemaJSON: string(schemaJSON),
+		})
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !created {
+			gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "table already exists")
+			return
+		}
+		_ = t
+		_ = s.Store.PutBQJob(store.BQJob{
+			ProjectID: project, JobID: jobID, Query: q, State: "DONE", CreatedAt: now,
+		})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"kind":         "bigquery#queryResponse",
+			"jobComplete":  true,
+			"totalRows":    "0",
+			"schema":       map[string]any{"fields": schemaFields},
+			"rows":         []any{},
+			"jobReference": map[string]string{"projectId": project, "jobId": jobID},
+			"numDmlAffectedRows": "0",
+		})
+		return
+	}
+
+	if m := reJoin.FindStringSubmatch(q); m != nil {
+		selectCols := m[1]
+		dsA, tblA, aliasA := m[2], m[3], m[4]
+		dsB, tblB, aliasB := m[5], m[6], m[7]
+		leftAlias, leftCol, rightAlias, rightCol := m[8], m[9], m[10], m[11]
+		limitStr := m[12]
+		if (leftAlias != aliasA && leftAlias != aliasB) || (rightAlias != aliasA && rightAlias != aliasB) {
+			gcperrors.InvalidArgument(w, "JOIN ON aliases must match FROM aliases")
+			return
+		}
+		leftRows, err := s.Store.ListBQRows(project, dsA, tblA)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		rightRows, err := s.Store.ListBQRows(project, dsB, tblB)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		joined := joinRows(leftRows, rightRows, aliasA, aliasB, leftAlias, leftCol, rightAlias, rightCol)
+		if limitStr != "" {
+			lim, _ := strconv.Atoi(limitStr)
+			if lim >= 0 && lim < len(joined) {
+				joined = joined[:lim]
+			}
+		}
+		cols := parseSelectCols(selectCols, joined)
+		resp := buildQueryResponse(project, jobID, cols, joined)
+		if body.DryRun {
+			resp["dryRun"] = true
+			resp["rows"] = []any{}
+			resp["totalRows"] = "0"
+		}
+		raw, _ := json.Marshal(resp)
+		_ = s.Store.PutBQJob(store.BQJob{
+			ProjectID: project, JobID: jobID, Query: q, DryRun: body.DryRun, State: "DONE",
+			ResultJSON: string(raw), CreatedAt: now,
+		})
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	m := reSelect.FindStringSubmatch(q)
 	if m == nil {
-		gcperrors.InvalidArgument(w, "lab query engine supports: SELECT ... FROM dataset.table [WHERE col = value] [LIMIT n]")
+		gcperrors.InvalidArgument(w, "lab query engine supports: SELECT ... FROM dataset.table [WHERE col = value] [LIMIT n]; JOIN lite; CREATE TABLE dataset.table (cols)")
 		return
 	}
 	selectCols, datasetID, tableID := m[1], m[2], m[3]
@@ -427,22 +692,109 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 			rows = rows[:lim]
 		}
 	}
-	cols := []string{}
+	cols := parseSelectCols(selectCols, rows)
+	resp := buildQueryResponse(project, jobID, cols, rows)
+	if body.DryRun {
+		resp["dryRun"] = true
+		resp["rows"] = []any{}
+		resp["totalRows"] = "0"
+	}
+	raw, _ := json.Marshal(resp)
+	_ = s.Store.PutBQJob(store.BQJob{
+		ProjectID: project, JobID: jobID, Query: q, DryRun: body.DryRun, State: "DONE",
+		ResultJSON: string(raw), CreatedAt: now,
+	})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func parseCreateColumns(raw string) ([]map[string]any, error) {
+	parts := strings.Split(raw, ",")
+	out := make([]map[string]any, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		fields := strings.Fields(p)
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("invalid column definition %q", p)
+		}
+		mode := "NULLABLE"
+		if len(fields) >= 3 {
+			mode = strings.ToUpper(fields[2])
+		}
+		out = append(out, map[string]any{
+			"name": fields[0],
+			"type": strings.ToUpper(fields[1]),
+			"mode": mode,
+		})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("CREATE TABLE requires at least one column")
+	}
+	return out, nil
+}
+
+func joinRows(left, right []map[string]any, aliasA, aliasB, leftAlias, leftCol, rightAlias, rightCol string) []map[string]any {
+	var out []map[string]any
+	for _, lr := range left {
+		for _, rr := range right {
+			var leftVal, rightVal any
+			if leftAlias == aliasA {
+				leftVal = lr[leftCol]
+			} else {
+				leftVal = rr[leftCol]
+			}
+			if rightAlias == aliasB {
+				rightVal = rr[rightCol]
+			} else {
+				rightVal = lr[rightCol]
+			}
+			if fmt.Sprint(leftVal) != fmt.Sprint(rightVal) {
+				continue
+			}
+			merged := map[string]any{}
+			for k, v := range lr {
+				merged[aliasA+"."+k] = v
+				merged[k] = v
+			}
+			for k, v := range rr {
+				merged[aliasB+"."+k] = v
+				if _, exists := merged[k]; !exists {
+					merged[k] = v
+				}
+			}
+			out = append(out, merged)
+		}
+	}
+	return out
+}
+
+func parseSelectCols(selectCols string, rows []map[string]any) []string {
 	if strings.TrimSpace(selectCols) == "*" {
 		seen := map[string]bool{}
+		var cols []string
 		for _, row := range rows {
 			for k := range row {
+				if strings.Contains(k, ".") {
+					continue
+				}
 				if !seen[k] {
 					seen[k] = true
 					cols = append(cols, k)
 				}
 			}
 		}
-	} else {
-		for _, c := range strings.Split(selectCols, ",") {
-			cols = append(cols, strings.TrimSpace(c))
-		}
+		return cols
 	}
+	var cols []string
+	for _, c := range strings.Split(selectCols, ",") {
+		cols = append(cols, strings.TrimSpace(c))
+	}
+	return cols
+}
+
+func buildQueryResponse(project, jobID string, cols []string, rows []map[string]any) map[string]any {
 	fields := make([]map[string]any, 0, len(cols))
 	for _, c := range cols {
 		fields = append(fields, map[string]any{"name": c, "type": "STRING", "mode": "NULLABLE"})
@@ -455,14 +807,14 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 		}
 		outRows = append(outRows, map[string]any{"f": f})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"kind":             "bigquery#queryResponse",
-		"jobComplete":      true,
-		"totalRows":        strconv.Itoa(len(outRows)),
-		"schema":           map[string]any{"fields": fields},
-		"rows":             outRows,
-		"jobReference":     map[string]string{"projectId": project, "jobId": "lab-query"},
-	})
+	return map[string]any{
+		"kind":         "bigquery#queryResponse",
+		"jobComplete":  true,
+		"totalRows":    strconv.Itoa(len(outRows)),
+		"schema":       map[string]any{"fields": fields},
+		"rows":         outRows,
+		"jobReference": map[string]string{"projectId": project, "jobId": jobID},
+	}
 }
 
 func writeAuthz(w http.ResponseWriter, err error) {

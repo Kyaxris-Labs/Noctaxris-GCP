@@ -2,11 +2,12 @@
 # Terraform apply + destroy against a running Noctaxris-GCP API.
 # Soft-skips when terraform is missing, NOCTAXRIS_GCP_ENDPOINT is unset,
 # or /_noctaxris-gcp/ready fails.
+#
+# Default: all stacks under stacks/. Override with STACK=lab-storage or
+# STACKS="lab-storage lab-run".
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-STACK_NAME="${STACK:-lab-storage}"
-STACK="$(cd "$(dirname "$0")/stacks/${STACK_NAME}" && pwd)"
+TF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 EP="${NOCTAXRIS_GCP_ENDPOINT:-}"
 if [[ -z "${EP}" ]]; then
@@ -31,33 +32,53 @@ if [[ -z "${TOKEN}" ]]; then
   exit 0
 fi
 
+if [[ -n "${STACK:-}" ]]; then
+  STACKS=("$STACK")
+elif [[ -n "${STACKS:-}" ]]; then
+  # shellcheck disable=SC2206
+  STACKS=($STACKS)
+else
+  STACKS=(lab-storage lab-run)
+fi
+
 PROJECT="${NOCTAXRIS_GCP_PROJECT:-noctaxris-gcp-local}"
 PREFIX="tf$(date +%s)$(printf '%04d' $RANDOM)"
 PREFIX="$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/noctaxris-gcp-tf.XXXXXX")"
-cleanup() {
-  rm -rf "$WORKDIR"
-}
-trap cleanup EXIT
-
-cp -a "$STACK/." "$WORKDIR/"
-cd "$WORKDIR"
-
 export GOOGLE_OAUTH_ACCESS_TOKEN="$TOKEN"
 export CLOUDSDK_AUTH_ACCESS_TOKEN="$TOKEN"
-
 export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-${HOME}/.terraform.d/plugin-cache}"
 mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-terraform init -input=false -no-color
-terraform apply -input=false -auto-approve -no-color \
-  -var="endpoint=$EP" \
-  -var="project=$PROJECT" \
-  -var="name_prefix=$PREFIX"
-terraform destroy -input=false -auto-approve -no-color \
-  -var="endpoint=$EP" \
-  -var="project=$PROJECT" \
-  -var="name_prefix=$PREFIX"
+run_stack() {
+  local STACK_NAME="$1"
+  local STACK="$TF_DIR/stacks/${STACK_NAME}"
+  if [[ ! -d "$STACK" ]]; then
+    echo "unknown Terraform stack: $STACK_NAME" >&2
+    exit 1
+  fi
 
-echo "Terraform STACK=$STACK_NAME ok against $EP"
+  (
+    set -euo pipefail
+    WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/noctaxris-gcp-tf.XXXXXX")"
+    trap 'rm -rf "$WORKDIR"' EXIT
+    cp -a "$STACK/." "$WORKDIR/"
+    cd "$WORKDIR"
+
+    terraform init -input=false -no-color
+    terraform apply -input=false -auto-approve -no-color \
+      -var="endpoint=$EP" \
+      -var="project=$PROJECT" \
+      -var="name_prefix=$PREFIX"
+    terraform destroy -input=false -auto-approve -no-color \
+      -var="endpoint=$EP" \
+      -var="project=$PROJECT" \
+      -var="name_prefix=$PREFIX"
+
+    echo "Terraform STACK=$STACK_NAME ok against $EP"
+  )
+}
+
+for STACK_NAME in "${STACKS[@]}"; do
+  run_stack "$STACK_NAME"
+done

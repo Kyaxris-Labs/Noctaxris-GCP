@@ -15,6 +15,9 @@ All settings use the `NOCTAXRIS_GCP_*` prefix.
 | `NOCTAXRIS_GCP_ALLOW_NONLOOPBACK_LISTEN` | unset / false | Permit non-loopback listen without TLS (Compose) |
 | `NOCTAXRIS_GCP_ALLOW_MASTER_KEY_IN_DATA_ROOT` | unset / false | Permit master key under data root |
 
+EnsureRoot also seeds lab organization `organizations/noctaxris-gcp-org` (folders
+CRUD lite attaches under that parent). See [services/resourcemanager.md](services/resourcemanager.md).
+
 ## Compose
 
 `docker/compose.yaml` sets:
@@ -44,8 +47,36 @@ before starting. Startup refuses that pair on the non-loopback container bind.
 | Secret Manager / KMS / Logging | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
 | Cloud Run / Functions / Scheduler / Tasks | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
 | BigQuery / Monitoring / Eventarc | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
+| Artifact Registry / Cloud Build / Workflows / Spanner / App Engine | `option.WithEndpoint("127.0.0.1:4588")` + Bearer |
 | Other Google clients | `option.WithEndpoint("127.0.0.1:4588")` (or language equivalent) + Bearer |
-| Terraform Google provider | `storage_custom_endpoint`, `pubsub_custom_endpoint`, `secret_manager_custom_endpoint` (see `tests/terraform/`) |
+| Terraform Google provider | Custom endpoints with versioned path suffixes (see below) |
+
+Cloud Build triggers use classic project-scoped paths
+(`POST/GET/DELETE /v1/projects/{p}/triggers[/{id}]`). Regional
+`.../locations/{loc}/triggers` is owned by Eventarc on the shared mux and is not
+mounted for Cloud Build. See [services/cloud-build.md](services/cloud-build.md).
+
+### Terraform custom endpoints
+
+Point hashicorp/google at the lab (Bearer via `GOOGLE_OAUTH_ACCESS_TOKEN`).
+Suffixes match provider product BaseUrl defaults:
+
+```hcl
+provider "google" {
+  project = "noctaxris-gcp-local"
+  region  = "us-central1"
+
+  storage_custom_endpoint        = "http://127.0.0.1:4588/storage/v1/"
+  pubsub_custom_endpoint         = "http://127.0.0.1:4588/v1/"
+  secret_manager_custom_endpoint = "http://127.0.0.1:4588/v1/"
+  cloud_run_v2_custom_endpoint   = "http://127.0.0.1:4588/v2/"
+}
+```
+
+| Stack | Resources | Endpoints |
+|-------|-----------|-----------|
+| `tests/terraform/stacks/lab-storage` | GCS bucket, Secret Manager secret, Pub/Sub topic | `storage` / `pubsub` / `secret_manager` |
+| `tests/terraform/stacks/lab-run` | `google_cloud_run_v2_service` (metadata theatre; no containers) | `cloud_run_v2` |
 
 ### gcloud `api_endpoint_overrides`
 
@@ -67,6 +98,12 @@ gcloud config set api_endpoint_overrides/cloudtasks http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/bigquery http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/monitoring http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/eventarc http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/artifactregistry http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/cloudbuild http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/workflows http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/workflowexecutions http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/spanner http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/appengine http://127.0.0.1:4588/
 gcloud projects describe noctaxris-gcp-local --format=json
 ```
 
@@ -76,5 +113,22 @@ Full service list (including Firebase Auth and Datastore emulator hosts):
 ### Soft-skip integration smoke
 
 SDK and Terraform under `tests/` skip when `NOCTAXRIS_GCP_ENDPOINT` is unset or
-`GET {endpoint}/_noctaxris-gcp/ready` is not HTTP 200. Unit tests
+`GET {endpoint}/_noctaxris-gcp/ready` is not HTTP 200. Authenticated cases also
+soft-skip when `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is unset. Unit tests
 (`go test ./...`) stay green without a running container.
+
+| Variable | Role |
+|----------|------|
+| `NOCTAXRIS_GCP_ENDPOINT` | Lab base URL (e.g. `http://127.0.0.1:4588`); required for live smoke |
+| `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` | Bearer for authenticated SDK/Terraform cases |
+| `NOCTAXRIS_GCP_PROJECT` | Optional; defaults to `noctaxris-gcp-local` |
+
+```bash
+export NOCTAXRIS_GCP_ENDPOINT=http://127.0.0.1:4588
+export NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN="$ROOT_TOKEN"
+# optional: export NOCTAXRIS_GCP_PROJECT=noctaxris-gcp-local
+go test ./tests/sdk/go/ -count=1
+# node --test tests/sdk/nodejs/*.test.mjs
+# pytest tests/sdk/python/
+# bash tests/terraform/run.sh
+```

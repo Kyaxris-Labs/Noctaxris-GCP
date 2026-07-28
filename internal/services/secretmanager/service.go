@@ -156,8 +156,21 @@ func (s *Service) httpCreateSecret(w http.ResponseWriter, r *http.Request) {
 		gcperrors.InvalidArgument(w, "secretId query parameter is required")
 		return
 	}
+	var body struct {
+		Labels                    map[string]string `json:"labels"`
+		Annotations               map[string]string `json:"annotations"`
+		Replication               map[string]any    `json:"replication"`
+		CustomerManagedEncryption *struct {
+			KmsKeyName string `json:"kmsKeyName"`
+		} `json:"customerManagedEncryption"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body)
+	cmek := ""
+	if body.CustomerManagedEncryption != nil {
+		cmek = body.CustomerManagedEncryption.KmsKeyName
+	}
 	name := secretResourceName(project, secretID)
-	sec, created, err := s.Store.CreateSecret(name, project)
+	sec, created, err := s.Store.CreateSecretWithMeta(name, project, body.Labels, body.Annotations, body.Replication, cmek)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -500,7 +513,7 @@ func (s *Service) httpListVersions(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSecretHTTP(w, r, "secretmanager.versions.list", name, project) {
 		return
 	}
-	list, err := s.Store.ListSecretVersions(name)
+	list, err := s.Store.ListSecretVersions(name, parseSecretVersionStateFilter(r.URL.Query().Get("filter")))
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -541,11 +554,38 @@ func secretJSON(sec *store.Secret) map[string]any {
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
-	return map[string]any{
-		"name":        sec.Name,
-		"createTime":  sec.CreatedAt,
-		"labels":      labels,
-		"annotations": annotations,
+	replication := sec.Replication
+	if replication == nil || len(replication) == 0 {
+		replication = map[string]any{"automatic": map[string]any{}}
+	}
+	out := map[string]any{
+		"name":         sec.Name,
+		"createTime":   sec.CreatedAt,
+		"labels":       labels,
+		"annotations":  annotations,
+		"replication":  replication,
+	}
+	if sec.CMEKKmsKeyName != "" {
+		out["customerManagedEncryption"] = map[string]any{"kmsKeyName": sec.CMEKKmsKeyName}
+	}
+	return out
+}
+
+func parseSecretVersionStateFilter(filter string) string {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return ""
+	}
+	// Lab subset: state:ENABLED | state="ENABLED" | state:DISABLED | ...
+	filter = strings.ReplaceAll(filter, `"`, "")
+	lower := strings.ToLower(filter)
+	switch {
+	case strings.HasPrefix(lower, "state:"):
+		return strings.ToUpper(strings.TrimSpace(filter[len("state:"):]))
+	case strings.HasPrefix(lower, "state="):
+		return strings.ToUpper(strings.TrimSpace(filter[len("state="):]))
+	default:
+		return strings.ToUpper(filter)
 	}
 }
 
@@ -574,7 +614,21 @@ func (s *Service) CreateSecret(ctx context.Context, req *secretmanagerpb.CreateS
 		return nil, err
 	}
 	name := secretResourceName(project, req.GetSecretId())
-	sec, created, err := s.Store.CreateSecret(name, project)
+	var replication map[string]any
+	cmek := ""
+	var labels, annotations map[string]string
+	if req.GetSecret() != nil {
+		labels = req.GetSecret().GetLabels()
+		annotations = req.GetSecret().GetAnnotations()
+		if req.GetSecret().GetReplication() != nil {
+			raw, _ := json.Marshal(req.GetSecret().GetReplication())
+			_ = json.Unmarshal(raw, &replication)
+		}
+		if req.GetSecret().GetCustomerManagedEncryption() != nil {
+			cmek = req.GetSecret().GetCustomerManagedEncryption().GetKmsKeyName()
+		}
+	}
+	sec, created, err := s.Store.CreateSecretWithMeta(name, project, labels, annotations, replication, cmek)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
@@ -823,7 +877,56 @@ func secretPB(sec *store.Secret) *secretmanagerpb.Secret {
 	if t, err := parseTime(sec.CreatedAt); err == nil {
 		out.CreateTime = timestamppb.New(t)
 	}
+	if sec.CMEKKmsKeyName != "" {
+		out.CustomerManagedEncryption = &secretmanagerpb.CustomerManagedEncryption{KmsKeyName: sec.CMEKKmsKeyName}
+	}
+	if len(sec.Replication) > 0 {
+		if _, ok := sec.Replication["automatic"]; ok {
+			out.Replication = &secretmanagerpb.Replication{
+				Replication: &secretmanagerpb.Replication_Automatic_{
+					Automatic: &secretmanagerpb.Replication_Automatic{},
+				},
+			}
+		} else if um, ok := sec.Replication["userManaged"].(map[string]any); ok {
+			userManaged := &secretmanagerpb.Replication_UserManaged{}
+			if reps, ok := um["replicas"].([]any); ok {
+				for _, r := range reps {
+					rm, _ := r.(map[string]any)
+					loc, _ := rm["location"].(string)
+					if loc != "" {
+						userManaged.Replicas = append(userManaged.Replicas, &secretmanagerpb.Replication_UserManaged_Replica{Location: loc})
+					}
+				}
+			}
+			out.Replication = &secretmanagerpb.Replication{
+				Replication: &secretmanagerpb.Replication_UserManaged_{UserManaged: userManaged},
+			}
+		}
+	}
+	if out.Replication == nil {
+		out.Replication = &secretmanagerpb.Replication{
+			Replication: &secretmanagerpb.Replication_Automatic_{
+				Automatic: &secretmanagerpb.Replication_Automatic{},
+			},
+		}
+	}
 	return out
+}
+
+func (s *Service) ListSecretVersions(ctx context.Context, req *secretmanagerpb.ListSecretVersionsRequest) (*secretmanagerpb.ListSecretVersionsResponse, error) {
+	project := projectFromSecretName(req.GetParent())
+	if err := s.requireSecretGRPC(ctx, "secretmanager.versions.list", req.GetParent(), project); err != nil {
+		return nil, err
+	}
+	list, err := s.Store.ListSecretVersions(req.GetParent(), parseSecretVersionStateFilter(req.GetFilter()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	out := &secretmanagerpb.ListSecretVersionsResponse{}
+	for i := range list {
+		out.Versions = append(out.Versions, versionPB(&list[i]))
+	}
+	return out, nil
 }
 
 func versionPB(v *store.SecretVersion) *secretmanagerpb.SecretVersion {
