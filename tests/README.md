@@ -1,0 +1,74 @@
+# Integration tests
+
+Real SDK and Terraform suites against a running Noctaxris-GCP API. Soft-skip when the endpoint or root token is unset.
+
+Endpoint default: `http://127.0.0.1:4588`. Use the same root Bearer as `docker/.env`.
+
+## Prerequisites
+
+1. Compose up and ready (Compose binds `0.0.0.0` in-container; the shipped `.env.example` root pair is refused):
+
+```bash
+cp docker/.env.example docker/.env
+ROOT_SA="root@$(openssl rand -hex 4).iam.gserviceaccount.com"
+ROOT_TOKEN="$(openssl rand -hex 32)"
+awk -v sa="$ROOT_SA" -v token="$ROOT_TOKEN" '
+  /^NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT=/ { print "NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT=" sa; next }
+  /^NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN=/ { print "NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN=" token; next }
+  { print }
+' docker/.env > docker/.env.tmp && mv docker/.env.tmp docker/.env
+
+docker compose -f docker/compose.yaml --env-file docker/.env up --build -d
+
+curl -fsS http://127.0.0.1:4588/_noctaxris-gcp/health
+curl -fsS http://127.0.0.1:4588/_noctaxris-gcp/ready
+```
+
+Or copy `.env.example` and replace both `NOCTAXRIS_GCP_ROOT_*` values yourself before `compose up`.
+
+2. Export credentials (match `docker/.env`):
+
+```bash
+set -a && source docker/.env && set +a
+export NOCTAXRIS_GCP_ENDPOINT=http://127.0.0.1:4588
+export NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
+export NOCTAXRIS_GCP_PROJECT="${NOCTAXRIS_GCP_PROJECT:-noctaxris-gcp-local}"
+```
+
+Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`, `NOCTAXRIS_GCP_PROJECT`.
+
+| Suite | Tools |
+|-------|--------|
+| SDK (Go) | Go 1.22+ (module under `tests/sdk/go`) |
+| SDK (Node.js) | Node.js 24+; `npm install` under `tests/sdk/nodejs` |
+| SDK (Python) | Python 3.10+; `pip install -r requirements.txt` under `tests/sdk/python` |
+| Terraform | Terraform CLI 1.5+, Google provider resolved on `init` |
+
+## Run all suites
+
+From the repo root (bash / WSL / Git Bash):
+
+```bash
+bash tests/run-all.sh
+```
+
+Or run each suite:
+
+```bash
+# SDK round-trips (CRM, GCS, Pub/Sub, IAM, secrets, …; soft-skip rows when API down)
+cd tests/sdk/go && go test ./... -count=1 -timeout 10m
+
+cd tests/sdk/nodejs && npm install && npm test
+
+cd tests/sdk/python && pip install -r requirements.txt && pytest
+
+# Terraform apply + destroy (default set: storage, run, dns, compute, armor)
+bash tests/terraform/run.sh
+
+# One stack
+STACK=lab-armor bash tests/terraform/run.sh
+```
+
+When Compose publishes `127.0.0.1:4588` on a Windows host, run Terraform from that host (not WSL loopback).
+
+Maintainer gap list: [HANDOFF.md](HANDOFF.md). Stack notes: [terraform/README.md](terraform/README.md).

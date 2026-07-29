@@ -186,10 +186,20 @@ endpoint overrides. See [configuration.md](../configuration.md).
 
 ## Verification
 
+Unit tests and live SDK / Terraform suites:
+
 ```bash
 go test ./...
+bash tests/run-all.sh   # needs Compose up; see tests/README.md
+```
+
+Quick probes:
+
+```bash
 curl http://127.0.0.1:4588/_noctaxris-gcp/health
 curl http://127.0.0.1:4588/_noctaxris-gcp/ready
 curl -H "Authorization: Bearer $ROOT_TOKEN" \
   http://127.0.0.1:4588/v3/projects/noctaxris-gcp-local
 ```
+
+Docs index: [../index.md](../index.md).

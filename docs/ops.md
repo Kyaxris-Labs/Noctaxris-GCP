@@ -1,0 +1,105 @@
+# Operations
+
+Durable single-host lab ops for Noctaxris-GCP. This is not a multi-tenant HA guide.
+
+## Single API replica
+
+Run **one** Noctaxris-GCP API process against a given data root (Compose named volume or host path). Do not scale replicas against the same `state.db`. Multi-instance access is unsupported and can corrupt SQLite state.
+
+Compose mounts API sealed state (`noctaxris-gcp-data`) and the master key (`noctaxris-gcp-secrets` at `/var/lib/noctaxris-gcp-secrets`) as separate volumes. `noctaxris-gcp-init` chowns both to UID `65532` before the API starts. Default Compose sets `NOCTAXRIS_GCP_MASTER_KEY_FILE=/var/lib/noctaxris-gcp-secrets/master.key` so create works under `read_only: true`. The nested engine (when overlaid) never mounts `noctaxris-gcp-data` or `noctaxris-gcp-secrets`. Default engine is restricted DinD (`privileged: false` with explicit caps / host cgroup). If nested smoke fails on your host: `docker compose -f docker/compose.yaml -f docker/compose.engine.yaml -f docker/compose.engine-privileged.yaml --env-file docker/.env up --build` and keep host publish loopback.
+
+## Listen and example roots
+
+Process listen is loopback only for `localhost`, `127.0.0.0/8`, and `::1`. Port-only (`:4588`), `0.0.0.0`, and `::` are non-loopback and require TLS or `NOCTAXRIS_GCP_ALLOW_NONLOOPBACK_LISTEN=1` (Compose sets the opt-in for the in-container `0.0.0.0` bind; host publish stays `127.0.0.1:4588`).
+
+The shipped `docker/.env.example` root pair (`root@example.iam.gserviceaccount.com` / `noctaxris-gcp-example-root-token`) is allowed on loopback listen only. Startup refuses that pair when listen is non-loopback, including default Compose. Copy `.env.example` to `.env` and replace both root values with unique lab credentials before `compose up`.
+
+## Master key
+
+Default `NOCTAXRIS_GCP_MASTER_KEY_FILE` is outside `NOCTAXRIS_GCP_DATA_ROOT` (sibling `…/noctaxris-gcp-secrets/master.key` when the data root is `…/noctaxris-gcp`). Compose pins that path on the `noctaxris-gcp-secrets` volume. Startup refuses a master key under the data root unless `NOCTAXRIS_GCP_ALLOW_MASTER_KEY_IN_DATA_ROOT=1`. Without `master.key`, sealed columns cannot be decrypted even if `state.db` is restored.
+
+## Backup and restore
+
+1. Stop Compose so writers are idle:
+
+```bash
+docker compose -f docker/compose.yaml --env-file docker/.env down
+```
+
+2. Archive data and secrets volumes (or the host data root plus master key path). Minimum set: `master.key` (Compose: `noctaxris-gcp-secrets`), `state.db`, object trees under the data root, and `audit.jsonl` when present.
+
+```bash
+docker run --rm -v noctaxris-gcp-data:/data -v "$PWD:/backup" busybox \
+  tar czf /backup/noctaxris-gcp-data.tgz -C /data .
+docker run --rm -v noctaxris-gcp-secrets:/data -v "$PWD:/backup" busybox \
+  tar czf /backup/noctaxris-gcp-secrets.tgz -C /data .
+```
+
+Compose project prefixes may rename volumes (for example `docker_noctaxris-gcp-data`). Use `docker volume ls` and substitute the real names.
+
+3. Restore into empty volumes or a fresh host path, confirm the files exist, then start Compose.
+
+## Published images
+
+Docker Hub image: **`kyaxris/noctaxris-gcp`** (canonical GitHub repo `Kyaxris-Labs/Noctaxris-GCP`).
+
+| Tags | Source |
+|------|--------|
+| `0.x.y`, `0.x`, `0`, `latest`, `sha-<short>` | Tag push `v*` when release workflow secrets are configured (see [release.md](release.md)) |
+| Local / CI | `docker build -f docker/Dockerfile .` on every PR |
+
+Repository secrets for Hub publish (never commit): `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Product version: file `VERSION`, OCI label when set at build, and open probe `GET /_noctaxris-gcp/version`.
+
+## Image upgrades
+
+1. Stop Compose.
+2. Take a backup (above).
+3. Pull a Hub tag (`docker pull kyaxris/noctaxris-gcp:0.5.0`) or rebuild (`docker compose ... up --build`).
+4. Start Compose and confirm `/_noctaxris-gcp/ready` returns ready (optional: `/_noctaxris-gcp/version`).
+
+Schema changes are additive (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN` with duplicate-column ignore). There is no down-migration. Prefer stop → backup → start over live multi-writer upgrades.
+
+## Graceful shutdown
+
+On `SIGTERM` or interrupt, the API drains HTTP with a short shutdown timeout. Prefer `docker compose ... stop` or `down` over `kill -9`. Backup still requires writers idle (Compose down) so SQLite and volume archives are consistent.
+
+## Health vs ready
+
+| Probe | Path | Meaning |
+|-------|------|---------|
+| Liveness | `GET /_noctaxris-gcp/health` | Process accepts HTTP |
+| Readiness | `GET /_noctaxris-gcp/ready` | SQLite reachable |
+
+Compose `healthcheck` calls `/noctaxris-gcp healthcheck` (distroless, no curl) against readiness over the container's plain HTTP listener. Optional TLS (`NOCTAXRIS_GCP_TLS_CERT` / `NOCTAXRIS_GCP_TLS_KEY`) does not automatically switch Compose probes or client `http://` endpoint URLs; keep healthchecks and lab clients on HTTP unless you rewire both.
+
+## CI matrix
+
+GitHub Actions (`.github/workflows/ci.yml`):
+
+| Job | When |
+|-----|------|
+| unit | Every push and PR (`go test ./...`; also `-race`) |
+| image | `docker build -f docker/Dockerfile .` |
+| sbom | After image: Syft SPDX SBOM artifact |
+| govulncheck | `go run ./scripts/govulncheck-ci` (allowlist only for documented residuals with no module-path fix) |
+
+A green PR proves unit tests, image build, SBOM generation, and govulncheck. It does **not** prove nested DinD Cloud Run invoke. Nested compute stays opt-in via Compose overlays.
+
+Per-service CLI smoke remains documented on each `docs/services/` page for operator runs outside CI. Live SDK / Terraform suites: [tests/README.md](../tests/README.md).
+
+## Compose overlays (lab opt-in)
+
+Default `docker/compose.yaml` stays loopback-published and nested engine off. Use overlays only for the labs that need them; do not make them the default stack.
+
+| Overlay | When |
+|---------|------|
+| `docker/compose.engine.yaml` | Opt-in restricted DinD (`noctaxris-gcp-engine`) for Cloud Run nested `:invoke`. Sets `NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH`. No host publish of 2375/2376. Never mounts host `docker.sock` |
+| `docker/compose.engine-privileged.yaml` | Nested `docker info` / invoke fails on restricted DinD (Desktop/WSL edge cases). Privileged DinD is a host workaround, not the secure default. Keep publish on `127.0.0.1:4588` |
+
+HTTP egress helpers (`NOCTAXRIS_GCP_HTTP_EGRESS`, `NOCTAXRIS_GCP_HTTP_ALLOWLIST`) stay off unless set on the API process. See [configuration.md](configuration.md).
+
+## Related
+
+- Security posture: [security-defaults.md](security-defaults.md)
+- Release cut: [release.md](release.md)
+- Architecture: [architecture.md](architecture.md)

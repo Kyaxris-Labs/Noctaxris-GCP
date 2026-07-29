@@ -6,6 +6,7 @@
 
 | Area | Change |
 |------|--------|
+| Docs | README + public layout aligned with Noctaxris (logo asset, Services matrix, Defaults, Architecture, Docs table, Contributors; `docs/index.md` / `ops.md` / `release.md`; `tests/README.md` / `run-all.sh` / `HANDOFF.md`) |
 | Bigtable | Instance Admin gRPC lite (`CreateInstance`/`GetInstance`/`ListInstances`/`DeleteInstance`); Create returns a done Operation with Instance response; REST `/v2/` unchanged |
 | Certificate Manager | Create certificate / certificateMap returns completed Operation (`done: true` + `response`); `GET .../operations/{operation}` immediate done theatre |
 | Filestore | Create instance returns completed Operation (`done: true` + `response`); `GET /file/v1/.../operations/{operation}` immediate done theatre |
