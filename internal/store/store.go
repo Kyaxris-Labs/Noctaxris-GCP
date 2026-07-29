@@ -207,6 +207,17 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// Ping verifies the SQLite connection is usable (readiness).
+func (s *Store) Ping() error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store is closed")
+	}
+	if err := s.db.Ping(); err != nil {
+		return fmt.Errorf("sqlite ping: %w", err)
+	}
+	return nil
+}
+
 // DataRoot returns the configured data directory.
 func (s *Store) DataRoot() string { return s.dataRoot }
 

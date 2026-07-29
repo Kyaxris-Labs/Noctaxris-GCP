@@ -61,6 +61,7 @@ First major release after the hybrid lab-complete surface (identity, storage, se
 
 | Area | Change |
 |------|--------|
+| Ready probe | Align with Noctaxris: SQLite `Ping`, optional nested-engine ping when `NOCTAXRIS_GCP_DOCKER_HOST` set, body `ready`; `ci-required` wait uses the same `curl \| grep -q ready` loop |
 | Authz | Nil `Evaluator` fail-closed for non-root |
 | Create handlers | Get-after-create miss returns 500 (nested/edge services + Filestore/Spanner/Cert Manager/Build/Tasks) |
 | CRM folders | Folder IDs use UUID hex instead of `UnixNano` (Windows clock collide-on-create) |

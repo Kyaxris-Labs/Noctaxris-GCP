@@ -68,8 +68,8 @@ On `SIGTERM` or interrupt, the API drains HTTP with a short shutdown timeout. Pr
 
 | Probe | Path | Meaning |
 |-------|------|---------|
-| Liveness | `GET /_noctaxris-gcp/health` | Process accepts HTTP |
-| Readiness | `GET /_noctaxris-gcp/ready` | SQLite reachable |
+| Liveness | `GET /_noctaxris-gcp/health` | Process accepts HTTP (`ok`) |
+| Readiness | `GET /_noctaxris-gcp/ready` | SQLite ping OK; if `NOCTAXRIS_GCP_DOCKER_HOST` is set, nested engine ping OK; body `ready` |
 
 Compose `healthcheck` calls `/noctaxris-gcp healthcheck` (distroless, no curl) against readiness over the container's plain HTTP listener. Optional TLS (`NOCTAXRIS_GCP_TLS_CERT` / `NOCTAXRIS_GCP_TLS_KEY`) does not automatically switch Compose probes or client `http://` endpoint URLs; keep healthchecks and lab clients on HTTP unless you rewire both.
 

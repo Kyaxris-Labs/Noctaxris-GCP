@@ -126,19 +126,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		gcperrors.WriteREST(w, http.StatusMethodNotAllowed, gcperrors.StatusInvalidArgument, "method not allowed")
-		return
-	}
-	if s.store == nil {
-		gcperrors.WriteREST(w, http.StatusServiceUnavailable, gcperrors.StatusUnavailable, "store not ready")
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
-}
-
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		gcperrors.WriteREST(w, http.StatusMethodNotAllowed, gcperrors.StatusInvalidArgument, "method not allowed")

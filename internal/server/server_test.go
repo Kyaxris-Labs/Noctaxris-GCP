@@ -54,13 +54,20 @@ func TestHealthUnauthenticated(t *testing.T) {
 
 func TestReadyAndVersionUnauthenticated(t *testing.T) {
 	srv, _ := testServer(t)
-	for _, path := range []string{"/_noctaxris-gcp/ready", "/_noctaxris-gcp/version"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		rec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s status = %d body=%s", path, rec.Code, rec.Body.String())
-		}
+	req := httptest.NewRequest(http.MethodGet, "/_noctaxris-gcp/ready", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ready status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "ready" {
+		t.Fatalf("ready body = %q want ready", rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/_noctaxris-gcp/version", nil)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("version status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
