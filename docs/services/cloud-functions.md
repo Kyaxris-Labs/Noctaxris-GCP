@@ -40,8 +40,10 @@ Checked on `projects/{project}`:
 
 ## Emulator limits
 
-- Upload accepts bytes only; no zip extract, no build, no runtime start
-- Eventarc / Pub/Sub triggers are not wired from Functions create
+- `:invoke` is an in-process stub only: returns stored `labResponse` JSON (or a
+  small default). No container, no Cloud Run routing, no nested DinD, no cold start
+- Upload zip is accepted and tracked; no extract, build, or runtime
+- Eventarc / Pub/Sub triggers on create are not wired
 
 ## Deferred depth
 
@@ -51,7 +53,7 @@ Checked on `projects/{project}`:
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ -run CloudFunctions -count=1
+go test ./internal/services/cloudfunctions/ ./internal/server/ -run CloudFunctions -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 UP=$(curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/functions:generateUploadUrl" \

@@ -156,6 +156,75 @@ func TestCRMMoveUndeleteSearchOrgIAMAndLabels(t *testing.T) {
 	}
 }
 
+func TestCRMTagKeysBindingsAndListFolders(t *testing.T) {
+	mux, _ := openCRM(t)
+
+	createKey := []byte(`{"parent":"` + store.DefaultOrganizationName + `","shortName":"env","description":"environment"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v3/tagKeys", bytes.NewReader(createKey))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create tagKey status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var tagKey map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &tagKey)
+	keyID := tagKey["name"].(string)[len("tagKeys/"):]
+
+	req = httptest.NewRequest(http.MethodGet, "/v3/tagKeys?parent="+store.DefaultOrganizationName, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list tagKeys status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	bindBody := []byte(`{"parent":"projects/noctaxris-gcp-local","tagValueNamespacedName":"noctaxris-gcp-org/env/prod"}`)
+	req = httptest.NewRequest(http.MethodPost, "/v3/tagBindings", bytes.NewReader(bindBody))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create tagBinding status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var binding map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &binding)
+	bindID := binding["name"].(string)[len("tagBindings/"):]
+
+	req = httptest.NewRequest(http.MethodGet, "/v3/tagBindings/"+bindID, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get tagBinding status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v3/tagKeys/"+keyID, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get tagKey status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	createFolder := []byte(`{"parent":"` + store.DefaultOrganizationName + `","displayName":"WP1 Folder"}`)
+	req = httptest.NewRequest(http.MethodPost, "/v3/folders", bytes.NewReader(createFolder))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create folder status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	parent := store.DefaultOrganizationName
+	req = httptest.NewRequest(http.MethodGet, "/v3/folders?parent="+parent, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list folders status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var folderList map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &folderList)
+	folders, _ := folderList["folders"].([]any)
+	if len(folders) < 1 {
+		t.Fatalf("folders = %#v", folderList)
+	}
+}
+
 func TestCRMFailClosedWithoutPrincipal(t *testing.T) {
 	mux := http.NewServeMux()
 	h := &resourcemanager.Handler{
@@ -167,5 +236,36 @@ func TestCRMFailClosedWithoutPrincipal(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d", rec.Code)
+	}
+}
+
+func TestCRMAuthzDenyNonRoot(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureRoot("noctaxris-gcp-local", "root@noctaxris-gcp-local.iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h := &resourcemanager.Handler{
+		Store: st,
+		Authz: &authz.Evaluator{Policies: st},
+		Principal: func(*http.Request) (authn.Principal, bool) {
+			return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
+		},
+	}
+	h.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/v3/projects/noctaxris-gcp-local", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

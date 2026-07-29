@@ -102,6 +102,12 @@ an LRO Operation.
 - Project `name` uses `projects/{projectId}` (string id), not a numeric project number.
 - gRPC `Projects` / `Folders` / `Organizations` services are not registered yet; use REST.
 
+## Deferred depth
+
+- Project create / delete (seeded projects only; no CRM project lifecycle)
+- TagValues first-class CRUD (bindings store namespaced names only)
+- gRPC Projects / Folders / Organizations service registration
+
 ## Verification / CLI smoke
 
 ```bash

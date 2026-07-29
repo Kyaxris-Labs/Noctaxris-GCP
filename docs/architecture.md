@@ -27,9 +27,10 @@ flowchart TB
       CMP[Run / Functions / Scheduler / Tasks]
       AN[BQ / Firebase Auth / Monitoring / Datastore / Eventarc]
       APPS[Artifact Registry / Cloud Build / Workflows / Spanner / App Engine]
-      CDATA[Compute Engine / Bigtable / Memorystore / DNS / Dataflow]
+      CDATA[Compute / Bigtable / Memorystore / SQL / Kafka / DNS / Dataflow]
       SEC[Cloud Armor / Certificate Manager]
       STORAI[Filestore / Vertex AI]
+      EDGE[GKE / LB / CDN]
     end
   end
 
@@ -40,6 +41,10 @@ flowchart TB
 
   subgraph nested [Opt-in nested DinD]
     ENGINE[noctaxris-gcp-engine TLS :2376]
+    SQL[Cloud SQL Postgres MySQL]
+    REDIS[Memorystore Redis]
+    KAFKA[Managed Kafka Redpanda]
+    K3S[GKE k3s one-shot]
   end
 
   SDK -->|127.0.0.1:4588| H2C
@@ -55,12 +60,19 @@ flowchart TB
   REST --> CDATA
   REST --> SEC
   REST --> STORAI
+  REST --> EDGE
   GRPC --> DATA
   GRPC --> DOC
   GRPC --> AN
   CMP --> INV
   INV -->|mock default| CMP
   INV -.->|NOCTAXRIS_GCP_DOCKER_HOST set| ENGINE
+  CDATA -.->|opt-in DinD| ENGINE
+  EDGE -.->|opt-in DinD| ENGINE
+  ENGINE --> SQL
+  ENGINE --> REDIS
+  ENGINE --> KAFKA
+  ENGINE --> K3S
   ID --> AUTHZ
   DATA --> AUTHZ
   DOC --> AUTHZ
@@ -70,6 +82,7 @@ flowchart TB
   CDATA --> AUTHZ
   SEC --> AUTHZ
   STORAI --> AUTHZ
+  EDGE --> AUTHZ
   AUTHZ --> STORE
   STORE --> DATAVOL
   AEAD --> SECRETS
@@ -103,9 +116,11 @@ flowchart TB
 | `registerServerless` | Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks (REST) |
 | `registerAnalytics` | BigQuery (REST), Firebase Auth / Identity Toolkit (REST), Cloud Monitoring (REST), Datastore (gRPC), Eventarc (REST) |
 | `registerAppsBuild` | Artifact Registry, Cloud Build, Workflows, Cloud Spanner, App Engine (REST) |
-| `registerComputeData` | Compute Engine (incl. VPC/firewall), Bigtable Admin, Memorystore Redis, Cloud DNS, Dataflow (REST) |
+| `registerComputeData` | Compute Engine (incl. VPC/firewall), Bigtable Admin, Memorystore Redis, Cloud SQL (`/sql/v1/`), Cloud DNS, Dataflow (REST) |
+| `registerManagedKafka` | Managed Kafka clusters under `/v1/projects/.../locations/.../clusters` |
 | `registerSecurity` | Cloud Armor (Compute securityPolicies), Certificate Manager (REST) |
 | `registerStorageAI` | Filestore (`/file/v1/` instances), Vertex AI publisher predict/generateContent (REST) |
+| `registerGKEEdge` | GKE Container API (`/container/v1/...`), HTTP(S) LB metadata + `/lb/...` dataplane, Cloud CDN + `/cdn/...` edge |
 
 ## Request path
 

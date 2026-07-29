@@ -123,6 +123,81 @@ func TestArtifactRegistryDeepenIAMFilesTagsLabels(t *testing.T) {
 	}
 }
 
+func TestArtifactRegistryRepositoryPackageVersionCRUD(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureRoot("noctaxris-gcp-local", "root@noctaxris-gcp-local.iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	svc := &artifactregistry.Service{Store: st, Authz: &authz.Evaluator{Policies: st}}
+	svc.Mount(mux, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "root@noctaxris-gcp-local.iam.gserviceaccount.com", IsRoot: true}, true
+	})
+	loc := artifactregistry.DefaultLocation
+	base := "/v1/projects/noctaxris-gcp-local/locations/" + loc + "/repositories"
+
+	req := httptest.NewRequest(http.MethodPost, base+"?repositoryId=crud",
+		bytes.NewReader([]byte(`{"format":"DOCKER"}`)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create repo status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list repos status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, base+"/crud/packages?packageId=app",
+		bytes.NewReader([]byte(`{}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create package status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, base+"/crud/packages/app/versions?versionId=v1",
+		bytes.NewReader([]byte(`{}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create version status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, base+"/crud/packages/app/versions/v1", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete version status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, base+"/crud/packages/app", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete package status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, base+"/crud", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete repo status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestArtifactRegistryFailClosed(t *testing.T) {
 	mux := http.NewServeMux()
 	svc := &artifactregistry.Service{}
@@ -132,5 +207,32 @@ func TestArtifactRegistryFailClosed(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d", rec.Code)
+	}
+}
+
+func TestArtifactRegistryAuthzDenyNonRootWithoutBinding(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureRoot("noctaxris-gcp-local", "root@noctaxris-gcp-local.iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	svc := &artifactregistry.Service{Store: st, Authz: &authz.Evaluator{Policies: st}}
+	svc.Mount(mux, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects/noctaxris-gcp-local/locations/us-central1/repositories", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

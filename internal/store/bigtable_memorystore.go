@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS memorystore_redis_instances (
   state TEXT NOT NULL DEFAULT 'READY',
   labels_json TEXT NOT NULL DEFAULT '{}',
   authorized_network TEXT NOT NULL DEFAULT '',
+  container_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   UNIQUE (project_id, location, instance_id)
 );
@@ -56,6 +58,11 @@ CREATE TABLE IF NOT EXISTS memorystore_redis_instances (
 func (s *Store) migrateBigtableMemorystore() error {
 	if _, err := s.db.Exec(bigtableMemorystoreSchema); err != nil {
 		return fmt.Errorf("apply bigtable/memorystore schema: %w", err)
+	}
+	if _, err := s.db.Exec(`ALTER TABLE memorystore_redis_instances ADD COLUMN container_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return fmt.Errorf("migrate memorystore container_id: %w", err)
+		}
 	}
 	return nil
 }
@@ -100,6 +107,7 @@ type MemorystoreRedisInstance struct {
 	State              string
 	LabelsJSON         string
 	AuthorizedNetwork  string
+	ContainerID        string
 	CreatedAt          string
 }
 
@@ -334,10 +342,10 @@ func (s *Store) CreateMemorystoreRedisInstance(inst MemorystoreRedisInstance) (b
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO memorystore_redis_instances
 		 (name, project_id, location, instance_id, display_name, tier, memory_size_gb, redis_version,
-		  host, port, state, labels_json, authorized_network, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  host, port, state, labels_json, authorized_network, container_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		inst.Name, inst.ProjectID, inst.Location, inst.InstanceID, inst.DisplayName, inst.Tier, inst.MemorySizeGb,
-		inst.RedisVersion, inst.Host, inst.Port, inst.State, inst.LabelsJSON, inst.AuthorizedNetwork, inst.CreatedAt,
+		inst.RedisVersion, inst.Host, inst.Port, inst.State, inst.LabelsJSON, inst.AuthorizedNetwork, inst.ContainerID, inst.CreatedAt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("create memorystore redis instance: %w", err)
@@ -354,11 +362,11 @@ func (s *Store) GetMemorystoreRedisInstance(name string) (MemorystoreRedisInstan
 	var inst MemorystoreRedisInstance
 	err := s.db.QueryRow(
 		`SELECT name, project_id, location, instance_id, display_name, tier, memory_size_gb, redis_version,
-		        host, port, state, labels_json, authorized_network, created_at
+		        host, port, state, labels_json, authorized_network, container_id, created_at
 		 FROM memorystore_redis_instances WHERE name = ?`, name,
 	).Scan(
 		&inst.Name, &inst.ProjectID, &inst.Location, &inst.InstanceID, &inst.DisplayName, &inst.Tier, &inst.MemorySizeGb,
-		&inst.RedisVersion, &inst.Host, &inst.Port, &inst.State, &inst.LabelsJSON, &inst.AuthorizedNetwork, &inst.CreatedAt,
+		&inst.RedisVersion, &inst.Host, &inst.Port, &inst.State, &inst.LabelsJSON, &inst.AuthorizedNetwork, &inst.ContainerID, &inst.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return MemorystoreRedisInstance{}, false, nil
@@ -373,7 +381,7 @@ func (s *Store) GetMemorystoreRedisInstance(name string) (MemorystoreRedisInstan
 func (s *Store) ListMemorystoreRedisInstances(projectID, location string) ([]MemorystoreRedisInstance, error) {
 	rows, err := s.db.Query(
 		`SELECT name, project_id, location, instance_id, display_name, tier, memory_size_gb, redis_version,
-		        host, port, state, labels_json, authorized_network, created_at
+		        host, port, state, labels_json, authorized_network, container_id, created_at
 		 FROM memorystore_redis_instances WHERE project_id = ? AND location = ? ORDER BY name`,
 		projectID, location,
 	)
@@ -386,13 +394,38 @@ func (s *Store) ListMemorystoreRedisInstances(projectID, location string) ([]Mem
 		var inst MemorystoreRedisInstance
 		if err := rows.Scan(
 			&inst.Name, &inst.ProjectID, &inst.Location, &inst.InstanceID, &inst.DisplayName, &inst.Tier, &inst.MemorySizeGb,
-			&inst.RedisVersion, &inst.Host, &inst.Port, &inst.State, &inst.LabelsJSON, &inst.AuthorizedNetwork, &inst.CreatedAt,
+			&inst.RedisVersion, &inst.Host, &inst.Port, &inst.State, &inst.LabelsJSON, &inst.AuthorizedNetwork, &inst.ContainerID, &inst.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
 		out = append(out, inst)
 	}
 	return out, rows.Err()
+}
+
+// SetMemorystoreRedisRuntime updates nested host/port/container metadata after DinD ensure.
+func (s *Store) SetMemorystoreRedisRuntime(name, host, containerID string, port int) error {
+	if name == "" {
+		return fmt.Errorf("memorystore redis runtime: name required")
+	}
+	if port <= 0 {
+		port = 6379
+	}
+	res, err := s.db.Exec(
+		`UPDATE memorystore_redis_instances SET host = ?, port = ?, container_id = ? WHERE name = ?`,
+		host, port, containerID, name,
+	)
+	if err != nil {
+		return fmt.Errorf("memorystore redis runtime: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("memorystore redis runtime: instance not found")
+	}
+	return nil
 }
 
 // DeleteMemorystoreRedisInstance deletes an instance by name.

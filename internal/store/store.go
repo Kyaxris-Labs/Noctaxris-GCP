@@ -77,10 +77,19 @@ func (s *Store) migrate() error {
 	if err := s.migrateFilestore(); err != nil {
 		return err
 	}
+	if err := s.migrateCloudSQL(); err != nil {
+		return err
+	}
+	if err := s.migrateManagedKafka(); err != nil {
+		return err
+	}
 	if err := s.migrateWIF(); err != nil {
 		return err
 	}
 	if err := s.migrateCRMTags(); err != nil {
+		return err
+	}
+	if err := s.migrateGKEEdge(); err != nil {
 		return err
 	}
 	if err := s.ensureDataColumns(); err != nil {
@@ -281,9 +290,11 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 		"compute.googleapis.com",
 		"bigtableadmin.googleapis.com",
 		"redis.googleapis.com",
+		"sqladmin.googleapis.com",
 		"certificatemanager.googleapis.com",
 		"file.googleapis.com",
 		"aiplatform.googleapis.com",
+		"container.googleapis.com",
 	}
 	for _, svc := range wave1 {
 		if _, err := tx.Exec(

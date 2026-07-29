@@ -2,6 +2,7 @@ package sdk_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"cloud.google.com/go/datastore/apiv1/datastorepb"
+	"cloud.google.com/go/firestore/apiv1/firestorepb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 func endpoint(t *testing.T) string {
@@ -392,6 +399,44 @@ func TestListMemorystoreInstancesSmoke(t *testing.T) {
 	}
 	if _, ok := parsed["instances"]; !ok {
 		t.Fatalf("missing instances field body=%s", body)
+	}
+}
+
+func TestListManagedKafkaClustersSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/locations/us-central1/clusters"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list managed kafka clusters status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode managed kafka clusters: %v body=%s", err, body)
+	}
+	if _, ok := parsed["clusters"]; !ok {
+		t.Fatalf("missing clusters field body=%s", body)
+	}
+}
+
+func TestListCloudSQLInstancesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/sql/v1/projects/" + project + "/instances"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list cloudsql instances status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode cloudsql instances: %v body=%s", err, body)
+	}
+	if _, ok := parsed["items"]; !ok {
+		t.Fatalf("missing items field body=%s", body)
 	}
 }
 
@@ -837,5 +882,424 @@ func TestNestedInvokeFailClosedSmoke(t *testing.T) {
 	}
 	if strings.Contains(string(body), `"mode":"mock"`) {
 		t.Fatalf(":invoke should not soft-fail to mock under fail-closed, body=%s", body)
+	}
+}
+
+func grpcDialTarget(ep string) string {
+	u, err := url.Parse(ep)
+	if err != nil || u.Host == "" {
+		if strings.Contains(ep, "://") {
+			return ep
+		}
+		return ep
+	}
+	return u.Host
+}
+
+func grpcAuthCtx(token string) context.Context {
+	return metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+token)
+}
+
+func TestFirestoreCreateGetSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	conn, err := grpc.NewClient(grpcDialTarget(ep), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc dial: %v", err)
+	}
+	defer conn.Close()
+	client := firestorepb.NewFirestoreClient(conn)
+	ctx := grpcAuthCtx(token)
+
+	parent := "projects/" + project + "/databases/(default)/documents"
+	docID := uniqueID("sdk-fs")
+	created, err := client.CreateDocument(ctx, &firestorepb.CreateDocumentRequest{
+		Parent:       parent,
+		CollectionId: "sdk_smoke",
+		DocumentId:   docID,
+		Document: &firestorepb.Document{
+			Fields: map[string]*firestorepb.Value{
+				"ping": {ValueType: &firestorepb.Value_StringValue{StringValue: "pong"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument: %v", err)
+	}
+	got, err := client.GetDocument(ctx, &firestorepb.GetDocumentRequest{Name: created.GetName()})
+	if err != nil {
+		t.Fatalf("GetDocument: %v", err)
+	}
+	if got.GetFields()["ping"].GetStringValue() != "pong" {
+		t.Fatalf("fields=%#v", got.GetFields())
+	}
+}
+
+func TestDatastoreCommitLookupSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	conn, err := grpc.NewClient(grpcDialTarget(ep), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc dial: %v", err)
+	}
+	defer conn.Close()
+	client := datastorepb.NewDatastoreClient(conn)
+	ctx := grpcAuthCtx(token)
+
+	name := uniqueID("sdk-ds")
+	key := &datastorepb.Key{
+		PartitionId: &datastorepb.PartitionId{ProjectId: project},
+		Path: []*datastorepb.Key_PathElement{{
+			Kind: "SdkSmoke", IdType: &datastorepb.Key_PathElement_Name{Name: name},
+		}},
+	}
+	_, err = client.Commit(ctx, &datastorepb.CommitRequest{
+		ProjectId: project,
+		Mode:      datastorepb.CommitRequest_NON_TRANSACTIONAL,
+		Mutations: []*datastorepb.Mutation{{
+			Operation: &datastorepb.Mutation_Upsert{
+				Upsert: &datastorepb.Entity{
+					Key: key,
+					Properties: map[string]*datastorepb.Value{
+						"v": {ValueType: &datastorepb.Value_StringValue{StringValue: "ok"}},
+					},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	lookup, err := client.Lookup(ctx, &datastorepb.LookupRequest{ProjectId: project, Keys: []*datastorepb.Key{key}})
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if len(lookup.Found) != 1 {
+		t.Fatalf("found=%v missing=%v", lookup.Found, lookup.Missing)
+	}
+}
+
+func TestGKEClusterAndCDNEdgeSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+	clusterID := uniqueID("sdk-gke")
+	if len(clusterID) > 40 {
+		clusterID = clusterID[:40]
+	}
+	base := ep + "/container/v1/projects/" + project + "/locations/us-central1/clusters"
+	status, body := doJSON(t, http.MethodPost, base+"?clusterId="+url.QueryEscape(clusterID), token, map[string]any{
+		"displayName": "SDK GKE",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create cluster status=%d body=%s", status, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = doJSONErr(http.MethodDelete, base+"/"+clusterID, token, nil)
+	})
+	status, body = doJSON(t, http.MethodGet, base+"/"+clusterID, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("get cluster status=%d body=%s", status, body)
+	}
+
+	distID := uniqueID("sdk-cdn")
+	if len(distID) > 40 {
+		distID = distID[:40]
+	}
+	distBase := ep + "/v1/projects/" + project + "/global/distributions"
+	status, body = doJSON(t, http.MethodPost, distBase+"?distributionId="+url.QueryEscape(distID), token, map[string]any{
+		"origin": map[string]any{"gcs": map[string]any{"bucket": "missing-bucket-for-smoke"}},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create distribution status=%d body=%s", status, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = doJSONErr(http.MethodDelete, distBase+"/"+distID, token, nil)
+	})
+	edgeURL := ep + "/cdn/" + distID + "/obj.txt"
+	req, err := http.NewRequest(http.MethodGet, edgeURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("edge without object want 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestListGKEClustersSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/container/v1/projects/" + project + "/locations/us-central1/clusters"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list GKE clusters status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode GKE clusters: %v body=%s", err, body)
+	}
+	if _, ok := parsed["clusters"]; !ok {
+		t.Fatalf("missing clusters field body=%s", body)
+	}
+}
+
+func TestListLoadBalancingBackendServicesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/compute/v1/projects/" + project + "/global/backendServices"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list backendServices status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode backendServices: %v body=%s", err, body)
+	}
+	if kind, _ := parsed["kind"].(string); kind != "compute#backendServiceList" {
+		t.Fatalf("kind=%v want compute#backendServiceList body=%s", parsed["kind"], body)
+	}
+	if _, ok := parsed["items"]; !ok {
+		t.Fatalf("missing items field body=%s", body)
+	}
+}
+
+func TestListCDNDistributionsSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/global/distributions"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list CDN distributions status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode CDN distributions: %v body=%s", err, body)
+	}
+	if _, ok := parsed["distributions"]; !ok {
+		t.Fatalf("missing distributions field body=%s", body)
+	}
+}
+
+func TestListKMSKeyRingsSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/locations/global/keyRings"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list KMS keyRings status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode KMS keyRings: %v body=%s", err, body)
+	}
+	if _, ok := parsed["keyRings"]; !ok {
+		t.Fatalf("missing keyRings field body=%s", body)
+	}
+}
+
+func TestListServiceUsageServicesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/services"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list Service Usage services status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode Service Usage services: %v body=%s", err, body)
+	}
+	if _, ok := parsed["services"]; !ok {
+		t.Fatalf("missing services field body=%s", body)
+	}
+}
+
+func TestListBigQueryDatasetsSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/bigquery/v2/projects/" + project + "/datasets"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list BigQuery datasets status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode BigQuery datasets: %v body=%s", err, body)
+	}
+	if _, ok := parsed["datasets"]; !ok {
+		t.Fatalf("missing datasets field body=%s", body)
+	}
+}
+
+func TestListSpannerInstancesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/instances"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list Spanner instances status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode Spanner instances: %v body=%s", err, body)
+	}
+	if _, ok := parsed["instances"]; !ok {
+		t.Fatalf("missing instances field body=%s", body)
+	}
+}
+
+func TestListCloudBuildBuildsSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/builds"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list Cloud Build builds status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode Cloud Build builds: %v body=%s", err, body)
+	}
+	if _, ok := parsed["builds"]; !ok {
+		t.Fatalf("missing builds field body=%s", body)
+	}
+}
+
+func TestListLoggingSinksSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v2/projects/" + project + "/sinks"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list Logging sinks status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode Logging sinks: %v body=%s", err, body)
+	}
+	if _, ok := parsed["sinks"]; !ok {
+		t.Fatalf("missing sinks field body=%s", body)
+	}
+}
+
+func TestListMonitoringAlertPoliciesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v3/projects/" + project + "/alertPolicies"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list Monitoring alertPolicies status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode Monitoring alertPolicies: %v body=%s", err, body)
+	}
+	if _, ok := parsed["alertPolicies"]; !ok {
+		t.Fatalf("missing alertPolicies field body=%s", body)
+	}
+}
+
+func TestListCloudFunctionsSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v2/projects/" + project + "/locations/us-central1/functions"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list Cloud Functions status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode Cloud Functions: %v body=%s", err, body)
+	}
+	if _, ok := parsed["functions"]; !ok {
+		t.Fatalf("missing functions field body=%s", body)
+	}
+}
+
+func TestListCloudSchedulerJobsSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/locations/us-central1/jobs"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list Scheduler jobs status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode Scheduler jobs: %v body=%s", err, body)
+	}
+	if _, ok := parsed["jobs"]; !ok {
+		t.Fatalf("missing jobs field body=%s", body)
+	}
+}
+
+func TestListCloudTasksQueuesSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v2/projects/" + project + "/locations/us-central1/queues"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list Cloud Tasks queues status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode Cloud Tasks queues: %v body=%s", err, body)
+	}
+	if _, ok := parsed["queues"]; !ok {
+		t.Fatalf("missing queues field body=%s", body)
+	}
+}
+
+func TestListEventarcChannelsSmoke(t *testing.T) {
+	ep := requireReady(t)
+	token := requireToken(t)
+	project := projectID()
+
+	path := ep + "/v1/projects/" + project + "/locations/us-central1/channels"
+	status, body := doJSON(t, http.MethodGet, path, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list Eventarc channels status=%d body=%s", status, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode Eventarc channels: %v body=%s", err, body)
+	}
+	if _, ok := parsed["channels"]; !ok {
+		t.Fatalf("missing channels field body=%s", body)
 	}
 }

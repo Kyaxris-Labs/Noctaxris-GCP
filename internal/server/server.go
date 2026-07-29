@@ -74,8 +74,10 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 	s.registerAppsBuild()
 	s.registerLocationTriggers()
 	s.registerComputeData()
+	s.registerManagedKafka()
 	s.registerSecurity()
 	s.registerStorageAI()
+	s.registerGKEEdge()
 	return s
 }
 

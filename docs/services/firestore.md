@@ -71,15 +71,19 @@ Bearer token required (root or registered access token). Cleartext h2c on the sh
 
 ## Deferred depth
 
-- Multi-database ids beyond `(default)`
-- Real conflict detection / snapshot listeners (`Listen`) beyond atomic Commit
+- Named database ids beyond `(default)` (only `(default)` is wired; other database paths are not supported)
+- `Listen` bidirectional streaming (real-time snapshots and writes); use polling `GetDocument` / `RunQuery` in the lab
+- Real conflict detection / optimistic concurrency beyond atomic Commit and exists preconditions
 - Composite indexes, nested field-path masks, multi-field inequalities
 - Additional transforms (`arrayUnion`, `maximum` / `minimum`)
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/firestore/ ./internal/store/ -count=1
+go test ./internal/services/firestore/ -count=1
 export FIRESTORE_EMULATOR_HOST=127.0.0.1:4588
-# Use a client library Create/Get against projects/$PROJECT/databases/(default)
+export TOKEN="$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN"
+# gRPC CreateDocument / GetDocument against projects/$PROJECT/databases/(default)
+# (official clients honor FIRESTORE_EMULATOR_HOST; Bearer still required)
+go test ./tests/sdk/go/ -run FirestoreCreateGet -count=1
 ```

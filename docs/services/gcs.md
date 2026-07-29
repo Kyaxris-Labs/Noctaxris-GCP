@@ -109,7 +109,7 @@ SIGNED=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: applicatio
 curl -sS "$SIGNED"
 ```
 
-Also: `go test ./internal/store/ ./internal/server/ -run 'TestGCS|Signed|Retention' -count=1`
+Also: `go test ./internal/services/gcs/ ./internal/store/ -run 'GCS|Signed|Retention' -count=1`
 
 ## Deferred depth
 

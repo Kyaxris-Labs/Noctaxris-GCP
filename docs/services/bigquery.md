@@ -47,9 +47,18 @@ GROUP BY supports a single grouping column with `COUNT(*)` or `SUM(col)`. UNION 
 
 Checked on `projects/{project}`:
 
-- `bigquery.datasets.*`
-- `bigquery.tables.*`
+- `bigquery.datasets.create|get|list|delete`
+- `bigquery.tables.create|get|list|delete`
+- `bigquery.tables.updateData` (`insertAll`)
+- `bigquery.tables.getData` (`tabledata.list`)
 - `bigquery.jobs.create` / `bigquery.jobs.get`
+
+## Emulator limits
+
+- Rows and jobs are SQLite-backed JSON theatre; there is no BigQuery service binary
+- Query engine is the limited dialect above (no load/extract/copy jobs, views, or BI Engine)
+- `jobs.query` persists a job for `jobs.get`; there is no job cancel or async worker pool
+- No Storage Read/Write API
 
 ## Client configuration
 
@@ -76,7 +85,7 @@ gcloud config set api_endpoint_overrides/bigquery http://127.0.0.1:4588/
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ -run BigQuery -count=1
+go test ./internal/services/bigquery/ ./internal/server/ -run BigQuery -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 PROJECT=noctaxris-gcp-local
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

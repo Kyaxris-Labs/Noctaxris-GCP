@@ -30,13 +30,18 @@ with honest emulator limits on each page.
 | App Engine | lab | [app-engine.md](app-engine.md) | REST Admin API v1 apps/services/versions (control-plane theatre) |
 | Compute Engine | lab | [compute-engine.md](compute-engine.md) | REST compute/v1 instances (metadata) + VPC/firewall CRUD; Images list/get/family stubs; firewall `:validate` |
 | Cloud Bigtable | lab | [bigtable.md](bigtable.md) | REST Admin API v2 + Instance Admin gRPC lite (instances/tables control-plane) |
-| Memorystore Redis | lab | [memorystore.md](memorystore.md) | REST v1 location-scoped instances (no Redis process) |
-| Filestore | lab | [filestore.md](filestore.md) | REST `/file/v1/` instances CRUD; create returns completed Operation (`done:true`; no NFS; avoids Memorystore path clash) |
+| Memorystore Redis | lab | [memorystore.md](memorystore.md) | REST v1 location-scoped instances; theatre host by default; optional nested `redis:7-alpine` via DinD |
+| Cloud SQL | lab | [cloud-sql.md](cloud-sql.md) | REST `/sql/v1/` instances CRUD; POSTGRES/MYSQL; optional nested DinD |
+| Managed Service for Apache Kafka | lab | [managed-kafka.md](managed-kafka.md) | REST v1 clusters CRUD; optional nested Redpanda (no host Kafka ports) |
+| Filestore | lab | [filestore.md](filestore.md) | REST `/file/v1/` instances CRUD; create returns completed Operation (`done:true`; no NFS; path prefix avoids Spanner/Memorystore clash) |
 | Vertex AI | lab | [vertex-ai.md](vertex-ai.md) | Publisher `:predict` / `:generateContent` canned JSON; allowlisted model ids |
 | Cloud DNS | lab | [cloud-dns.md](cloud-dns.md) | REST dns/v1 managedZones + rrsets CRUD + Changes create/get/list theatre |
 | Dataflow | lab | [dataflow.md](dataflow.md) | REST v1b3 jobs create/get/list theatre (no workers) |
 | Cloud Armor | lab | [cloud-armor.md](cloud-armor.md) | Compute securityPolicies CRUD + ByteMatchSet `:validate` |
 | Certificate Manager | lab | [certificate-manager.md](certificate-manager.md) | certificates + certificateMaps CRUD; create returns completed Operation (`done:true`; `global` OK) |
+| GKE | lab | [gke.md](gke.md) | Container API v1 clusters CRUD; optional k3s one-shot with nested engine |
+| HTTP(S) load balancing | lab | [load-balancing.md](load-balancing.md) | Global LB metadata + public `/lb/{project}/{rule}/...` GCS dataplane |
+| Cloud CDN | lab | [cloud-cdn.md](cloud-cdn.md) | Distributions CRUD + public `/cdn/{id}/...` edge |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 Seeded organization: `organizations/noctaxris-gcp-org`.
@@ -55,18 +60,22 @@ Per-service deferred depth lives on each page. Shared gaps:
 - No host `docker.sock`; nested DinD opt-in only (see Nested DinD below)
 - Compute Engine stores instance/VPC/firewall metadata only (no VMs or NICs); Images are a fixed canned set; firewall `:validate` is single-rule lite
 - Bigtable Admin is control-plane theatre (no row mutate/read)
-- Memorystore Redis is control-plane theatre (no Redis process)
-- Filestore is control-plane theatre under `/file/v1/` (no NFS; path prefix avoids Memorystore clash)
+- Memorystore Redis is theatre host/port by default; optional nested Redis when DinD is configured (no host publish)
+- Filestore is control-plane theatre under `/file/v1/` (no NFS; path prefix avoids Spanner/Memorystore clash)
 - Vertex AI returns canned predict/generateContent for allowlisted model ids only
 - Dataflow jobs advance state theatre only (no workers or pipeline execution)
 - Cloud DNS stores zones/rrsets + in-process Changes history (no authoritative query plane)
 - Cloud Armor stores securityPolicies + rules only (ByteMatchSet `:validate` theatre; no edge enforce)
 - Certificate Manager stores certificates/maps metadata only (no CA issuance)
+- GKE stores cluster metadata; optional k3s one-shot only (no apiserver host publish)
+- HTTP(S) LB dataplane is loopback-only GCS fetch (no Internet origins)
+- Cloud CDN edge is loopback-only with theatre cache headers
 
 ## Nested DinD
 
 Default Compose and `docker run` leave `NOCTAXRIS_GCP_DOCKER_HOST` empty: Cloud Run
-`:invoke` stays in-process mock, and unit tests need no Docker. Opt-in nested engine:
+`:invoke`, Cloud SQL, Managed Kafka, Memorystore Redis, and GKE stay theatre/mock
+(no nested containers), and unit tests need no Docker. Opt-in nested engine:
 
 ```bash
 cd docker
@@ -103,6 +112,11 @@ HTTP live smokes under `tests/sdk/` (Go, Node.js, Python) cover:
 | Cloud DNS | list managed zones |
 | Cloud Bigtable | list instances |
 | Memorystore Redis | list instances in `us-central1` |
+| Cloud SQL | list instances (`/sql/v1/`) |
+| Managed Kafka | list clusters in `us-central1` |
+| GKE | list clusters (`/container/v1/...`) |
+| HTTP(S) LB | list global backendServices |
+| Cloud CDN | list distributions |
 | Dataflow | list jobs in `us-central1` |
 | Cloud Armor | list securityPolicies (global) |
 | Certificate Manager | list certificates in `global` |
@@ -173,11 +187,14 @@ gcloud config set api_endpoint_overrides/dns http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/dataflow http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/bigtableadmin http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/redis http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/sqladmin http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/container http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/certificatemanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
 # Filestore lab paths are under /file/v1/ — use filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/"
 # (see tests/terraform/README.md for BaseUrl prefix skip; create returns completed Operation)
 # (bare api_endpoint_overrides/file to :4588/ alone misses the /file prefix)
+# Managed Kafka / LB / CDN: REST on :4588 (see managed-kafka.md, load-balancing.md, cloud-cdn.md)
 ```
 
 Firebase Auth and Datastore prefer emulator host env vars

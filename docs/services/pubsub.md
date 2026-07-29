@@ -19,7 +19,7 @@ address; Terraform typically uses the REST surface.
 | Filters | Attribute equality: `attributes.key = "value"` (AND-combined terms); non-matching messages are not delivered |
 | Seek | Seek to time (gRPC + REST `:seek`); clears ack state for later messages, deletes earlier backlog |
 | StreamingPull | Long-lived loop: recv acks/modacks, send messages until client cancels |
-| Push | If `pushConfig.pushEndpoint` is set, best-effort HTTP POST on publish (2xx acks that copy) |
+| Push | If `pushConfig.pushEndpoint` is set, best-effort HTTP POST on publish (2xx acks that copy); endpoints gated by shared `httpegress` (lab catcher / loopback `:4588` default; open internet only with opt-in egress + exact allowlist) |
 | Push OIDC | `pushConfig.oidcToken` (`serviceAccountEmail`, `audience`) stored and returned; push sets `Authorization: Bearer` with unsigned lab JWT (`alg=none`) |
 | Push update | REST `PATCH` and `:modifyPushConfig` (including OIDC fields) |
 
@@ -64,7 +64,8 @@ re-check IAM when a principal is present.
 - Filter language is attribute equality only (no HAS, OR, NOT)
 - Message retention and backlog quotas are not enforced
 - Push OIDC uses unsigned lab JWT theatre (`alg=none`), not real Google-signed tokens
-- Dead-letter publishes on pull attempt count only (no separate deliveryAttempt metric API)
+- Dead-letter publishes on pull attempt count only (no separate deliveryAttempt metric API; push delivery does not advance DLQ counters)
+- Push endpoints use the shared HTTP egress gate (metadata / link-local / private hosts fail closed even when egress is enabled)
 
 ## Pointing clients
 
@@ -121,7 +122,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   "$EP/v1/projects/$PROJECT/subscriptions/lab-sub:modifyPushConfig"
 ```
 
-Also: `go test ./internal/store/ ./internal/server/ -run 'PubSub|DeadLetter|OIDC' -count=1`
+Also: `go test ./internal/services/pubsub/ ./internal/store/ -run 'PubSub|DeadLetter|OIDC|Push|Deliver' -count=1`
 (DLQ redelivery needs repeated pull + `modifyAckDeadline` 0 or expired lease; see store test.)
 
 ## Deferred depth

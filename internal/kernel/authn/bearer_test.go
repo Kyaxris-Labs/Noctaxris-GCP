@@ -80,10 +80,26 @@ func TestIsPublicPath(t *testing.T) {
 	if !authn.IsPublicPath("/v1/token") {
 		t.Fatal("STS /v1/token should be public")
 	}
+	if !authn.IsPublicPath("/lb/p/fr/obj") {
+		t.Fatal("expected public lb dataplane")
+	}
+	if !authn.IsPublicPath("/cdn/dist-id/obj") {
+		t.Fatal("expected public cdn edge")
+	}
 	if authn.IsPublicPath("/v1/projects") {
 		t.Fatal("API path should require auth")
 	}
 	if authn.IsPublicPath("/identitytoolkit.googleapis.com/v1/projects/p/accounts") {
 		t.Fatal("admin Identity Toolkit paths should require auth")
+	}
+	// Prefix checks must use a cleaned path so /cdn/../ or /lb/../ cannot skip Bearer.
+	if authn.IsPublicPath("/cdn/../v1/projects") {
+		t.Fatal("cdn path traversal must not skip auth")
+	}
+	if authn.IsPublicPath("/lb/../storage/v1/b") {
+		t.Fatal("lb path traversal must not skip auth")
+	}
+	if !authn.IsPublicPath("/cdn/dist/../dist/obj") {
+		t.Fatal("cleaned cdn edge path should stay public")
 	}
 }

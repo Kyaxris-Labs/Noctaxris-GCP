@@ -88,6 +88,11 @@ gcloud:
 gcloud config set api_endpoint_overrides/cloudkms http://127.0.0.1:4588/
 ```
 
+## Emulator limits
+
+- SOFTWARE protection only; symmetric key material is AES-256-GCM sealed with the process master key at rest
+- Secret Manager and other services may store a `kmsKeyName` for CMEK theatre; those names are not enforced through this KMS encrypt/decrypt path (payloads still use the lab master key)
+
 ## Deferred depth
 
 - `ASYMMETRIC_DECRYPT`, MAC keys, HSM protection levels, import jobs, automatic rotation
@@ -101,4 +106,14 @@ TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/keyRings?keyRingId=demo" \
   -d '{}'
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"purpose":"ENCRYPT_DECRYPT"}' \
+  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/keyRings/demo/cryptoKeys?cryptoKeyId=lab"
+PLAIN=$(printf 'hello-kms' | base64 -w0 2>/dev/null || printf 'hello-kms' | base64)
+CT=$(curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"plaintext\":\"$PLAIN\"}" \
+  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/keyRings/demo/cryptoKeys/lab:encrypt" | jq -r .ciphertext)
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"ciphertext\":\"$CT\"}" \
+  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/keyRings/demo/cryptoKeys/lab:decrypt"
 ```

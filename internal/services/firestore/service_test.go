@@ -13,8 +13,10 @@ import (
 	fsvc "github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/firestore"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -580,5 +582,92 @@ func TestBatchWriteMultiple(t *testing.T) {
 	}
 	if got.GetFields()["x"].GetStringValue() != "two" {
 		t.Fatalf("fields=%#v", got.GetFields())
+	}
+}
+
+func TestBatchWriteDelete(t *testing.T) {
+	client, _, cleanup := startFirestore(t)
+	defer cleanup()
+	ctx := authCtx("test-root-token")
+	db := "projects/noctaxris-gcp-local/databases/(default)"
+	parent := db + "/documents"
+	name := parent + "/batch/del"
+
+	_, err := client.CreateDocument(ctx, &firestorepb.CreateDocumentRequest{
+		Parent: parent, CollectionId: "batch", DocumentId: "del",
+		Document: &firestorepb.Document{Fields: map[string]*firestorepb.Value{
+			"x": {ValueType: &firestorepb.Value_StringValue{StringValue: "gone"}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.BatchWrite(ctx, &firestorepb.BatchWriteRequest{
+		Database: db,
+		Writes: []*firestorepb.Write{{
+			Operation: &firestorepb.Write_Delete{Delete: name},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.GetStatus()) != 1 || resp.GetStatus()[0].GetCode() != int32(0) {
+		t.Fatalf("status=%v", resp.GetStatus())
+	}
+	_, err = client.GetDocument(ctx, &firestorepb.GetDocumentRequest{Name: name})
+	if err == nil {
+		t.Fatal("expected NotFound after BatchWrite delete")
+	}
+}
+
+func TestFirestoreAuthzDenyNonRoot(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "secrets", "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	project := "noctaxris-gcp-local"
+	if err := st.EnsureRoot(project, "root@"+project+".iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+	svc := &fsvc.Service{
+		Store: st,
+		Authz: &authz.Evaluator{Policies: st},
+		PrincipalFrom: func(context.Context) (authn.Principal, bool) {
+			return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
+		},
+	}
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := grpc.NewServer()
+	firestorepb.RegisterFirestoreServer(gs, svc)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(func() { gs.Stop() })
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := firestorepb.NewFirestoreClient(conn)
+	_, err = client.CreateDocument(context.Background(), &firestorepb.CreateDocumentRequest{
+		Parent:       "projects/" + project + "/databases/(default)/documents",
+		CollectionId: "deny",
+		DocumentId:   "doc1",
+		Document: &firestorepb.Document{
+			Fields: map[string]*firestorepb.Value{
+				"x": {ValueType: &firestorepb.Value_StringValue{StringValue: "no"}},
+			},
+		},
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
 	}
 }

@@ -16,10 +16,28 @@
 | CI | Docker image build + SPDX SBOM artifact jobs |
 | Docs | `COMPARISON.md` Noctaxris vs Noctaxris-GCP sibling section |
 | Cloud Storage | Bucket `retentionPolicy` persist + JSON API patch/get; delete/overwrite fail closed while object age < `retentionPeriod`; locked policy rejects shortening |
+| Cloud SQL | REST `/sql/v1/` instances CRUD (POSTGRES/MYSQL); theatre RUNNABLE; optional nested `postgres:16-alpine` / `mysql:8.0` via DinD |
 | IAM | STS `POST /v1/token` WIF token-exchange theatre (`wif:{provider}:{subject}` Bearer); `roles/iam.serviceAccountTokenCreator` evaluated on SA for `generateAccessToken` |
+| IAM | Package unit tests for STS exchange fail-closed paths + TokenCreator grant/deny + viewer deny on `generateAccessToken`; docs deferred depth for WIF OIDC theatre |
 | Cloud DNS | `changes.create` / `changes.get` / `changes.list` theatre applies rrset additions/deletions (`status: done`); in-process change history |
 | Compute Engine | Global Images list/get/family stubs (`debian-12`, `ubuntu-2204-lts`, `cos-stable`) for Terraform ResolveImage |
-| SDK smokes | Soft-skip HTTP coverage for STS `/v1/token`, GCS retention delete deny, Pub/Sub OIDC push round-trip, nested fail-closed `:invoke` (Go; Node/Python mirror STS + retention) |
+| BigQuery | Unit tests for dataset/table CRUD, insertAll, and jobs.query |
+| Firebase Auth | Unit tests for signUp/signIn, admin CRUD, verifyIdToken, and admin authz fail-closed |
+| Vertex AI | Unit tests for non-google publisher and unknown model fail-closed on generateContent |
+| Artifact Registry | Repository/package/version CRUD unit test |
+| Cloud Build | Global triggers list/get/delete CRUD unit test |
+| Docs | Deferred depth sections for Artifact Registry, Cloud Build, and Workflows (honest theatre limits) |
+| Pub/Sub tests | Unit coverage for push OIDC lab catcher delivery, push endpoint SSRF fail-closed, and stored DLQ / exactly-once flags |
+| Tests | Package tests for KMS encrypt/decrypt, Secret Manager rotateSecret/access, CRM folders/tags, Service Usage enable/disable |
+| GKE | Container API v1 clusters CRUD (`/container/v1/...`); optional k3s one-shot with nested engine |
+| HTTP(S) LB | Global `backendServices` / `urlMaps` / `forwardingRules` metadata; public lab invoke `GET /lb/{project}/{name}/...` to GCS backends |
+| Cloud CDN | Distributions CRUD; public edge `GET /cdn/{id}/...` from GCS or LB origin |
+| Memorystore | Hybrid nested `redis:7-alpine` on internal `noctaxris-gcp-data` when `NOCTAXRIS_GCP_DOCKER_HOST` set; theatre `host` when engine unset; `container_id` persisted for delete cleanup |
+| Managed Kafka | REST v1 `/locations/{loc}/clusters` CRUD; theatre bootstrap; opt-in nested Redpanda (`docker.redpanda.com/redpandadata/redpanda:v24.2.4`) soft-fail without engine |
+| Serverless + observe | Package unit tests (happy path + authz deny + Scheduler/Tasks/Eventarc HTTP egress fail-closed) for Cloud Run, Cloud Functions, Scheduler, Cloud Tasks, Logging, Monitoring, Eventarc, App Engine; service docs Emulator limits / Verification aligned |
+| Clients / docs | HANDOFF + terraform README honest skips for SQL/Kafka/Redis/GKE/LB/CDN; Go SDK soft-skip list rows for KMS, Service Usage, BQ, Spanner, Build, Logging, Monitoring, Functions, Scheduler, Tasks, Eventarc; architecture nested engines; `NOCTAXRIS_GCP_NESTED` in configuration |
+| Security | `IsPublicPath` path.Clean before `/cdn/` and `/lb/` public prefixes; security-defaults documents Identity Toolkit + LB/CDN public edge risk |
+| Nested/edge services | get-after-create store miss returns REST 500 (cloudsql, managedkafka, gke, cdn, memorystore, loadbalancing); nil-Authz fail-closed unit coverage |
 
 ### Changed
 
@@ -29,7 +47,7 @@
 | Store | Split analytics store into domain files (`analytics_migrate`, `bq_*`, `firebase_*`, `monitoring_*`, `datastore_*`, `eventarc_*`) |
 | IAM | `roles/viewer` suffix-only reads (no `Contains(".get")`); no `secretmanager.versions.access`; `roles/editor` denies `setIamPolicy` + SA token/signing |
 | IAM docs | Document TokenCreator + STS; remove outdated "metadata only / no STS" and "does not evaluate TokenCreator" limits |
-| Image allowlist | Exact refs or trailing-`/` prefixes with digest; bare ambiguous prefixes rejected |
+| Image allowlist | Exact refs or trailing-`/` prefixes with digest; bare ambiguous prefixes rejected; pinned `postgres:16-alpine`, `mysql:8.0` for nested SQL; pin `redis:7-alpine` for Memorystore |
 | Signed URL middleware | Bearer skip limited to `/storage/` and `/upload/storage/` |
 | SQLite | `SetMaxOpenConns(1)` + WAL for Eventarc delivery concurrency |
 | Nested invoke | Soft-fail responses omit raw engine error strings; opt-in `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` hard-errors on dial/run/disabled |

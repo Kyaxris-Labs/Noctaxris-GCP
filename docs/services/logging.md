@@ -79,6 +79,12 @@ Checked on `projects/{project}`:
 - `logging.logs.list`
 - `logging.sinks.create|get|list|update|delete`
 
+## Emulator limits
+
+- Entries and sinks persist in SQLite; sinks do not export to destinations
+- `entries:tail` is one-shot (no streaming); `entries:copy` is a completed LRO with no byte export
+- Filter language is the documented subset only
+
 ## Client configuration
 
 No official Go emulator env var. Use `WithEndpoint` / custom HTTP base:

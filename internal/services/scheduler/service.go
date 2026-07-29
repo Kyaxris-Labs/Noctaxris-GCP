@@ -242,6 +242,17 @@ func (s *Service) patchJob(w http.ResponseWriter, r *http.Request, p authn.Princ
 	updated.LastAttemptTime = existing.LastAttemptTime
 	updated.CreatedAt = existing.CreatedAt
 	updated.NextRunTime = store.NextCronRunRFC3339(updated.Schedule, updated.TimeZone, time.Now().UTC())
+	if updated.HTTPTargetJSON != "" {
+		var ht struct {
+			URI string `json:"uri"`
+		}
+		if err := json.Unmarshal([]byte(updated.HTTPTargetJSON), &ht); err == nil && strings.TrimSpace(ht.URI) != "" {
+			if err := httpegress.Validate(ht.URI); err != nil {
+				gcperrors.InvalidArgument(w, err.Error())
+				return
+			}
+		}
+	}
 	if _, err := s.Store.UpdateSchedulerJob(updated); err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return

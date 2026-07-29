@@ -52,6 +52,13 @@ Admin calls still need `Authorization: Bearer <token>`.
 
 - `firebaseauth.users.create|get|list|update|delete`
 
+## Emulator limits
+
+- Client Identity Toolkit methods do not require Bearer (emulator-shaped)
+- Custom tokens and id tokens are unsigned lab JWTs (`alg: none`); not production credentials
+- `sendOobCode` returns a lab `oobCode` only (no email delivery)
+- No phone / OAuth / SAML / OIDC providers, MFA, blocking functions, or tenants
+
 ## Deferred depth
 
 - Phone / OAuth / SAML / OIDC providers
@@ -62,7 +69,7 @@ Admin calls still need `Authorization: Bearer <token>`.
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ -run FirebaseAuth -count=1
+go test ./internal/services/firebaseauth/ ./internal/server/ -run FirebaseAuth -count=1
 curl -s -H "Content-Type: application/json" \
   -d '{"email":"a@example.com","password":"secret123","returnSecureToken":true}' \
   http://127.0.0.1:4588/identitytoolkit.googleapis.com/v1/accounts:signUp

@@ -44,12 +44,26 @@ Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`,
 | SDK (Python) | Python 3.10+; `pip install -r requirements.txt` under `tests/sdk/python` |
 | Terraform | Terraform CLI 1.5+, Google provider resolved on `init` |
 
+## Soft-skip vs hard-fail
+
+| Case | Behavior |
+|------|----------|
+| `NOCTAXRIS_GCP_ENDPOINT` unset inside an SDK/TF test | Soft-skip that test |
+| API not ready when running `tests/run-all.sh` | Hard-fail (exit 1) |
+| Root token unset when running `tests/run-all.sh` | Hard-fail (exit 1) |
+| Nested Cloud Run / DinD rows without `compose.engine.yaml` | Soft-skip inside SDK tests |
+
+Set `NOCTAXRIS_GCP_NESTED=1` to keep nested-oriented SDK rows enabled (still soft-skip without a healthy engine). Default suites stay mock-invoke friendly when unset.
+
 ## Run all suites
 
 From the repo root (bash / WSL / Git Bash):
 
 ```bash
 bash tests/run-all.sh
+
+# Nested / DinD-oriented SDK rows (soft-skip without engine)
+NOCTAXRIS_GCP_NESTED=1 bash tests/run-all.sh
 ```
 
 Or run each suite:

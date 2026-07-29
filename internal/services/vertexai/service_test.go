@@ -66,6 +66,37 @@ func TestVertexAIAllowlistedPredictAndGenerateContent(t *testing.T) {
 	}
 }
 
+func TestVertexAINonGooglePublisherFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureRoot("noctaxris-gcp-local", "root@noctaxris-gcp-local.iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	svc := &vertexai.Service{Authz: &authz.Evaluator{Policies: st}}
+	svc.Mount(mux, func(r *http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "root@noctaxris-gcp-local.iam.gserviceaccount.com", IsRoot: true}, true
+	})
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/v1/projects/noctaxris-gcp-local/locations/us-central1/publishers/meta/models/llama:predict",
+		bytes.NewReader([]byte(`{}`)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-google publisher, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestVertexAIUnknownModelFailClosed(t *testing.T) {
 	dir := t.TempDir()
 	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
@@ -94,6 +125,15 @@ func TestVertexAIUnknownModelFailClosed(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost,
+		"/v1/projects/noctaxris-gcp-local/locations/us-central1/publishers/google/models/not-a-real-model:generateContent",
+		bytes.NewReader([]byte(`{}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown generateContent model, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

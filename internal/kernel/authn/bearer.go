@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	urlpath "path"
 	"strings"
 	"time"
 )
@@ -79,7 +80,15 @@ func HashToken(token string) string {
 }
 
 // IsPublicPath reports whether path skips authentication.
-func IsPublicPath(path string) bool {
+// The path is cleaned first so prefix checks cannot be bypassed with /cdn/../… or /lb/../….
+func IsPublicPath(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	path := urlpath.Clean(raw)
+	if path == "." || !strings.HasPrefix(path, "/") {
+		return false
+	}
 	switch path {
 	case "/_noctaxris-gcp/health", "/_noctaxris-gcp/ready", "/_noctaxris-gcp/version",
 		"/v1/token": // STS token exchange (subject_token authenticates)
@@ -87,6 +96,10 @@ func IsPublicPath(path string) bool {
 	default:
 		// Identity Toolkit client auth methods (Firebase Auth emulator shape).
 		if strings.HasPrefix(path, "/identitytoolkit.googleapis.com/v1/accounts") {
+			return true
+		}
+		// Lab load balancer and CDN edge dataplane (intentional public GET/HEAD).
+		if strings.HasPrefix(path, "/lb/") || strings.HasPrefix(path, "/cdn/") {
 			return true
 		}
 		return false

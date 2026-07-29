@@ -83,9 +83,11 @@ GitHub Actions (`.github/workflows/ci.yml`):
 | sbom | After image: Syft SPDX SBOM artifact |
 | govulncheck | `go run ./scripts/govulncheck-ci` (allowlist only for documented residuals with no module-path fix) |
 
-A green PR proves unit tests, image build, SBOM generation, and govulncheck. It does **not** prove nested DinD Cloud Run invoke. Nested compute stays opt-in via Compose overlays.
+A green PR proves unit tests, image build, SBOM generation, and govulncheck. It does **not** prove nested DinD (Cloud Run invoke, Cloud SQL, Managed Kafka, Memorystore Redis, GKE). Nested compute stays opt-in via Compose overlays.
 
-Per-service CLI smoke remains documented on each `docs/services/` page for operator runs outside CI. Live SDK / Terraform suites: [tests/README.md](../tests/README.md).
+Operator integration suites (not a required PR gate): start Compose, then `bash tests/run-all.sh`. That script **hard-fails** if `/_noctaxris-gcp/ready` fails or the root token is missing. Individual SDK/TF tests still **soft-skip** when `NOCTAXRIS_GCP_ENDPOINT` is unset. Nested-oriented SDK rows: `NOCTAXRIS_GCP_NESTED=1 bash tests/run-all.sh` (soft-skip without a healthy engine). Details: [tests/README.md](../tests/README.md).
+
+Per-service CLI smoke remains documented on each `docs/services/` page for operator runs outside CI.
 
 ## Compose overlays (lab opt-in)
 

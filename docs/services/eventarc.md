@@ -56,9 +56,11 @@ gcloud config set api_endpoint_overrides/eventarc http://127.0.0.1:4588/
   with Eventarc-shaped bodies (`eventFilters` / `destination` / …) stays Eventarc;
   Cloud Build-shaped bodies on the same path go to Cloud Build.
 - HTTP destinations require the lab catcher / loopback `:4588` or
-  `NOCTAXRIS_GCP_HTTP_EGRESS=1` + exact allowlist (see security-defaults)
+  `NOCTAXRIS_GCP_HTTP_EGRESS=1` + exact allowlist (see security-defaults);
+  non-allowlisted URIs are rejected at create (fail-closed)
 - Channel provider handshake is not implemented
-- Delivery is best-effort HTTP with one retry (no dead-letter)
+- Delivery is best-effort HTTP with one retry on transport error or HTTP 5xx;
+  no dead-letter queue
 
 ## Deferred depth
 
@@ -68,9 +70,9 @@ gcloud config set api_endpoint_overrides/eventarc http://127.0.0.1:4588/
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ -run Eventarc -count=1
+go test ./internal/services/eventarc/ ./internal/server/ -run Eventarc -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/us-central1/triggers?triggerId=lab" \
-  -d '{"eventFilters":[{"attribute":"type","value":"google.cloud.pubsub.topic.v1.messagePublished"}],"destination":{"httpEndpoint":{"uri":"http://127.0.0.1:9/hook"}}}'
+  -d '{"eventFilters":[{"attribute":"type","value":"google.cloud.pubsub.topic.v1.messagePublished"}],"destination":{"httpEndpoint":{"uri":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/eventarc-smoke"}}}'
 ```

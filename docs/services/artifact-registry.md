@@ -15,7 +15,7 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 | `POST` | `/v1/projects/{p}/locations/{loc}/repositories?repositoryId=` |
 | `GET` | `/v1/projects/{p}/locations/{loc}/repositories` |
 | `GET`/`PATCH`/`DELETE` | `/v1/projects/{p}/locations/{loc}/repositories/{repo}` |
-| `GET` | `.../repositories/{repo}:getIamPolicy` |
+| `GET` or `POST` | `.../repositories/{repo}:getIamPolicy` |
 | `POST` | `.../repositories/{repo}:setIamPolicy` |
 | `GET` | `.../repositories/{repo}/files` (metadata theatre from versions) |
 | `POST` | `.../repositories/{repo}/packages?packageId=` (lab metadata publish) |
@@ -44,6 +44,12 @@ Checked on `projects/{project}`:
 - `files.list` and `tags.list` are metadata theatre only (sizeBytes always `"0"`; no real layers)
 - No vulnerability scanning, remote/virtual repos, or cleanup policy execution
 - Package IDs with embedded `/` are not multi-segment path theatre
+
+## Deferred depth
+
+- Docker/OCI registry protocol, blob upload/download, and image layers
+- Remote/virtual repositories, cleanup policies, and vulnerability scanning
+- Maven/npm/Python format push/pull beyond metadata create
 
 ## Verification / CLI smoke
 

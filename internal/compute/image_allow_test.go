@@ -13,7 +13,11 @@ func TestAllowImagePullPinned(t *testing.T) {
 		compute.DefaultLabImage,
 		"alpine:3.20",
 		"public.ecr.aws/docker/library/alpine:3.20",
-		"gcr.io/google-containers/pause:3.9",
+		"rancher/k3s:v1.28.8-k3s1",
+		"postgres:16-alpine",
+		"mysql:8.0",
+		compute.MemorystoreRedisImage,
+		compute.LabRedpandaImage,
 	}
 	for _, ref := range ok {
 		if err := compute.AllowImagePull(ref); err != nil {
@@ -64,5 +68,23 @@ func TestAllowImagePullRejectsAmbiguousPrefix(t *testing.T) {
 	exact := "ghcr.io/kyaxris-labs/tool@sha256:" + strings.Repeat("b", 64)
 	if err := compute.AllowImagePull(exact); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMemorystoreRedisContainerName(t *testing.T) {
+	t.Parallel()
+	if got := compute.MemorystoreRedisContainerName("lab-redis"); got != "noctaxris-gcp-redis-lab-redis" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEnsureMemorystoreRedisFromEnvDisabled(t *testing.T) {
+	t.Setenv(compute.EnvDockerHost, "")
+	res, err := compute.EnsureMemorystoreRedisFromEnv(t.Context(), "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Host != "" || res.ContainerID != "" {
+		t.Fatalf("expected empty result, got %#v", res)
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"net/http"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
+	nestedcompute "github.com/Kyaxris-Labs/Noctaxris-GCP/internal/compute"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/bigtable"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/cloudsql"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/compute"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/dataflow"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/dns"
@@ -14,7 +16,7 @@ import (
 )
 
 // registerComputeData mounts Compute Engine (incl. VPC/firewall), Bigtable Admin
-// (REST + Instance Admin gRPC lite), Memorystore Redis, Cloud DNS, and Dataflow REST.
+// (REST + Instance Admin gRPC lite), Memorystore Redis, Cloud SQL, Cloud DNS, and Dataflow REST.
 func (s *Server) registerComputeData() {
 	if s.grpc == nil {
 		s.grpc = s.newGRPCServer()
@@ -48,4 +50,11 @@ func (s *Server) registerComputeData() {
 
 	df := &dataflow.Service{Store: s.store, Authz: s.authz}
 	df.Mount(s.mux, principalFrom)
+
+	computeCli, err := nestedcompute.Dial(s.cfg.DockerHost, s.cfg.DockerTLSCertPath)
+	if err != nil {
+		computeCli, _ = nestedcompute.Dial("", "")
+	}
+	cs := &cloudsql.Service{Store: s.store, Authz: s.authz, Compute: computeCli}
+	cs.Mount(s.mux, principalFrom)
 }

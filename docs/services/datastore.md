@@ -47,15 +47,22 @@ Go clients that honor the emulator host will dial gRPC against that address. Bea
 - No ancestor queries, inequality, OR, or projections
 - Properties stored as JSON scalars (string/bool/number); complex Value kinds are best-effort
 - Separate SQLite tables from Firestore (`datastore_entities` vs `firestore_docs`)
+- `(default)` database id only; alternate `database_id` values are stored on tokens but not multi-tenant isolated
 
 ## Deferred depth
 
 - Aggregation queries, ReserveIds depth
 - Indexes metadata, Admin export/import
 - HTTP JSON transcoding surface
+- Real-time `Listen` / streaming export (not applicable to Datastore v1 API surface in this emulator)
 
 ## Verification / CLI smoke
 
 ```bash
+go test ./internal/services/datastore/ ./internal/services/firestore/ -count=1
 go test ./internal/server/ -run Datastore -count=1
+export DATASTORE_EMULATOR_HOST=127.0.0.1:4588
+export TOKEN="$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN"
+# gRPC Commit / Lookup (official clients honor DATASTORE_EMULATOR_HOST; Bearer still required)
+go test ./tests/sdk/go/ -run DatastoreCommitLookup -count=1
 ```

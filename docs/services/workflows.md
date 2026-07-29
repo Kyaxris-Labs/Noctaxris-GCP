@@ -38,6 +38,12 @@ Checked on `projects/{project}`:
 - Patch returns the Workflow resource (real API returns a long-running Operation)
 - No listRevisions / callbacks / connectors
 
+## Deferred depth
+
+- Workflow engine (YAML interpreter, connectors, callbacks)
+- Long-running Operation on create/patch/delete
+- listRevisions, encryption keys, and per-workflow IAM beyond project authz
+
 ## Verification / CLI smoke
 
 ```bash

@@ -74,11 +74,11 @@ Nested Cloud Run invoke needs Compose with `noctaxris-gcp-engine`. Copy `docker/
 |------|----------|
 | Identity | Cloud Resource Manager, IAM, Service Usage |
 | Crypto | Secret Manager, Cloud KMS |
-| Data | Cloud Storage, Pub/Sub, Firestore, Datastore, Cloud Bigtable, Spanner, Memorystore Redis, Filestore |
+| Data | Cloud Storage, Pub/Sub, Firestore, Datastore, Cloud Bigtable, Spanner, Memorystore Redis, Cloud SQL, Managed Kafka, Filestore |
 | Audit and observe | Cloud Logging, Cloud Monitoring |
 | Compute | Compute Engine (VPC/firewall), Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks, Cloud Build, App Engine |
 | Registry | Artifact Registry |
-| Networking | Cloud DNS, Cloud Armor, Certificate Manager |
+| Networking | Cloud DNS, Cloud Armor, Certificate Manager, GKE, HTTP(S) load balancing, Cloud CDN |
 | Analytics and AI | BigQuery, Firebase Auth, Eventarc, Workflows, Dataflow, Vertex AI |
 
 Open the service matrix for detailed actions and gaps. Full notes and CLI smoke: [docs/services/](docs/services/index.md).
@@ -124,7 +124,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
       <td>Asymmetric decrypt depth; import; multi-region keys.</td>
     </tr>
     <tr>
-      <td rowspan="8" align="center" valign="middle">Data</td>
+      <td rowspan="10" align="center" valign="middle">Data</td>
       <td>Cloud Storage</td>
       <td>JSON API v1 objects/buckets; bucket IAM; V4 HMAC signed URL; <code>retentionPolicy</code> fail-closed delete/overwrite.</td>
       <td>Object ACLs; soft delete / lifecycle enforce; RSA GOOG4 signed URLs via signBlob.</td>
@@ -156,8 +156,18 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Memorystore Redis</td>
-      <td>REST v1 location-scoped instances (control-plane theatre).</td>
-      <td>Redis process; Cluster / Valkey surfaces.</td>
+      <td>REST v1 location-scoped instances; theatre host by default; optional nested <code>redis:7-alpine</code> via DinD.</td>
+      <td>Cluster / Valkey surfaces; host publish of Redis ports.</td>
+    </tr>
+    <tr>
+      <td>Cloud SQL</td>
+      <td>REST <code>/sql/v1/</code> instances CRUD (POSTGRES/MYSQL); optional nested DinD.</td>
+      <td>Auth Proxy; backups/replicas; operations polling.</td>
+    </tr>
+    <tr>
+      <td>Managed Kafka</td>
+      <td>REST v1 location-scoped clusters; theatre bootstrap; optional nested Redpanda via DinD.</td>
+      <td>Host publish of Kafka ports; full capacity/VPC provider parity.</td>
     </tr>
     <tr>
       <td>Filestore</td>
@@ -179,7 +189,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
       <td rowspan="7" align="center" valign="middle">Compute</td>
       <td>Compute Engine</td>
       <td>Instances (metadata), VPC/firewall CRUD, Images list/get/family stubs, firewall <code>:validate</code>.</td>
-      <td>Real VMs/NICs/disks; MIGs; load balancers.</td>
+      <td>Real VMs/NICs/disks; MIGs; full GCLB stack beyond lab metadata/dataplane.</td>
     </tr>
     <tr>
       <td>Cloud Run</td>
@@ -218,7 +228,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
       <td>Blob storage / docker pull plane.</td>
     </tr>
     <tr>
-      <td rowspan="3" align="center" valign="middle">Networking</td>
+      <td rowspan="6" align="center" valign="middle">Networking</td>
       <td>Cloud DNS</td>
       <td>managedZones + rrsets CRUD; Changes create/get/list theatre.</td>
       <td>Authoritative query plane; DNSSEC.</td>
@@ -232,6 +242,21 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
       <td>Certificate Manager</td>
       <td>certificates + certificateMaps CRUD; create returns completed Operation.</td>
       <td>CA issuance; map entries / GCLB wiring.</td>
+    </tr>
+    <tr>
+      <td>GKE</td>
+      <td>Container API v1 clusters CRUD; optional k3s one-shot with nested engine.</td>
+      <td>Node pools; kubeconfig; long-lived control plane.</td>
+    </tr>
+    <tr>
+      <td>HTTP(S) load balancing</td>
+      <td>Global LB metadata; lab <code>/lb/{project}/{rule}/...</code> GCS dataplane on <code>:4588</code>.</td>
+      <td>Health checks; SSL; multi-region proxies.</td>
+    </tr>
+    <tr>
+      <td>Cloud CDN</td>
+      <td>Distributions CRUD; lab <code>/cdn/{id}/...</code> edge on <code>:4588</code>.</td>
+      <td>Cache invalidation; signed URLs; PoP fleet.</td>
     </tr>
     <tr>
       <td rowspan="6" align="center" valign="middle">Analytics and AI</td>
@@ -274,8 +299,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
 | Setting | Value |
 |---------|--------|
 | Listen | `127.0.0.1:4588` only |
-| Docker | No host `docker.sock` (opt-in nested `noctaxris-gcp-engine` for Cloud Run) |
-| Nested compute | Off by default (`NOCTAXRIS_GCP_DOCKER_HOST` empty). Live nested invoke needs `compose.engine.yaml` |
+| Docker | No host `docker.sock` (opt-in nested `noctaxris-gcp-engine` for Cloud Run, SQL, Kafka, Redis, GKE) |
+| Nested compute | Off by default (`NOCTAXRIS_GCP_DOCKER_HOST` empty). Live nested engines need `compose.engine.yaml` |
 | Data ports | Compose publishes only `127.0.0.1:4588` |
 | API replicas | **One process per data root.** Multi-replica against the same SQLite volume is unsupported and can corrupt state |
 | Credentials | Root SA email + Bearer token via env injection |

@@ -79,7 +79,11 @@ before starting. Startup refuses that pair on the non-loopback container bind.
 | Cloud DNS | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/dns/v1/...`) |
 | Dataflow | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1b3/...`; job theatre only) |
 | Cloud Bigtable Admin | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST Admin API v2; no data plane) |
-| Memorystore Redis | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/...`; no Redis process) |
+| Memorystore Redis | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/.../locations/.../instances`; theatre host by default; optional nested Redis via DinD) |
+| Cloud SQL | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/sql/v1/...`; optional nested Postgres/MySQL via DinD) |
+| Managed Kafka | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/.../locations/.../clusters`; optional nested Redpanda via DinD) |
+| GKE | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/container/v1/.../clusters`; optional k3s one-shot via DinD) |
+| HTTP(S) LB / Cloud CDN | Bearer on control plane; public loopback dataplane `/lb/...` and `/cdn/...` on `:4588` |
 | Filestore | Base URL must include `/file/v1/` (e.g. `http://127.0.0.1:4588/file/v1/`); bare host misses the lab path prefix (no NFS) |
 | Vertex AI | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/projects/.../publishers/google/models/{id}:predict` / `:generateContent`; allowlisted model ids only) |
 | Cloud Armor | Same Compute Engine endpoint (`/compute/v1/.../global/securityPolicies`); ByteMatchSet `:validate` is lab preview only (no edge enforce) |
@@ -110,10 +114,10 @@ provider "google" {
   dns_custom_endpoint            = "http://127.0.0.1:4588/dns/v1/"
   compute_custom_endpoint        = "http://127.0.0.1:4588/compute/v1/"
   # Filestore: provider field is filestore_custom_endpoint (BaseUrl …/v1/).
-  # Lab mounts under /file/v1/ (Memorystore owns bare /v1/.../instances), so the
-  # override must be http://127.0.0.1:4588/file/v1/. Create returns completed
-  # Operation theatre; remaining stack gap is the /file/v1/ BaseUrl prefix.
-  # See tests/terraform/README.md honest skips.
+  # Lab mounts under /file/v1/ (Spanner owns bare /v1/.../instances; Memorystore
+  # is location-scoped), so the override must be http://127.0.0.1:4588/file/v1/.
+  # Create returns completed Operation theatre; remaining stack gap is the
+  # /file/v1/ BaseUrl prefix. See tests/terraform/README.md honest skips.
 }
 ```
 
@@ -129,14 +133,15 @@ Cloud Armor is Compute-shaped (`securityPolicies` under `compute_custom_endpoint
 Lab `byteMatchSet` + `:validate` preview allow/deny only; no backend service attach
 or edge enforcement. Filestore Terraform must use
 `filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/"` (not bare `:4588/`
-and not Memorystore `/v1/.../instances`). Vertex AI has no Terraform stack; call
-REST `:predict` / `:generateContent` with `api_endpoint_overrides/aiplatform`.
+and not Spanner `/v1/.../instances` or Memorystore location-scoped paths). Vertex AI
+has no Terraform stack; call REST `:predict` / `:generateContent` with
+`api_endpoint_overrides/aiplatform`.
 
-Not stacked: DNS record sets (provider `Changes.create`; lab has no Changes API),
-Compute instances (Images API / `ResolveImage`), Bigtable (provider gRPC admin
-client vs lab REST `/v2/`), Filestore (lab `/file/v1/` path prefix vs provider
-BaseUrl `…/v1/`). Certificate Manager create returns completed Operation theatre.
-See `tests/terraform/README.md`.
+Not stacked: DNS record sets (`Changes.create` theatre exists; `lab-dns` is
+zone-only), Compute instances (Images API / `ResolveImage`), Bigtable (provider
+gRPC admin client vs lab REST `/v2/` + Instance Admin gRPC lite), Filestore (lab
+`/file/v1/` path prefix vs provider BaseUrl `…/v1/`). Certificate Manager create
+returns completed Operation theatre. See `tests/terraform/README.md`.
 
 ### gcloud `api_endpoint_overrides`
 
@@ -169,9 +174,12 @@ gcloud config set api_endpoint_overrides/dns http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/dataflow http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/bigtableadmin http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/redis http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/sqladmin http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/container http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/certificatemanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
 # Filestore: filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/" (lab /file/v1/ path prefix)
+# Managed Kafka / LB / CDN: REST on :4588 (see docs/services/)
 gcloud projects describe noctaxris-gcp-local --format=json
 ```
 
@@ -190,6 +198,7 @@ soft-skip when `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is unset. Unit tests
 | `NOCTAXRIS_GCP_ENDPOINT` | Lab base URL (e.g. `http://127.0.0.1:4588`); required for live smoke |
 | `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` | Bearer for authenticated SDK/Terraform cases |
 | `NOCTAXRIS_GCP_PROJECT` | Optional; defaults to `noctaxris-gcp-local` |
+| `NOCTAXRIS_GCP_NESTED` | Optional; set to `1` when running `tests/run-all.sh` so nested/DinD-oriented SDK rows stay enabled (still soft-skip without a healthy engine) |
 
 ```bash
 export NOCTAXRIS_GCP_ENDPOINT=http://127.0.0.1:4588

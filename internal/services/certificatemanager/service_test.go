@@ -158,3 +158,29 @@ func TestCertificateManagerAuthzUnauthenticated(t *testing.T) {
 		t.Fatalf("status=%d", rec.Code)
 	}
 }
+
+func TestCertificateManagerAuthzFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureRoot("noctaxris-gcp-local", "root@noctaxris-gcp-local.iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	(&certificatemanager.Service{Store: st, Authz: &authz.Evaluator{Policies: st}}).Mount(mux, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects/noctaxris-gcp-local/locations/global/certificates", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}

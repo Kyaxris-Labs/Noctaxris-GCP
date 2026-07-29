@@ -48,6 +48,12 @@ Stored fields: `displayName`, `enabled`, `combiner`, `conditions` (opaque JSON),
 - `monitoring.timeSeries.create|list|delete`
 - `monitoring.alertPolicies.create|get|list|update|delete`
 
+## Emulator limits
+
+- Time series and descriptors persist in SQLite; no sampling agent or Stackdriver backend
+- Alert policies are metadata only; no evaluation, incidents, or notification delivery
+- ListTimeSeries supports a subset of filters and aligners (see wire protocol)
+
 ## Client configuration
 
 ```go
@@ -70,7 +76,7 @@ gcloud config set api_endpoint_overrides/monitoring http://127.0.0.1:4588/
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ -run Monitoring -count=1
+go test ./internal/services/monitoring/ ./internal/server/ -run Monitoring -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"type":"custom.googleapis.com/lab/x","metricKind":"GAUGE","valueType":"DOUBLE"}' \

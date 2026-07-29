@@ -39,10 +39,24 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 - Root token comes from `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` and maps to `NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT`.
 - Other tokens are SHA-256 hashed and looked up in `access_tokens` (minted when IAM creates a service account key).
 - Missing or invalid credentials return Google JSON `UNAUTHENTICATED` (HTTP 401).
-- Public paths: `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`,
-  and STS `POST /v1/token` (WIF subject_token exchange; no Bearer).
-  Lab HTTP catcher deliveries are recorded in-process (no public POST required).
+- Public paths (Bearer skipped):
+  - `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`
+  - STS `POST /v1/token` (WIF subject_token exchange)
+  - Identity Toolkit client methods under `/identitytoolkit.googleapis.com/v1/accounts…`
+    (admin paths under `/v1/projects/{project}/accounts…` still require Bearer)
+  - Lab edge dataplane `GET`/`HEAD` `/lb/{project}/{rule}/…` and `/cdn/{id}/…`
+    (serve configured lab GCS object bytes without auth; control-plane CRUD stays Bearer)
+- Lab HTTP catcher deliveries are recorded in-process (no public POST required).
   See [services/iam.md](services/iam.md) for TokenCreator and STS theatre.
+
+## Lab edge dataplane risk
+
+`/lb/…` and `/cdn/…` are intentionally unauthenticated so curl/CLI smoke matches a
+public HTTP(S) LB / CDN edge. Object bytes are only those already stored in lab
+GCS and linked through authenticated control-plane setup. Default listen and
+Compose host publish stay loopback (`127.0.0.1:4588`). If you bind or publish
+beyond loopback, anyone who can reach `:4588` can read those edge-linked objects
+without a Bearer token. Keep host publish on loopback for shared or LAN hosts.
 
 ## Example root refusal
 

@@ -11,7 +11,9 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 	"github.com/google/uuid"
 )
 
@@ -148,6 +150,183 @@ func (c *Client) RunLabOneShot(ctx context.Context, imageRef string) (OneShotRes
 		ExitCode: exitCode,
 		Stdout:   strings.TrimSpace(stripDockerLogHeader(raw)),
 	}, nil
+}
+
+// LabDaemonResult is a long-lived nested container started for lab databases/brokers.
+type LabDaemonResult struct {
+	ContainerID string
+	Host        string
+	Port        int
+}
+
+const labDaemonNetwork = "noctaxris-gcp-lab"
+
+// StartLabDaemon pulls (if needed) and starts a long-lived allowlisted image on the lab bridge network.
+// The returned Host is the Docker container name (resolvable from other containers on the same network).
+func (c *Client) StartLabDaemon(ctx context.Context, imageRef, containerName string, env []string, port int) (LabDaemonResult, error) {
+	if !c.Enabled() {
+		return LabDaemonResult{}, fmt.Errorf("compute: engine disabled (NOCTAXRIS_GCP_DOCKER_HOST empty)")
+	}
+	ref := strings.TrimSpace(imageRef)
+	if ref == "" {
+		return LabDaemonResult{}, fmt.Errorf("compute: image reference is empty")
+	}
+	if err := AllowImagePull(ref); err != nil {
+		return LabDaemonResult{}, err
+	}
+	name := strings.TrimSpace(containerName)
+	if name == "" {
+		return LabDaemonResult{}, fmt.Errorf("compute: container name is empty")
+	}
+	if err := c.Ping(ctx); err != nil {
+		return LabDaemonResult{}, err
+	}
+	if err := c.ensureLabNetwork(ctx); err != nil {
+		return LabDaemonResult{}, err
+	}
+	if err := c.pullImage(ctx, ref); err != nil {
+		return LabDaemonResult{}, err
+	}
+
+	create, err := c.cli.ContainerCreate(ctx, &container.Config{
+		Image: ref,
+		Env:   env,
+		ExposedPorts: nat.PortSet{
+			nat.Port(fmt.Sprintf("%d/tcp", port)): struct{}{},
+		},
+	}, &container.HostConfig{
+		NetworkMode: container.NetworkMode(labDaemonNetwork),
+		RestartPolicy: container.RestartPolicy{
+			Name: "unless-stopped",
+		},
+	}, nil, nil, name)
+	if err != nil {
+		return LabDaemonResult{}, fmt.Errorf("compute: daemon create: %w", err)
+	}
+	id := create.ID
+	if err := c.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		_ = c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
+		return LabDaemonResult{}, fmt.Errorf("compute: daemon start: %w", err)
+	}
+	return LabDaemonResult{
+		ContainerID: id,
+		Host:        name,
+		Port:        port,
+	}, nil
+}
+
+// RemoveLabDaemon force-removes a nested container by ID (no-op when id empty).
+func (c *Client) RemoveLabDaemon(ctx context.Context, containerID string) error {
+	if !c.Enabled() || strings.TrimSpace(containerID) == "" {
+		return nil
+	}
+	return c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+}
+
+// EnsureRedpanda starts or reuses a long-lived Redpanda broker on the nested lab network.
+func (c *Client) EnsureRedpanda(ctx context.Context, containerName string) (bootstrap, containerID string, err error) {
+	if !c.Enabled() {
+		return "", "", fmt.Errorf("compute: engine disabled (NOCTAXRIS_GCP_DOCKER_HOST empty)")
+	}
+	name := strings.TrimSpace(containerName)
+	if name == "" {
+		return "", "", fmt.Errorf("compute: redpanda container name is empty")
+	}
+	ref := LabRedpandaImage
+	if err := AllowImagePull(ref); err != nil {
+		return "", "", err
+	}
+	if err := c.Ping(ctx); err != nil {
+		return "", "", err
+	}
+	if err := c.ensureLabNetwork(ctx); err != nil {
+		return "", "", err
+	}
+
+	inspect, err := c.cli.ContainerInspect(ctx, name)
+	if err == nil {
+		id := inspect.ID
+		if inspect.State != nil && !inspect.State.Running {
+			if err := c.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+				return "", "", fmt.Errorf("compute: redpanda start existing: %w", err)
+			}
+		}
+		return name + ":9092", id, nil
+	}
+
+	if err := c.pullImage(ctx, ref); err != nil {
+		return "", "", err
+	}
+	create, err := c.cli.ContainerCreate(ctx, &container.Config{
+		Image: ref,
+		Cmd:   RedpandaStartCmd(name),
+		Tty:   false,
+		Labels: map[string]string{
+			"noctaxris-gcp.kind": "managedkafka",
+		},
+		ExposedPorts: nat.PortSet{
+			"9092/tcp": struct{}{},
+		},
+	}, &container.HostConfig{
+		NetworkMode: container.NetworkMode(labDaemonNetwork),
+		RestartPolicy: container.RestartPolicy{
+			Name: "unless-stopped",
+		},
+	}, nil, nil, name)
+	if err != nil {
+		return "", "", fmt.Errorf("compute: redpanda create: %w", err)
+	}
+	id := create.ID
+	if err := c.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		_ = c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
+		return "", "", fmt.Errorf("compute: redpanda start: %w", err)
+	}
+	return name + ":9092", id, nil
+}
+
+// RemoveRedpanda stops and removes a nested broker by container name.
+func (c *Client) RemoveRedpanda(ctx context.Context, containerName string) error {
+	if !c.Enabled() {
+		return nil
+	}
+	name := strings.TrimSpace(containerName)
+	if name == "" {
+		return nil
+	}
+	timeout := 10
+	_ = c.cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &timeout})
+	return c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
+}
+
+// RedpandaContainerNameForCluster returns the stable nested container name for a cluster id.
+func RedpandaContainerNameForCluster(clusterID string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
+			return r
+		default:
+			return '-'
+		}
+	}, strings.TrimSpace(clusterID))
+	if safe == "" {
+		safe = "cluster"
+	}
+	return "noctaxris-gcp-kafka-" + safe
+}
+
+func (c *Client) ensureLabNetwork(ctx context.Context) error {
+	_, err := c.cli.NetworkInspect(ctx, labDaemonNetwork, network.InspectOptions{})
+	if err == nil {
+		return nil
+	}
+	_, err = c.cli.NetworkCreate(ctx, labDaemonNetwork, network.CreateOptions{
+		Driver: "bridge",
+		Labels: map[string]string{"noctaxris-gcp": "lab"},
+	})
+	if err != nil {
+		return fmt.Errorf("compute: create lab network: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) pullImage(ctx context.Context, ref string) error {

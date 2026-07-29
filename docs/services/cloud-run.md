@@ -1,16 +1,20 @@
 # Cloud Run
 
-Lab Cloud Run Admin API v2 REST for services, revisions, and jobs. Invoke is an
-in-process mock by default (no container start, no host `docker.sock`). When
-`NOCTAXRIS_GCP_DOCKER_HOST` is set (with `NOCTAXRIS_GCP_DOCKER_CERT_PATH`),
-`:invoke` uses `DockerInvoker` for a nested one-shot; dial/run failures soft-fail
-to mock with an `engine` detail field unless `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED`
-is `1` or `true` (hard error, no mock fallback). Host `docker.sock` is refused. Services
-with `template.labResponseBody` stay mock-only (nested path skipped). Service
+Lab Cloud Run Admin API v2 REST for services, revisions, and jobs. Service
 create/update returns a completed Operation (`done: true` + `response`); GET
 returns the service. Terraform:
 `cloud_run_v2_custom_endpoint = "http://127.0.0.1:4588/v2/"` (see
 `tests/terraform/stacks/lab-run`).
+
+## Mock vs nested `:invoke`
+
+| Mode | When | Behavior |
+|------|------|----------|
+| Mock (default) | `NOCTAXRIS_GCP_DOCKER_HOST` empty | In-process theatre only; no container start; no host `docker.sock` |
+| Mock (forced) | `template.labResponseBody` set (or `RESPONSE_BODY` env) | Nested path skipped even if Docker host is configured |
+| Nested (opt-in) | `NOCTAXRIS_GCP_DOCKER_HOST` + `NOCTAXRIS_GCP_DOCKER_CERT_PATH` set; no `labResponseBody` | `DockerInvoker` one-shot via TLS DinD; host `docker.sock` / `unix://` / `npipe://` refused |
+| Nested soft-fail | Nested dial/run fails; `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` unset | Falls back to mock; response may include `engine` detail |
+| Nested fail-closed | Nested dial/run fails; `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED=1` or `true` | Hard error; no mock fallback |
 
 ## Status
 
@@ -64,7 +68,8 @@ Checked on `projects/{project}`:
 - Default invoke never starts a container (`NOCTAXRIS_GCP_DOCKER_HOST` empty)
 - Nested DinD is opt-in via allowlisted `tcp://` host + TLS cert dir only; host
   `docker.sock` / `unix://` / `npipe://` are rejected
-- Nested dial/run failures soft-fail to mock (response includes `engine.detail`)
+- Nested dial/run failures soft-fail to mock (`engine.detail`) unless
+  `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` is `1`/`true` (hard error, no mock)
 - `template.labResponseBody` forces mock even when the engine is configured
 - Domain mappings and worker pools are not implemented
 
@@ -76,7 +81,7 @@ Checked on `projects/{project}`:
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ ./internal/compute/ -run 'CloudRun|MockInvoker|DockerInvoker' -count=1
+go test ./internal/services/cloudrun/ ./internal/compute/ ./internal/server/ -run 'CloudRun|MockInvoker' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 # Mock path (labResponseBody skips nested even if DOCKER_HOST is set):
 curl -s -H "Authorization: Bearer $TOKEN" \

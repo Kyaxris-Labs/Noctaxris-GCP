@@ -62,6 +62,13 @@ Checked on `projects/{project}`:
 - Logs URL is a lab string only
 - Regional create shares the path with Eventarc (body-shape dispatch); list merges both inventories when authorized
 
+## Deferred depth
+
+- Worker pools, private pools, and build approvals
+- Real step execution, log streaming, and artifact upload to GCS/AR
+- SCM webhooks, GitHub/GitLab triggers, and source fetch
+- Build attestations and SLSA/provenance
+
 ## Verification / CLI smoke
 
 ```bash

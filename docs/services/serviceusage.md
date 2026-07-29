@@ -50,10 +50,24 @@ IAM create service account refuses with `FAILED_PRECONDITION` when
 - Config payloads are static lab metadata (`name`, `apis`, optional `title` / `documentation`); not a full Service Config.
 - gRPC `ServiceUsage` is not registered yet; use REST.
 
+## Deferred depth
+
+- Async LRO worker for enable/disable (lab returns a completed Operation immediately)
+- Full Service Config beyond static lab metadata (`name`, `apis`, optional `title` / `documentation`)
+- gRPC ServiceUsage registration
+
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ -run ServiceUsage -count=1
+go test ./internal/services/serviceusage/ ./internal/server/ -run ServiceUsage -count=1
+TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/services"
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/services/storage.googleapis.com:enable"
+```
+
+```bash
 gcloud config set api_endpoint_overrides/serviceusage http://127.0.0.1:4588/
 gcloud services list --enabled --project=noctaxris-gcp-local
 gcloud services enable storage.googleapis.com --project=noctaxris-gcp-local

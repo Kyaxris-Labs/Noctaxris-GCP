@@ -35,6 +35,13 @@ Checked on `projects/{project}`:
 - `cloudtasks.queues.create|get|list|update|delete`
 - `cloudtasks.tasks.create|get|list|delete|run`
 
+## Emulator limits
+
+- `httpRequest.url` must pass the lab HTTP egress gate at create time; dispatch skips silently when blocked
+- OIDC/OAuth token fields on HTTP requests are stripped and not sent
+- No lease timing, rate-limit enforcement, or automatic retries beyond stored metadata
+- App Engine HTTP tasks store routing theatre only (no remote dispatch)
+
 ## Deferred depth
 
 - Lease/pull queues, timed retry backoff enforcement
@@ -43,14 +50,14 @@ Checked on `projects/{project}`:
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/server/ -run CloudTasks -count=1
+go test ./internal/services/cloudtasks/ ./internal/server/ -run CloudTasks -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/queues?queueId=default" \
   -d '{"rateLimits":{"maxDispatchesPerSecond":10},"retryConfig":{"maxAttempts":5}}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/queues/default/tasks" \
-  -d '{"taskId":"t1","task":{"httpRequest":{"url":"http://127.0.0.1:9/hook","httpMethod":"POST"}}}'
+  -d '{"taskId":"t1","task":{"httpRequest":{"url":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/tasks-smoke","httpMethod":"POST"}}}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/queues/default/tasks/t1:run"
 ```

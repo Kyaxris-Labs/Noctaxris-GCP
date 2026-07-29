@@ -104,7 +104,10 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
   "$EP/v1/projects/$PROJECT/secrets/lab-secret/versions/latest:access"
 ```
 
-Also: `go test ./internal/store/ ./internal/server/ -run 'Secret|Rotation|Rotate' -count=1`
+```bash
+go test ./internal/services/secretmanager/ ./internal/services/kms/ -count=1
+go test ./internal/store/ ./internal/server/ -run 'Secret|Rotation|Rotate' -count=1
+```
 
 ## Deferred depth
 

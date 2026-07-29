@@ -1,12 +1,17 @@
 # Memorystore for Redis
 
-Lab Memorystore Redis Admin REST for instances. No Redis process is started;
-`host` / `port` are theatre fields for clients that only need control-plane shape.
+Lab Memorystore Redis Admin REST for instances. Default Compose leaves
+`NOCTAXRIS_GCP_DOCKER_HOST` empty: `host` / `port` are theatre metadata for
+control-plane-only clients. With the opt-in DinD engine (`compose.engine.yaml`),
+create attempts a nested `redis:7-alpine` container on the internal
+`noctaxris-gcp-data` network; the API `host` is the container DNS name
+`noctaxris-gcp-redis-<instanceId>` (port `6379`). Nested Redis is not published
+to the operator host.
 
 ## Status
 
-**lab** — location-scoped instance CRUD; stores `tier`, `memorySizeGb`, theatre
-`host`, and `state=READY` (no LRO).
+**hybrid lab** — location-scoped instance CRUD; nested Redis when DinD is
+configured; metadata theatre otherwise.
 
 ## Wire protocol
 
@@ -32,7 +37,8 @@ Seeded Service Usage: `redis.googleapis.com`.
 
 ## Emulator limits
 
-- No Redis binary / TCP listener; `host` is a lab string, `port` defaults to `6379`
+- Without DinD: no Redis TCP listener; `host` is `{instanceId}.{location}.redis.noctaxris-gcp.lab`, `port` `6379`
+- With DinD: Redis listens only on `noctaxris-gcp-data` (no host publish); nested ensure soft-fails back to theatre `host` when the engine is unreachable
 - Create is synchronous (resource returned ready; no long-running Operation)
 - No AUTH, import/export, failover, or maintenance APIs
 
@@ -40,11 +46,13 @@ Seeded Service Usage: `redis.googleapis.com`.
 
 - Redis Cluster / Memorystore for Valkey surfaces
 - Connect-mode / VPC / CMEK fidelity
+- Host publish overlay for operator-loopback Redis clients (not default)
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/memorystore/ ./internal/server/ -run Memorystore -count=1
+go test ./internal/services/memorystore/ ./internal/store/ -run 'Memorystore|BigtableAndMemorystore' -count=1
+go test ./internal/compute/ -run 'AllowImagePull|MemorystoreRedis' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/us-central1/instances?instanceId=lab-redis" \
@@ -52,6 +60,10 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/us-central1/instances/lab-redis"
 ```
+
+With `compose.engine.yaml`, confirm `host` is `noctaxris-gcp-redis-lab-redis` and
+reach Redis from another container on `noctaxris-gcp-data` (not from the host
+unless you add a custom publish overlay).
 
 ```bash
 gcloud config set api_endpoint_overrides/redis http://127.0.0.1:4588/

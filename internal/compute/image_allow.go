@@ -56,6 +56,11 @@ func isPinnedLabImage(ref string) bool {
 		"alpine:3.20":                               {},
 		"public.ecr.aws/docker/library/alpine:3.20": {},
 		"gcr.io/google-containers/pause:3.9":        {},
+		"rancher/k3s:v1.28.8-k3s1":                  {},
+		"postgres:16-alpine":                        {},
+		"mysql:8.0":                                 {},
+		"redis:7-alpine":                            {},
+		"docker.redpanda.com/redpandadata/redpanda:v24.2.4": {},
 	}
 	_, ok := pinnedExact[lower]
 	return ok

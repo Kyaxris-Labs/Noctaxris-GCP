@@ -16,8 +16,10 @@ import (
 // DefaultLocation is the lab default Memorystore region.
 const DefaultLocation = "us-central1"
 
-// Service serves Memorystore for Redis REST v1 (instances CRUD theatre).
-// No Redis process is started; host/port are theatre fields only.
+// Service serves Memorystore for Redis REST v1 (instances CRUD).
+// Without NOCTAXRIS_GCP_DOCKER_HOST, host/port are theatre metadata only.
+// With a nested engine configured, create attempts redis:7-alpine on the internal
+// noctaxris-gcp-data network (no host port publish).
 type Service struct {
 	Store *store.Store
 	Authz *authz.Evaluator
@@ -138,7 +140,12 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "instance already exists")
 		return
 	}
-	out, _, _ := s.Store.GetMemorystoreRedisInstance(name)
+	s.tryNestedRedisOnCreate(r.Context(), name, instanceID)
+	out, ok, err := s.Store.GetMemorystoreRedisInstance(name)
+	if err != nil || !ok {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created instance missing")
+		return
+	}
 	writeJSON(w, http.StatusOK, toInstanceJSON(out))
 }
 
@@ -189,7 +196,18 @@ func (s *Service) deleteInstance(w http.ResponseWriter, r *http.Request, p authn
 		writeAuthzErr(w, err)
 		return
 	}
-	ok, err := s.Store.DeleteMemorystoreRedisInstance(instanceName(project, location, id))
+	fullName := instanceName(project, location, id)
+	inst, found, err := s.Store.GetMemorystoreRedisInstance(fullName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		gcperrors.NotFound(w, "Instance not found")
+		return
+	}
+	s.tryNestedRedisOnDelete(r.Context(), inst.InstanceID, inst.ContainerID)
+	ok, err := s.Store.DeleteMemorystoreRedisInstance(fullName)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return

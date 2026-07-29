@@ -114,7 +114,8 @@ Create service account fails with `FAILED_PRECONDITION` when
 
 ## Emulator limits
 
-- STS does not verify OIDC JWTs or call external IdPs; `subject_token` is lab theatre.
+- STS does not verify OIDC JWTs or call external IdPs; `subject_token` is lab theatre (any non-empty string).
+- `generateAccessToken` mints a lab Bearer token for the target SA; scopes are recorded but not enforced against Google APIs.
 - `signBlob` is SHA-256 theatre, not PKCS#1 / RSA signing.
 - `signJwt` is unsigned lab JWT theatre (`alg=none`), not RSA/ES256.
 - Soft-delete has no 30-day purge timer; rows remain until process data is wiped.
@@ -123,8 +124,8 @@ Create service account fails with `FAILED_PRECONDITION` when
 
 ## Deferred depth
 
-- OIDC discovery + signature verification for real external IdPs
-- Custom roles CRUD beyond seeded roles
+- OIDC discovery + JWT signature verification for real external IdPs (STS `POST /v1/token` is exchange theatre only)
+- Custom roles CRUD beyond seeded built-in roles (`roles/owner`, `roles/editor`, `roles/viewer`, `roles/iam.serviceAccountTokenCreator`, and other seeded lab roles)
 - gRPC IAM Admin service registration
 
 ## Verification / CLI smoke

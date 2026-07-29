@@ -382,6 +382,7 @@ func serviceTitle(serviceName string) string {
 		"dataflow.googleapis.com":             "Dataflow API",
 		"bigtableadmin.googleapis.com":        "Cloud Bigtable Admin API",
 		"redis.googleapis.com":                "Google Cloud Memorystore for Redis API",
+		"sqladmin.googleapis.com":             "Cloud SQL Admin API",
 		"certificatemanager.googleapis.com":   "Certificate Manager API",
 		"file.googleapis.com":                 "Cloud Filestore API",
 		"aiplatform.googleapis.com":           "Vertex AI API",

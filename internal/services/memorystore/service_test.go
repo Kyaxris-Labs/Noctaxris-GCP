@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -52,6 +53,9 @@ func TestMemorystoreRedisInstancesCRUD(t *testing.T) {
 	host, _ := inst["host"].(string)
 	if host == "" {
 		t.Fatal("expected theatre host")
+	}
+	if !strings.Contains(host, "lab-redis") || !strings.Contains(host, ".redis.noctaxris-gcp.lab") {
+		t.Fatalf("unexpected theatre host %q", host)
 	}
 	if int(inst["port"].(float64)) != 6379 {
 		t.Fatalf("port=%v", inst["port"])
@@ -114,5 +118,31 @@ func TestMemorystoreAuthzFailClosed(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMemorystoreNilAuthzFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	mux := http.NewServeMux()
+	svc := &memorystore.Service{Store: st, Authz: nil}
+	svc.Mount(mux, func(r *http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects/noctaxris-gcp-local/locations/us-central1/instances", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("nil Authz expected 403, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

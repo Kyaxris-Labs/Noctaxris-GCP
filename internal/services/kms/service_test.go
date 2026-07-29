@@ -23,6 +23,13 @@ import (
 
 func setupKMS(t *testing.T) (*http.ServeMux, string) {
 	t.Helper()
+	return setupKMSWithPrincipal(t, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "root@noctaxris-gcp-local.iam.gserviceaccount.com", IsRoot: true}, true
+	})
+}
+
+func setupKMSWithPrincipal(t *testing.T, principal func(*http.Request) (authn.Principal, bool)) (*http.ServeMux, string) {
+	t.Helper()
 	dir := t.TempDir()
 	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "secrets", "master.key"))
 	if err != nil {
@@ -40,10 +47,21 @@ func setupKMS(t *testing.T) (*http.ServeMux, string) {
 	}
 	mux := http.NewServeMux()
 	svc := &kms.Service{Store: st, Authz: &authz.Evaluator{Policies: st}}
-	svc.Mount(mux, func(r *http.Request) (authn.Principal, bool) {
-		return authn.Principal{Email: rootSA, IsRoot: true}, true
-	})
+	svc.Mount(mux, principal)
 	return mux, project
+}
+
+func TestKMSAuthzDenyNonRoot(t *testing.T) {
+	mux, project := setupKMSWithPrincipal(t, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
+	})
+	ringURL := "/v1/projects/" + project + "/locations/" + kms.DefaultLocation + "/keyRings?keyRingId=deny-ring"
+	req := httptest.NewRequest(http.MethodPost, ringURL, bytes.NewReader([]byte("{}")))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestEncryptDecryptAndDestroyRefuses(t *testing.T) {

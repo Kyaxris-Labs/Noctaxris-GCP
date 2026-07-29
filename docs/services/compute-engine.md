@@ -93,7 +93,7 @@ Seeded Service Usage: `compute.googleapis.com`.
 ## Emulator limits
 
 - Metadata only; never starts a VM or attaches a real NIC
-- No disks, instance groups, or load balancers
+- No disks, instance groups (HTTP(S) Load Balancing lite is a separate lab service when registered)
 - Images are a fixed canned set (no import/create/delete)
 - Insert/delete/stop/start/reset return completed Operations (no poll queue)
 - Firewall `:validate` evaluates one rule only (no priority chain across rules)

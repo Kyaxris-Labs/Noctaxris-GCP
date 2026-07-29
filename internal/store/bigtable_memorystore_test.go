@@ -70,6 +70,13 @@ func TestBigtableAndMemorystoreStoreCRUD(t *testing.T) {
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list redis: %#v err=%v", list, err)
 	}
+	if err := st.SetMemorystoreRedisRuntime(ms.Name, "noctaxris-gcp-redis-r1", "cid-1", 6379); err != nil {
+		t.Fatalf("set runtime: %v", err)
+	}
+	ms2, ok, err := st.GetMemorystoreRedisInstance(ms.Name)
+	if err != nil || !ok || ms2.Host != "noctaxris-gcp-redis-r1" || ms2.ContainerID != "cid-1" {
+		t.Fatalf("runtime update: %#v ok=%v err=%v", ms2, ok, err)
+	}
 	if ok, err := st.DeleteMemorystoreRedisInstance(ms.Name); err != nil || !ok {
 		t.Fatalf("delete redis: ok=%v err=%v", ok, err)
 	}

@@ -149,6 +149,64 @@ func TestCloudBuildDeepenCancelRetryTriggerRun(t *testing.T) {
 	}
 }
 
+func TestCloudBuildTriggersCRUD(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureRoot("noctaxris-gcp-local", "root@noctaxris-gcp-local.iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	svc := &cloudbuild.Service{Store: st, Authz: &authz.Evaluator{Policies: st}}
+	svc.Mount(mux, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "root@noctaxris-gcp-local.iam.gserviceaccount.com", IsRoot: true}, true
+	})
+	project := "noctaxris-gcp-local"
+	trigBase := "/v1/projects/" + project + "/triggers"
+
+	req := httptest.NewRequest(http.MethodPost, trigBase,
+		bytes.NewReader([]byte(`{"id":"tf-crud","filename":"cloudbuild.yaml"}`)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create trigger status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, trigBase+"/tf-crud", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get trigger status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, trigBase, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list triggers status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var list map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	triggers, _ := list["triggers"].([]any)
+	if len(triggers) != 1 {
+		t.Fatalf("triggers=%#v", list)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, trigBase+"/tf-crud", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete trigger status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCloudBuildFailClosed(t *testing.T) {
 	mux := http.NewServeMux()
 	svc := &cloudbuild.Service{}
@@ -158,5 +216,32 @@ func TestCloudBuildFailClosed(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d", rec.Code)
+	}
+}
+
+func TestCloudBuildAuthzDenyNonRootWithoutBinding(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureRoot("noctaxris-gcp-local", "root@noctaxris-gcp-local.iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	svc := &cloudbuild.Service{Store: st, Authz: &authz.Evaluator{Policies: st}}
+	svc.Mount(mux, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects/noctaxris-gcp-local/builds", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
