@@ -1,28 +1,41 @@
 package memorystore
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/compute"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
+	"github.com/google/uuid"
 )
 
 // DefaultLocation is the lab default Memorystore region.
 const DefaultLocation = "us-central1"
 
+// NestEngine is the nested Redis surface (tests inject stubs).
+// When nil, Dial from NOCTAXRIS_GCP_DOCKER_HOST is used.
+type NestEngine interface {
+	Enabled() bool
+	EnsureMemorystoreRedis(ctx context.Context, instanceID, authPassword string) (compute.MemorystoreRedisResult, error)
+	RemoveMemorystoreRedis(ctx context.Context, instanceID, containerID string) error
+	Close() error
+}
+
 // Service serves Memorystore for Redis REST v1 (instances CRUD).
 // Without NOCTAXRIS_GCP_DOCKER_HOST, host/port are theatre metadata only.
-// With a nested engine configured, create attempts redis:7-alpine on the internal
-// noctaxris-gcp-data network (no host port publish).
+// With a nested engine configured, create attempts redis:7-alpine on the shared
+// noctaxris-gcp-lab bridge (no host port publish).
 type Service struct {
-	Store *store.Store
-	Authz *authz.Evaluator
+	Store  *store.Store
+	Authz  *authz.Evaluator
+	Engine NestEngine
 }
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
@@ -35,6 +48,7 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/instances", s.wrap(principalFrom, s.createInstance))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/instances/{instance}", s.wrap(principalFrom, s.getInstance))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/instances/{instance}", s.wrap(principalFrom, s.deleteInstance))
+	s.mountOperations(mux, principalFrom)
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -119,6 +133,16 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 	}
 	redisVersion, _ := body["redisVersion"].(string)
 	authNet, _ := body["authorizedNetwork"].(string)
+	authEnabled := boolFromAny(body["authEnabled"])
+	authString, _ := body["authString"].(string)
+	authString = strings.TrimSpace(authString)
+	if authEnabled {
+		if authString == "" {
+			authString = uuid.NewString()
+		}
+	} else {
+		authString = ""
+	}
 	memGB := intFromAny(body["memorySizeGb"])
 	labelsJSON := "{}"
 	if labels, ok := body["labels"]; ok {
@@ -130,7 +154,8 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 	created, err := s.Store.CreateMemorystoreRedisInstance(store.MemorystoreRedisInstance{
 		Name: name, ProjectID: project, Location: location, InstanceID: instanceID,
 		DisplayName: displayName, Tier: tier, MemorySizeGb: memGB, RedisVersion: redisVersion,
-		State: "READY", LabelsJSON: labelsJSON, AuthorizedNetwork: authNet, CreatedAt: now,
+		State: "READY", LabelsJSON: labelsJSON, AuthorizedNetwork: authNet,
+		AuthEnabled: authEnabled, AuthString: authString, CreatedAt: now,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -140,13 +165,20 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "instance already exists")
 		return
 	}
-	s.tryNestedRedisOnCreate(r.Context(), name, instanceID)
+	if err := s.tryNestedRedisOnCreate(r.Context(), name, instanceID, authString); err != nil {
+		_, _ = s.Store.DeleteMemorystoreRedisInstance(name)
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition,
+			compute.NestedEngineFailClosedMessage(err))
+		return
+	}
 	out, ok, err := s.Store.GetMemorystoreRedisInstance(name)
 	if err != nil || !ok {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created instance missing")
 		return
 	}
-	writeJSON(w, http.StatusOK, toInstanceJSON(out))
+	resp := toInstanceJSON(out)
+	resp["@type"] = instanceTypeURL
+	writeDoneOperation(w, project, location, "create-"+instanceID, resp)
 }
 
 func (s *Service) getInstance(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -222,7 +254,7 @@ func (s *Service) deleteInstance(w http.ResponseWriter, r *http.Request, p authn
 func toInstanceJSON(inst store.MemorystoreRedisInstance) map[string]any {
 	var labels any = map[string]string{}
 	_ = json.Unmarshal([]byte(inst.LabelsJSON), &labels)
-	return map[string]any{
+	out := map[string]any{
 		"name":              inst.Name,
 		"displayName":       inst.DisplayName,
 		"tier":              inst.Tier,
@@ -233,10 +265,16 @@ func toInstanceJSON(inst store.MemorystoreRedisInstance) map[string]any {
 		"state":             inst.State,
 		"labels":            labels,
 		"authorizedNetwork": inst.AuthorizedNetwork,
+		"authEnabled":       inst.AuthEnabled,
 		"createTime":        inst.CreatedAt,
 		"currentLocationId": inst.Location + "-a",
 		"locationId":        inst.Location + "-a",
 	}
+	// Lab convenience: echo authString on Instance get/create (GCP uses getAuthString).
+	if inst.AuthEnabled && inst.AuthString != "" {
+		out["authString"] = inst.AuthString
+	}
+	return out
 }
 
 func intFromAny(v any) int {
@@ -252,5 +290,16 @@ func intFromAny(v any) int {
 		return int(i)
 	default:
 		return 0
+	}
+}
+
+func boolFromAny(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return strings.EqualFold(b, "true") || b == "1"
+	default:
+		return false
 	}
 }

@@ -66,6 +66,18 @@ func (s *Service) require(p authn.Principal, permission, projectID string) error
 	return nil
 }
 
+// requireAny allows when any listed resource (or its project parent chain) grants permission.
+func (s *Service) requireAny(p authn.Principal, permission string, resources ...string) error {
+	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, permission, resources...)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errDenied
+	}
+	return nil
+}
+
 var errDenied = fmt.Errorf("permission denied")
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -153,6 +165,11 @@ func (s *Service) createFunction(w http.ResponseWriter, r *http.Request, p authn
 	fn, ok, err := s.Store.GetCloudFunction(name)
 	if err != nil || !ok {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created function missing")
+		return
+	}
+	if err := s.wireEventarcFromCreate(project, location, functionID, name, body); err != nil {
+		_, _ = s.Store.DeleteCloudFunction(name)
+		gcperrors.InvalidArgument(w, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, toFunctionJSON(fn))
@@ -420,11 +437,12 @@ func (s *Service) setIamPolicy(w http.ResponseWriter, r *http.Request, p authn.P
 }
 
 func (s *Service) invoke(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, id string) {
-	if err := s.require(p, "cloudfunctions.functions.invoke", project); err != nil {
+	name := functionName(project, location, id)
+	// Project binding or function-resource Invoker (roles/cloudfunctions.invoker).
+	if err := s.requireAny(p, "cloudfunctions.functions.invoke", name, "projects/"+project); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
-	name := functionName(project, location, id)
 	fn, ok, err := s.Store.GetCloudFunction(name)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -467,7 +485,162 @@ func toFunctionJSON(fn store.CloudFunction) map[string]any {
 		if desc, ok := m["description"]; ok {
 			out["description"] = desc
 		}
+		if et := eventTriggerEcho(m, fn); et != nil {
+			out["eventTrigger"] = et
+		}
 	}
+	return out
+}
+
+// wireEventarcFromCreate inserts an Eventarc trigger when create includes
+// eventTrigger / eventarcTrigger / Eventarc-shaped filters.
+func (s *Service) wireEventarcFromCreate(project, location, functionID, functionName string, body map[string]any) error {
+	filtersJSON, transportJSON, channel, triggerLoc, serviceAccount, present, err := extractEventTriggerSpec(body)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	if triggerLoc == "" {
+		triggerLoc = location
+	}
+	triggerID := "function-" + functionID
+	destRaw, _ := json.Marshal(map[string]any{"cloudFunction": functionName})
+	_, created, err := s.Store.CreateEventarcTrigger(store.EventarcTrigger{
+		ProjectID:       project,
+		Location:        triggerLoc,
+		TriggerID:       triggerID,
+		FiltersJSON:     filtersJSON,
+		DestinationJSON: string(destRaw),
+		TransportJSON:   transportJSON,
+		Channel:         channel,
+		ServiceAccount:  serviceAccount,
+	})
+	if err != nil {
+		return fmt.Errorf("wire Eventarc trigger: %w", err)
+	}
+	if !created {
+		return fmt.Errorf("Eventarc trigger %s already exists", triggerID)
+	}
+	return nil
+}
+
+func extractEventTriggerSpec(body map[string]any) (filtersJSON, transportJSON, channel, triggerRegion, serviceAccount string, present bool, err error) {
+	if body == nil {
+		return "", "", "", "", "", false, nil
+	}
+	var src map[string]any
+	for _, key := range []string{"eventTrigger", "eventarcTrigger"} {
+		if m, isMap := body[key].(map[string]any); isMap && m != nil {
+			src = m
+			break
+		}
+	}
+	if src == nil {
+		// Eventarc-shaped top-level fields (eventFilters / transport / channel) without destination.
+		if _, has := body["eventFilters"]; !has {
+			return "", "", "", "", "", false, nil
+		}
+		if _, hasDest := body["destination"]; hasDest {
+			return "", "", "", "", "", false, nil
+		}
+		src = body
+	}
+
+	eventType, _ := src["eventType"].(string)
+	if eventType == "" {
+		eventType, _ = src["event_type"].(string)
+	}
+	var filters []map[string]any
+	if raw, has := src["eventFilters"]; has {
+		switch v := raw.(type) {
+		case []any:
+			for _, item := range v {
+				if m, isMap := item.(map[string]any); isMap {
+					filters = append(filters, m)
+				}
+			}
+		case []map[string]any:
+			filters = append(filters, v...)
+		}
+	}
+	hasType := false
+	for _, f := range filters {
+		if attr, _ := f["attribute"].(string); attr == "type" {
+			hasType = true
+			break
+		}
+	}
+	if !hasType && eventType != "" {
+		filters = append([]map[string]any{{"attribute": "type", "value": eventType}}, filters...)
+		hasType = true
+	}
+	if !hasType {
+		return "", "", "", "", "", true, fmt.Errorf("eventTrigger requires eventType or eventFilters type")
+	}
+	for _, f := range filters {
+		if attr, _ := f["attribute"].(string); attr != "type" {
+			continue
+		}
+		val, _ := f["value"].(string)
+		switch val {
+		case "google.cloud.pubsub.topic.v1.messagePublished",
+			"google.cloud.storage.object.v1.finalized":
+		default:
+			return "", "", "", "", "", true, fmt.Errorf("supported event types: google.cloud.pubsub.topic.v1.messagePublished, google.cloud.storage.object.v1.finalized")
+		}
+	}
+	fb, _ := json.Marshal(filters)
+	filtersJSON = string(fb)
+
+	transportJSON = "{}"
+	if t, isMap := src["transport"].(map[string]any); isMap {
+		raw, _ := json.Marshal(t)
+		transportJSON = string(raw)
+	} else if topic, _ := src["pubsubTopic"].(string); topic != "" {
+		raw, _ := json.Marshal(map[string]any{"pubsub": map[string]string{"topic": topic}})
+		transportJSON = string(raw)
+	} else if topic, _ := src["pubsub_topic"].(string); topic != "" {
+		raw, _ := json.Marshal(map[string]any{"pubsub": map[string]string{"topic": topic}})
+		transportJSON = string(raw)
+	}
+
+	channel, _ = src["channel"].(string)
+	triggerRegion, _ = src["triggerRegion"].(string)
+	if triggerRegion == "" {
+		triggerRegion, _ = src["trigger_region"].(string)
+	}
+	serviceAccount, _ = src["serviceAccountEmail"].(string)
+	if serviceAccount == "" {
+		serviceAccount, _ = src["service_account_email"].(string)
+	}
+	return filtersJSON, transportJSON, channel, triggerRegion, serviceAccount, true, nil
+}
+
+func eventTriggerEcho(cfg map[string]any, fn store.CloudFunction) map[string]any {
+	var src map[string]any
+	for _, key := range []string{"eventTrigger", "eventarcTrigger"} {
+		if m, ok := cfg[key].(map[string]any); ok && m != nil {
+			src = m
+			break
+		}
+	}
+	if src == nil {
+		return nil
+	}
+	out := map[string]any{}
+	for k, v := range src {
+		out[k] = v
+	}
+	loc := fn.Location
+	if tr, ok := out["triggerRegion"].(string); ok && tr != "" {
+		loc = tr
+	} else if tr, ok := out["trigger_region"].(string); ok && tr != "" {
+		loc = tr
+	}
+	out["trigger"] = fmt.Sprintf("projects/%s/locations/%s/triggers/function-%s",
+		fn.ProjectID, loc, fn.FunctionID)
 	return out
 }
 

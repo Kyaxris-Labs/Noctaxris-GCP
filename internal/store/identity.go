@@ -216,6 +216,35 @@ func (s *Store) CreateServiceAccount(sa ServiceAccount) error {
 	return nil
 }
 
+// EnsureServiceAccount inserts the SA when missing (lab theatre for interservice minting).
+// Existing rows are left unchanged. unique_id is generated when empty.
+func (s *Store) EnsureServiceAccount(projectID, email, displayName string) error {
+	projectID = strings.TrimSpace(projectID)
+	email = strings.TrimSpace(email)
+	if projectID == "" || email == "" {
+		return fmt.Errorf("project_id and email required")
+	}
+	if _, ok, err := s.GetServiceAccount(email); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+	if displayName == "" {
+		displayName = "lab service account"
+	}
+	uniqueID := fmt.Sprintf("1%019d", time.Now().UnixNano()%1_000_000_000_000_000_000)
+	err := s.CreateServiceAccount(ServiceAccount{
+		ProjectID:   projectID,
+		Email:       email,
+		UniqueID:    uniqueID,
+		DisplayName: displayName,
+	})
+	if err != nil && err != ErrAlreadyExists {
+		return err
+	}
+	return nil
+}
+
 func scanServiceAccount(row interface {
 	Scan(dest ...any) error
 }) (ServiceAccount, error) {

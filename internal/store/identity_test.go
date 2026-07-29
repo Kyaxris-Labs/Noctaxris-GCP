@@ -256,3 +256,25 @@ func TestIdentityListSearchProjectsAndBatchGet(t *testing.T) {
 		t.Fatalf("iam enabled = %v err=%v", enabled, err)
 	}
 }
+
+func TestEnsureRootSeedsManagedKafka(t *testing.T) {
+	st := openIdentityStore(t)
+	enabled, err := st.IsServiceEnabled("noctaxris-gcp-local", "managedkafka.googleapis.com")
+	if err != nil || !enabled {
+		t.Fatalf("managedkafka enabled = %v err=%v", enabled, err)
+	}
+	list, err := st.ListServiceUsage("noctaxris-gcp-local", "ENABLED")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range list {
+		if row.ServiceName == "managedkafka.googleapis.com" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("managedkafka.googleapis.com missing from ENABLED list (%d rows)", len(list))
+	}
+}

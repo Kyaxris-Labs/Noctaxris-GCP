@@ -271,3 +271,212 @@ func TestViewerAndEditorDenyGetAccessToken(t *testing.T) {
 		}
 	}
 }
+
+func TestRunAndFunctionsInvokerRoles(t *testing.T) {
+	email := "invoker@example.com"
+	svc := "projects/noctaxris-gcp-local/locations/us-central1/services/demo"
+	fn := "projects/noctaxris-gcp-local/locations/us-central1/functions/fn1"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			svc: mustPolicy(t, "roles/run.invoker", "serviceAccount:"+email),
+			fn:  mustPolicy(t, "roles/cloudfunctions.invoker", "serviceAccount:"+email),
+		},
+	}
+	ok, err := e.Evaluate(email, false, "run.routes.invoke", svc)
+	if err != nil || !ok {
+		t.Fatalf("run.invoker should grant run.routes.invoke: ok=%v err=%v", ok, err)
+	}
+	ok, err = e.Evaluate(email, false, "run.services.create", svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("roles/run.invoker must not grant run.services.create")
+	}
+	ok, err = e.Evaluate(email, false, "cloudfunctions.functions.invoke", fn)
+	if err != nil || !ok {
+		t.Fatalf("cloudfunctions.invoker should grant invoke: ok=%v err=%v", ok, err)
+	}
+	ok, err = e.Evaluate(email, false, "cloudfunctions.functions.delete", fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("roles/cloudfunctions.invoker must not grant delete")
+	}
+}
+
+type memParents map[string]string
+
+func (m memParents) CRMParent(resource string) (string, bool, error) {
+	p, ok := m[resource]
+	return p, ok && p != "", nil
+}
+
+func TestEvaluateOrgIAMGrantsProjectPermission(t *testing.T) {
+	org := "organizations/noctaxris-gcp-org"
+	project := "projects/noctaxris-gcp-local"
+	email := "org-viewer@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			org: mustPolicy(t, "roles/viewer", "serviceAccount:"+email),
+		},
+		Parents: memParents{
+			project: org,
+		},
+	}
+	ok, err := e.Evaluate(email, false, "resourcemanager.projects.get", project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("org viewer binding should grant project get via CRM inheritance")
+	}
+	ok, err = e.Evaluate("other@noctaxris-gcp-local.iam.gserviceaccount.com", false, "resourcemanager.projects.get", project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("unbound principal must still deny")
+	}
+}
+
+func TestEvaluateFolderIAMGrantsProjectPermission(t *testing.T) {
+	org := "organizations/noctaxris-gcp-org"
+	folder := "folders/team-a"
+	project := "projects/noctaxris-gcp-local"
+	email := "folder-editor@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			folder: mustPolicy(t, "roles/editor", "serviceAccount:"+email),
+		},
+		Parents: memParents{
+			project: folder,
+			folder:  org,
+		},
+	}
+	ok, err := e.Evaluate(email, false, "storage.buckets.create", project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("folder editor binding should grant project mutate via CRM inheritance")
+	}
+}
+
+func TestEvaluateFolderInheritsOrgIAM(t *testing.T) {
+	org := "organizations/noctaxris-gcp-org"
+	folder := "folders/team-a"
+	email := "org-owner@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			org: mustPolicy(t, "roles/owner", "serviceAccount:"+email),
+		},
+		Parents: memParents{
+			folder: org,
+		},
+	}
+	ok, err := e.Evaluate(email, false, "resourcemanager.folders.get", folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("org owner binding should grant folder get via CRM inheritance")
+	}
+}
+
+func TestEvaluateNestedResourceInheritsOrgIAM(t *testing.T) {
+	org := "organizations/noctaxris-gcp-org"
+	project := "projects/noctaxris-gcp-local"
+	sa := project + "/serviceAccounts/app@noctaxris-gcp-local.iam.gserviceaccount.com"
+	email := "org-viewer@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			org: mustPolicy(t, "roles/viewer", "serviceAccount:"+email),
+		},
+		Parents: memParents{
+			project: org,
+		},
+	}
+	ok, err := e.Evaluate(email, false, "iam.serviceAccounts.get", sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("org viewer should grant nested SA get via project then org chain")
+	}
+}
+
+func TestEvaluateWithoutParentsSkipsOrg(t *testing.T) {
+	org := "organizations/noctaxris-gcp-org"
+	project := "projects/noctaxris-gcp-local"
+	email := "org-viewer@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			org: mustPolicy(t, "roles/viewer", "serviceAccount:"+email),
+		},
+	}
+	ok, err := e.Evaluate(email, false, "resourcemanager.projects.get", project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("without Parents, org binding must not apply to project")
+	}
+}
+
+type memRoles map[string][]string
+
+func (m memRoles) GetRoleIncludedPermissions(roleName string) ([]string, bool, error) {
+	p, ok := m[roleName]
+	return p, ok, nil
+}
+
+func TestCustomRoleIncludedPermissions(t *testing.T) {
+	resource := "projects/noctaxris-gcp-local"
+	email := "sa@noctaxris-gcp-local.iam.gserviceaccount.com"
+	customRole := "projects/noctaxris-gcp-local/roles/bucketLister"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			resource: mustPolicy(t, customRole, "serviceAccount:"+email),
+		},
+		Roles: memRoles{
+			customRole: []string{"storage.buckets.list", "storage.objects.get"},
+		},
+	}
+	ok, err := e.Evaluate(email, false, "storage.buckets.list", resource)
+	if err != nil || !ok {
+		t.Fatalf("custom role should grant included permission: ok=%v err=%v", ok, err)
+	}
+	ok, err = e.Evaluate(email, false, "storage.buckets.create", resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("custom role must not grant permission outside includedPermissions")
+	}
+}
+
+func TestUnknownRoleNoLongerOverGrants(t *testing.T) {
+	resource := "projects/noctaxris-gcp-local"
+	email := "sa@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			resource: mustPolicy(t, "roles/xyz.admin", "serviceAccount:"+email),
+		},
+	}
+	ok, err := e.Evaluate(email, false, "xyz.widgets.create", resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("unknown roles/xyz.* must not grant via prefix heuristic")
+	}
+	ok, err = e.Evaluate(email, false, "storage.buckets.create", resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("unknown role must not grant unrelated permissions")
+	}
+}

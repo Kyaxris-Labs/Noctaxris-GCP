@@ -9,14 +9,17 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
-func TestStripTaskAuthTokens(t *testing.T) {
-	in := `{"url":"http://example","oidcToken":{"serviceAccountEmail":"a"},"oauthToken":{"serviceAccountEmail":"b"},"httpMethod":"POST"}`
-	out := store.StripTaskAuthTokens(in)
-	if strings.Contains(out, "oidcToken") || strings.Contains(out, "oauthToken") {
-		t.Fatalf("tokens not stripped: %s", out)
+func TestHTTPAuthServiceAccountEmail(t *testing.T) {
+	got := store.HTTPAuthServiceAccountEmail(`{"url":"http://example","oidcToken":{"serviceAccountEmail":"a@x"},"oauthToken":{"serviceAccountEmail":"b@x"}}`)
+	if got != "a@x" {
+		t.Fatalf("oidc preferred: got %q", got)
 	}
-	if !strings.Contains(out, "http://example") {
-		t.Fatalf("url lost: %s", out)
+	got = store.HTTPAuthServiceAccountEmail(`{"url":"http://example","oauthToken":{"serviceAccountEmail":"b@x"}}`)
+	if got != "b@x" {
+		t.Fatalf("oauth fallback: got %q", got)
+	}
+	if store.HTTPAuthServiceAccountEmail(`{"url":"http://example"}`) != "" {
+		t.Fatal("expected empty")
 	}
 }
 
@@ -77,16 +80,16 @@ func TestServerlessStoreCRUD(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
-	if strings.Contains(task.HTTPRequestJSON, "oidcToken") {
-		t.Fatalf("oidc stored: %s", task.HTTPRequestJSON)
+	if !strings.Contains(task.HTTPRequestJSON, "oidcToken") {
+		t.Fatalf("oidc should persist: %s", task.HTTPRequestJSON)
 	}
 
 	next := store.NextCronRunRFC3339("0 9 * * 1", "UTC", time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC))
 	if next == "" {
 		t.Fatal("expected next cron run")
 	}
-	cleaned, aud := store.StripSchedulerOIDC(`{"uri":"http://x","oidcToken":{"audience":"aud1","serviceAccountEmail":"sa"}}`)
-	if aud != "aud1" || strings.Contains(cleaned, "oidcToken") {
-		t.Fatalf("strip oidc: cleaned=%s aud=%s", cleaned, aud)
+	aud := store.SchedulerOIDCAudience(`{"uri":"http://x","oidcToken":{"audience":"aud1","serviceAccountEmail":"sa"}}`)
+	if aud != "aud1" {
+		t.Fatalf("audience=%q", aud)
 	}
 }

@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS eventarc_triggers (
   destination_json TEXT NOT NULL DEFAULT '{}',
   transport_json TEXT NOT NULL DEFAULT '{}',
   channel TEXT NOT NULL DEFAULT '',
+  service_account TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   UNIQUE (project_id, location, trigger_id)
 );

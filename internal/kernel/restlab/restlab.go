@@ -6,11 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
+
+// handleFuncOnceKeys tracks patterns already registered per ServeMux so shared
+// lab paths (for example location Operations.get) can be claimed by the first
+// service without panicking on a second Mount.
+var (
+	handleFuncOnceMu   sync.Mutex
+	handleFuncOnceKeys = map[string]struct{}{}
+)
+
+// ServiceUsageChecker looks up whether a project API is ENABLED.
+type ServiceUsageChecker interface {
+	IsServiceEnabled(projectID, serviceName string) (bool, error)
+}
 
 // PrincipalFrom extracts an authenticated principal from the request.
 type PrincipalFrom = func(*http.Request) (authn.Principal, bool)
@@ -31,6 +46,19 @@ func Wrap(principalFrom PrincipalFrom, h Handler) http.HandlerFunc {
 		}
 		h(w, r, p)
 	}
+}
+
+// HandleFuncOnce registers pattern on mux only once per process for that mux.
+// Later callers with the same mux+pattern are no-ops (first handler wins).
+func HandleFuncOnce(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
+	key := fmt.Sprintf("%p\n%s", mux, pattern)
+	handleFuncOnceMu.Lock()
+	defer handleFuncOnceMu.Unlock()
+	if _, ok := handleFuncOnceKeys[key]; ok {
+		return
+	}
+	handleFuncOnceKeys[key] = struct{}{}
+	mux.HandleFunc(pattern, handler)
 }
 
 // Evaluate checks permission on resource and returns ErrDenied when denied.
@@ -64,4 +92,37 @@ func WriteAuthzErr(w http.ResponseWriter, err error) {
 		return
 	}
 	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+}
+
+// ServiceDisabledMessage is the FailedPrecondition text when an API is DISABLED.
+func ServiceDisabledMessage(serviceName string) string {
+	return fmt.Sprintf("Service %s is disabled for this project.", serviceName)
+}
+
+// CheckServiceEnabled returns nil when the API is ENABLED.
+// When DISABLED it returns store.ErrServiceDisabled wrapped with the service name.
+func CheckServiceEnabled(st ServiceUsageChecker, projectID, serviceName string) error {
+	enabled, err := st.IsServiceEnabled(projectID, serviceName)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return fmt.Errorf("%w: %s", store.ErrServiceDisabled, serviceName)
+	}
+	return nil
+}
+
+// RequireServiceEnabled writes FailedPrecondition when the API is DISABLED (or Internal on lookup error).
+// Returns false when the handler should stop.
+func RequireServiceEnabled(w http.ResponseWriter, st ServiceUsageChecker, projectID, serviceName string) bool {
+	err := CheckServiceEnabled(st, projectID, serviceName)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, store.ErrServiceDisabled) {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, ServiceDisabledMessage(serviceName))
+		return false
+	}
+	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+	return false
 }

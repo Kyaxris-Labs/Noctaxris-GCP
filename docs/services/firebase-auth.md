@@ -21,6 +21,8 @@ Client methods (no Bearer required; emulator-shaped):
 | `POST` | `/identitytoolkit.googleapis.com/v1/accounts:sendOobCode` |
 | `POST` | `/identitytoolkit.googleapis.com/v1/accounts:resetPassword` |
 
+Client `accounts:update` and `accounts:delete` require a valid lab `idToken`. When `localId` is also sent, it must match the token `user_id`/`sub`. Missing `idToken` returns `401` `MISSING_ID_TOKEN`; invalid or mismatched token returns `400` `INVALID_ID_TOKEN`.
+
 Admin (Bearer required):
 
 | Method | Path |
@@ -55,6 +57,7 @@ Admin calls still need `Authorization: Bearer <token>`.
 ## Emulator limits
 
 - Client Identity Toolkit methods do not require Bearer (emulator-shaped)
+- Client `accounts:update` / `accounts:delete` require lab `idToken` matching `localId` when provided; admin project CRUD remains Bearer-only
 - Custom tokens and id tokens are unsigned lab JWTs (`alg: none`); not production credentials
 - `sendOobCode` returns a lab `oobCode` only (no email delivery)
 - No phone / OAuth / SAML / OIDC providers, MFA, blocking functions, or tenants

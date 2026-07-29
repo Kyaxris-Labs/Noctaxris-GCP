@@ -122,6 +122,9 @@ func triggerResource(t *store.EventarcTrigger) map[string]any {
 	if t.Channel != "" {
 		out["channel"] = t.Channel
 	}
+	if t.ServiceAccount != "" {
+		out["serviceAccount"] = t.ServiceAccount
+	}
 	return out
 }
 
@@ -154,11 +157,12 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 	}
 	triggerID := r.URL.Query().Get("triggerId")
 	var body struct {
-		Name         string          `json:"name"`
-		EventFilters json.RawMessage `json:"eventFilters"`
-		Destination  json.RawMessage `json:"destination"`
-		Transport    json.RawMessage `json:"transport"`
-		Channel      string          `json:"channel"`
+		Name           string          `json:"name"`
+		EventFilters   json.RawMessage `json:"eventFilters"`
+		Destination    json.RawMessage `json:"destination"`
+		Transport      json.RawMessage `json:"transport"`
+		Channel        string          `json:"channel"`
+		ServiceAccount string          `json:"serviceAccount"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")
@@ -224,7 +228,8 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 	}
 	t, created, err := s.Store.CreateEventarcTrigger(store.EventarcTrigger{
 		ProjectID: project, Location: location, TriggerID: triggerID,
-		FiltersJSON: filtersJSON, DestinationJSON: destJSON, TransportJSON: transportJSON, Channel: body.Channel,
+		FiltersJSON: filtersJSON, DestinationJSON: destJSON, TransportJSON: transportJSON,
+		Channel: body.Channel, ServiceAccount: strings.TrimSpace(body.ServiceAccount),
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())

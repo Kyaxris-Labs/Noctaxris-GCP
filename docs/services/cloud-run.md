@@ -57,11 +57,15 @@ Jobs are control-plane theatre only (template stored; no execution).
 
 ## Authz
 
-Checked on `projects/{project}`:
+Checked on `projects/{project}` for control-plane actions:
 
 - `run.services.create|get|list|update|delete|getIamPolicy|setIamPolicy`
-- `run.routes.invoke`
 - `run.jobs.create|get|list|update|delete`
+
+`:invoke` uses `EvaluateAny` on the **service resource** and the project
+(`run.routes.invoke`). A non-root principal with only
+`roles/run.invoker` on the service IAM policy can invoke; without a project or
+service Invoker binding, invoke is denied. Root still bypasses.
 
 ## Emulator limits
 
@@ -72,6 +76,8 @@ Checked on `projects/{project}`:
   `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` is `1`/`true` (hard error, no mock)
 - `template.labResponseBody` forces mock even when the engine is configured
 - Domain mappings and worker pools are not implemented
+- Service IAM get/set is stored; Invoker is evaluated on `:invoke` only (no
+  public unauthenticated invoke without a binding)
 
 ## Deferred depth
 
@@ -81,12 +87,15 @@ Checked on `projects/{project}`:
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/cloudrun/ ./internal/compute/ ./internal/server/ -run 'CloudRun|MockInvoker' -count=1
+go test ./internal/services/cloudrun/ ./internal/compute/ ./internal/kernel/authz/ ./internal/server/ -run 'CloudRun|MockInvoker|RunAndFunctionsInvoker' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 # Mock path (labResponseBody skips nested even if DOCKER_HOST is set):
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/services?serviceId=demo" \
   -d '{"template":{"containers":[{"image":"demo"}],"labResponseBody":"{\"ok\":true}","labStatusCode":200},"traffic":[{"type":"TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST","percent":100}]}'
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/services/demo:setIamPolicy" \
+  -d '{"policy":{"bindings":[{"role":"roles/run.invoker","members":["serviceAccount:invoker@example.com"]}],"etag":"ACAB"}}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/services/demo:invoke" \
   -d '{}'

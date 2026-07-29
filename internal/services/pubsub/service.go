@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -128,6 +130,12 @@ func (s *Service) CreateTopic(ctx context.Context, topic *pubsubpb.Topic) (*pubs
 	if err := s.require(ctx, "pubsub.topics.create", projectResource(projectID)); err != nil {
 		return nil, err
 	}
+	if err := restlab.CheckServiceEnabled(s.Store, projectID, "pubsub.googleapis.com"); err != nil {
+		if errors.Is(err, store.ErrServiceDisabled) {
+			return nil, gcperrors.GRPC(gcperrors.StatusFailedPrecondition, restlab.ServiceDisabledMessage("pubsub.googleapis.com"))
+		}
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
 	t, created, err := s.Store.CreateTopicWithLabels(topic.GetName(), projectID, topic.GetLabels())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
@@ -238,6 +246,9 @@ func (s *Service) Publish(ctx context.Context, req *pubsubpb.PublishRequest) (*p
 	if err := s.require(ctx, "pubsub.topics.publish", projectResource(projectID)); err != nil {
 		return nil, err
 	}
+	if err := s.checkVPCSCPublish(ctx, projectID); err != nil {
+		return nil, err
+	}
 	if _, ok, err := s.Store.GetTopic(req.GetTopic()); err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	} else if !ok {
@@ -253,6 +264,31 @@ func (s *Service) Publish(ctx context.Context, req *pubsubpb.PublishRequest) (*p
 		resp.MessageIds = append(resp.MessageIds, id)
 	}
 	return resp, nil
+}
+
+// checkVPCSCPublish denies cross-perimeter publish when NOCTAXRIS_GCP_VPCSC_ENFORCE is on.
+func (s *Service) checkVPCSCPublish(ctx context.Context, topicProject string) error {
+	if s.Store == nil || !store.VPCSCEnforceEnabled() || s.Principal == nil {
+		return nil
+	}
+	p, err := s.Principal(ctx)
+	if err != nil {
+		return nil
+	}
+	if p.IsRoot {
+		return nil
+	}
+	from := store.ProjectIDFromServiceAccountEmail(p.Email)
+	if from == "" {
+		return nil
+	}
+	if err := s.Store.VPCSCDenyCrossPerimeter(from, topicProject, "pubsub.googleapis.com"); err != nil {
+		if errors.Is(err, store.ErrVPCSCPerimeter) {
+			return status.Error(codes.PermissionDenied, err.Error())
+		}
+		return status.Errorf(codes.Internal, "%v", err)
+	}
+	return nil
 }
 
 func (s *Service) deliverPush(copies []store.PubSubMessage) {
@@ -311,13 +347,16 @@ func (s *Service) deliverPush(copies []store.PubSubMessage) {
 		}
 		resp, err := s.httpClient().Do(u)
 		if err != nil {
+			_, _ = s.Store.RecordPushDeliveryFailure(m.Subscription, m.AckID)
 			continue
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			_ = s.Store.Acknowledge(m.Subscription, []string{m.AckID})
+			continue
 		}
+		_, _ = s.Store.RecordPushDeliveryFailure(m.Subscription, m.AckID)
 	}
 }
 

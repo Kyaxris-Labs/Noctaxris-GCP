@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/audit"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/version"
 	"golang.org/x/net/http2"
@@ -29,6 +31,7 @@ const (
 	versionPath     = "/_noctaxris-gcp/version"
 	requestIDHeader = "X-Request-Id"
 	shutdownTimeout = 10 * time.Second
+	catcherMaxBody  = 1 << 20 // 1 MiB
 )
 
 type ctxKey int
@@ -61,7 +64,7 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 			RootAccessToken:    cfg.RootAccessToken,
 			Tokens:             st,
 		},
-		authz: &authz.Evaluator{Policies: st},
+		authz: &authz.Evaluator{Policies: st, Roles: st, Parents: st},
 		mux:   http.NewServeMux(),
 		now:   func() time.Time { return time.Now().UTC() },
 	}
@@ -78,6 +81,11 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 	s.registerSecurity()
 	s.registerStorageAI()
 	s.registerGKEEdge()
+	s.registerCloudAudit()
+	s.registerSecurityCenter()
+	s.registerOrgPolicy()
+	s.registerAccessContextManager()
+	s.registerCloudAsset()
 	return s
 }
 
@@ -103,6 +111,10 @@ func (s *Server) registerREST() {
 	s.mux.HandleFunc(healthPath, s.handleHealth)
 	s.mux.HandleFunc(readyPath, s.handleReady)
 	s.mux.HandleFunc(versionPath, s.handleVersion)
+	catcher := httpegress.LabHTTPCatcherPath
+	s.mux.HandleFunc("GET "+catcher, s.handleHTTPCatcherDump)
+	s.mux.HandleFunc("POST "+catcher, s.handleHTTPCatcherAccept)
+	s.mux.HandleFunc("POST "+catcher+"/{rest...}", s.handleHTTPCatcherAccept)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +147,27 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"version": version.Version})
+}
+
+func (s *Server) handleHTTPCatcherDump(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"deliveries": store.ListHTTPCatcher()})
+}
+
+func (s *Server) handleHTTPCatcherAccept(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, catcherMaxBody+1))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusInvalidArgument, "read body")
+		return
+	}
+	if len(body) > catcherMaxBody {
+		gcperrors.WriteREST(w, http.StatusRequestEntityTooLarge, gcperrors.StatusInvalidArgument, "body too large")
+		return
+	}
+	store.RecordHTTPCatcher(string(body))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
 }
 
 // Handler returns the h2c-capable HTTP handler (REST + gRPC).

@@ -13,6 +13,7 @@ Noctaxris-GCP (`127.0.0.1:4588` by default).
 | Buckets | `POST /storage/v1/b?project=`, `GET /storage/v1/b/{bucket}`, `GET /storage/v1/b?project=`, `PATCH /storage/v1/b/{bucket}`, `DELETE /storage/v1/b/{bucket}` |
 | Retention | Bucket `retentionPolicy` (`retentionPeriod`, `isLocked`, `effectiveTime`); delete/overwrite fail closed while object age < period |
 | Bucket IAM | `GET` / `PUT /storage/v1/b/{bucket}/iam`, `GET .../iam/testPermissions` |
+| Notifications | `POST` / `GET` / `DELETE /storage/v1/b/{bucket}/notificationConfigs[/{id}]` (Pub/Sub `OBJECT_FINALIZE` / `OBJECT_DELETE`) |
 | Objects | `GET` / `PATCH` / `DELETE /storage/v1/b/{bucket}/o/{object}`, `GET /storage/v1/b/{bucket}/o` |
 | List | `prefix` and `delimiter` (common prefixes / directory theatre) |
 | Preconditions | `ifGenerationMatch` on object GET and DELETE |
@@ -26,7 +27,34 @@ Noctaxris-GCP (`127.0.0.1:4588` by default).
 | V4 signed URL | `POST .../o/{object}:generateSignedUrl` + verify query signature on GET/PUT |
 | Versioning | Each write creates a new generation; list/get default to latest |
 
-Object bytes live under `$NOCTAXRIS_GCP_DATA_ROOT/gcs/{bucket}/...`. Metadata is in SQLite (`buckets`, `objects`).
+Object bytes live under `$NOCTAXRIS_GCP_DATA_ROOT/gcs/{bucket}/...`. Metadata is in SQLite (`buckets`, `objects`, `gcs_notification_configs`).
+
+### Pub/Sub notificationConfigs
+
+Classic bucket notifications (JSON API snake_case resource fields) publish to a lab
+Pub/Sub topic on object finalize and delete:
+
+| Method | Path | Authz |
+|--------|------|-------|
+| insert | `POST .../b/{bucket}/notificationConfigs` | `storage.buckets.update` |
+| list | `GET .../b/{bucket}/notificationConfigs` | `storage.buckets.get` |
+| get | `GET .../b/{bucket}/notificationConfigs/{id}` | `storage.buckets.get` |
+| delete | `DELETE .../b/{bucket}/notificationConfigs/{id}` | `storage.buckets.update` |
+
+Request body (insert) uses Google JSON API fields: `topic` (required;
+`//pubsub.googleapis.com/projects/{p}/topics/{t}` or `projects/{p}/topics/{t}`),
+`payload_format` (`JSON_API_V1` or `NONE`), optional `event_types`,
+`object_name_prefix`, `custom_attributes`. Empty `event_types` means all supported
+events. Create/delete bumps bucket `metageneration`.
+
+On `PutObjectBytes` finalize and `DeleteObject`, matching configs best-effort
+`Publish` to the topic with standard attributes (`eventType`, `bucketId`,
+`objectId`, `objectGeneration`, `notificationConfig`, …) and a `JSON_API_V1`
+object metadata payload when configured. Missing topics are skipped.
+
+**Publisher IAM theatre:** delivery does not evaluate `pubsub.topics.publish` as a
+GCS service agent. Topic publish authz applies only on the Pub/Sub API path.
+Eventarc finalize hooks remain separate and unchanged.
 
 ### Authz
 
@@ -66,6 +94,8 @@ returned by `:generateSignedUrl`.
 - Compose is same-bucket only; max 32 sources
 - Rewrite always finishes in one request (no rewriteToken continuation)
 - Signed URLs use lab HMAC only (no RSA / IAM signBlob path)
+- NotificationConfigs: `OBJECT_FINALIZE` + `OBJECT_DELETE` only (no ARCHIVE / METADATA_UPDATE / INITIALIZE); no GCS SA publisher IAM on deliver
+- When Organization Policy constraint `storage.publicAccessPrevention` is enforced on the project (or ancestor), bucket `setIamPolicy` with `allUsers` / `allAuthenticatedUsers` returns `FAILED_PRECONDITION` (see [orgpolicy.md](orgpolicy.md))
 
 ## Pointing clients
 
@@ -107,9 +137,15 @@ SIGNED=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: applicatio
   -d '{"method":"GET","expires":600,"alt":"media"}' \
   "$EP/storage/v1/b/lab-bucket/o/hello.txt:generateSignedUrl" | jq -r .signedUrl)
 curl -sS "$SIGNED"
+
+TOPIC="//pubsub.googleapis.com/projects/$PROJECT/topics/gcs-events"
+# Create the Pub/Sub topic first (gRPC or REST), then:
+curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"topic\":\"$TOPIC\",\"payload_format\":\"JSON_API_V1\",\"event_types\":[\"OBJECT_FINALIZE\"]}" \
+  "$EP/storage/v1/b/lab-bucket/notificationConfigs"
 ```
 
-Also: `go test ./internal/services/gcs/ ./internal/store/ -run 'GCS|Signed|Retention' -count=1`
+Also: `go test ./internal/services/gcs/ ./internal/store/ -run 'GCS|Signed|Retention|Notification' -count=1`
 
 ## Deferred depth
 
@@ -118,3 +154,5 @@ Also: `go test ./internal/services/gcs/ ./internal/store/ -run 'GCS|Signed|Reten
 - User-managed HMAC key CRUD
 - Autoclass, soft delete, event-based / temporary hold, per-object retention
 - Object-level IAM and uniform bucket-level access edge cases
+- GCS service-agent `pubsub.topics.publish` fail-closed on notification deliver
+- `OBJECT_ARCHIVE` / `OBJECT_METADATA_UPDATE` / `OBJECT_INITIALIZE` notification events

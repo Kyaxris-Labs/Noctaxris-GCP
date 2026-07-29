@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/go-connections/nat"
 )
@@ -15,8 +14,9 @@ import (
 // MemorystoreRedisImage is the pinned nested Memorystore for Redis lab engine.
 const MemorystoreRedisImage = "redis:7-alpine"
 
-// MemorystoreRedisNetwork is the internal DinD network for nested Redis (no host publish).
-const MemorystoreRedisNetwork = "noctaxris-gcp-data"
+// MemorystoreRedisNetwork is the shared lab DinD bridge (same as SQL/Kafka).
+// Alias of LabDaemonNetwork so Redis can resolve nested SQL/Kafka by DNS.
+const MemorystoreRedisNetwork = LabDaemonNetwork
 
 const memorystoreRedisPort = 6379
 
@@ -46,7 +46,25 @@ func MemorystoreRedisContainerName(instanceID string) string {
 	return out
 }
 
-// MemorystoreRedisResult describes a nested Redis container on the lab data network.
+// MemorystoreRedisAuthEnv returns REDIS_PASSWORD env for nested redis when AUTH is set.
+func MemorystoreRedisAuthEnv(authPassword string) []string {
+	pw := strings.TrimSpace(authPassword)
+	if pw == "" {
+		return nil
+	}
+	return []string{"REDIS_PASSWORD=" + pw}
+}
+
+// MemorystoreRedisAuthCmd returns redis-server --requirepass args when AUTH is set.
+func MemorystoreRedisAuthCmd(authPassword string) []string {
+	pw := strings.TrimSpace(authPassword)
+	if pw == "" {
+		return nil
+	}
+	return []string{"redis-server", "--requirepass", pw}
+}
+
+// MemorystoreRedisResult describes a nested Redis container on the lab bridge.
 type MemorystoreRedisResult struct {
 	Host        string
 	ContainerID string
@@ -55,7 +73,8 @@ type MemorystoreRedisResult struct {
 
 // EnsureMemorystoreRedisFromEnv dials the nested engine when NOCTAXRIS_GCP_DOCKER_HOST is set
 // and starts (or reuses) a detached redis:7-alpine container. Empty docker host is a no-op.
-func EnsureMemorystoreRedisFromEnv(ctx context.Context, instanceID string) (MemorystoreRedisResult, error) {
+// Non-empty authPassword sets REDIS_PASSWORD and redis-server --requirepass.
+func EnsureMemorystoreRedisFromEnv(ctx context.Context, instanceID, authPassword string) (MemorystoreRedisResult, error) {
 	host := strings.TrimSpace(osGetenv(EnvDockerHost))
 	if host == "" {
 		return MemorystoreRedisResult{}, nil
@@ -66,7 +85,7 @@ func EnsureMemorystoreRedisFromEnv(ctx context.Context, instanceID string) (Memo
 		return MemorystoreRedisResult{}, err
 	}
 	defer cli.Close()
-	return cli.EnsureMemorystoreRedis(ctx, instanceID)
+	return cli.EnsureMemorystoreRedis(ctx, instanceID, authPassword)
 }
 
 // RemoveMemorystoreRedisFromEnv stops and removes a nested Redis container when configured.
@@ -85,7 +104,8 @@ func RemoveMemorystoreRedisFromEnv(ctx context.Context, instanceID, containerID 
 }
 
 // EnsureMemorystoreRedis starts or reuses a nested Redis container (no host port publish).
-func (c *Client) EnsureMemorystoreRedis(ctx context.Context, instanceID string) (MemorystoreRedisResult, error) {
+// When authPassword is non-empty, the container runs with REDIS_PASSWORD and --requirepass.
+func (c *Client) EnsureMemorystoreRedis(ctx context.Context, instanceID, authPassword string) (MemorystoreRedisResult, error) {
 	if !c.Enabled() {
 		return MemorystoreRedisResult{}, fmt.Errorf("compute: engine disabled")
 	}
@@ -97,7 +117,7 @@ func (c *Client) EnsureMemorystoreRedis(ctx context.Context, instanceID string) 
 		return MemorystoreRedisResult{}, err
 	}
 	name := MemorystoreRedisContainerName(id)
-	if _, err := c.ensureMemorystoreNetwork(ctx); err != nil {
+	if err := c.ensureLabNetwork(ctx); err != nil {
 		return MemorystoreRedisResult{}, err
 	}
 	if err := c.pullImage(ctx, MemorystoreRedisImage); err != nil {
@@ -126,22 +146,23 @@ func (c *Client) EnsureMemorystoreRedis(ctx context.Context, instanceID string) 
 		labelMemorystoreManaged:  "true",
 		labelMemorystoreInstance: id,
 	}
-	netCfg := &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
-			MemorystoreRedisNetwork: {},
-		},
-	}
-	create, err := c.cli.ContainerCreate(ctx, &container.Config{
-		Image: MemorystoreRedisImage,
+	cfg := &container.Config{
+		Image:  MemorystoreRedisImage,
 		Labels: labels,
+		Env:    MemorystoreRedisAuthEnv(authPassword),
+		Cmd:    MemorystoreRedisAuthCmd(authPassword),
 		ExposedPorts: nat.PortSet{
 			nat.Port(fmt.Sprintf("%d/tcp", memorystoreRedisPort)): struct{}{},
 		},
-	}, &container.HostConfig{
+	}
+	create, err := c.cli.ContainerCreate(ctx, cfg, &container.HostConfig{
 		AutoRemove:      false,
 		NetworkMode:     container.NetworkMode(MemorystoreRedisNetwork),
 		PublishAllPorts: false,
-	}, netCfg, nil, name)
+		RestartPolicy: container.RestartPolicy{
+			Name: "unless-stopped",
+		},
+	}, nil, nil, name)
 	if err != nil {
 		return MemorystoreRedisResult{}, fmt.Errorf("compute: memorystore redis create: %w", err)
 	}
@@ -171,41 +192,6 @@ func (c *Client) RemoveMemorystoreRedis(ctx context.Context, instanceID, contain
 		return fmt.Errorf("compute: memorystore redis remove: %w", err)
 	}
 	return nil
-}
-
-func (c *Client) ensureMemorystoreNetwork(ctx context.Context) (string, error) {
-	if c == nil || c.cli == nil {
-		return "", fmt.Errorf("compute: client unavailable")
-	}
-	name := MemorystoreRedisNetwork
-	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
-	if err != nil {
-		return "", fmt.Errorf("compute: list networks: %w", err)
-	}
-	for _, n := range networks {
-		if n.Name != name {
-			continue
-		}
-		insp, err := c.cli.NetworkInspect(ctx, n.ID, network.InspectOptions{})
-		if err != nil {
-			return "", fmt.Errorf("compute: inspect network %s: %w", name, err)
-		}
-		if !insp.Internal {
-			return "", fmt.Errorf("compute: network %s exists but is not Internal (refuse reuse)", name)
-		}
-		return n.ID, nil
-	}
-	resp, err := c.cli.NetworkCreate(ctx, name, network.CreateOptions{
-		Driver:   "bridge",
-		Internal: true,
-		Labels: map[string]string{
-			labelMemorystoreManaged: "true",
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("compute: create network %s: %w", name, err)
-	}
-	return resp.ID, nil
 }
 
 func osGetenv(key string) string {

@@ -386,6 +386,9 @@ func serviceTitle(serviceName string) string {
 		"certificatemanager.googleapis.com":   "Certificate Manager API",
 		"file.googleapis.com":                 "Cloud Filestore API",
 		"aiplatform.googleapis.com":           "Vertex AI API",
+		"container.googleapis.com":            "Kubernetes Engine API",
+		"managedkafka.googleapis.com":         "Managed Service for Apache Kafka API",
+		"cloudasset.googleapis.com":           "Cloud Asset API",
 	}
 	return titles[serviceName]
 }

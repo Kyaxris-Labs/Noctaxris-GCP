@@ -165,8 +165,8 @@ func TestCloudTasksQueueTaskRunViaServer(t *testing.T) {
 	var task map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &task)
 	hr, _ := task["httpRequest"].(map[string]any)
-	if _, ok := hr["oidcToken"]; ok {
-		t.Fatalf("oidcToken should be stripped: %#v", hr)
+	if _, ok := hr["oidcToken"]; !ok {
+		t.Fatalf("oidcToken should persist: %#v", hr)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, qBase+"/default/tasks/t1:run", bytes.NewReader([]byte("{}")))
@@ -433,8 +433,9 @@ func TestSchedulerOIDCAndNextRun(t *testing.T) {
 	var job map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &job)
 	ht, _ := job["httpTarget"].(map[string]any)
-	if _, ok := ht["oidcToken"]; ok {
-		t.Fatalf("oidcToken should be stripped: %#v", ht)
+	oidc, _ := ht["oidcToken"].(map[string]any)
+	if oidc["serviceAccountEmail"] != "sa@x" {
+		t.Fatalf("oidcToken should persist: %#v", ht)
 	}
 	if job["oidcTokenAudience"] != "https://example.com" {
 		t.Fatalf("audience=%v", job["oidcTokenAudience"])

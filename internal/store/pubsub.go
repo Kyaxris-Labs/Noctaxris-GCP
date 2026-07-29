@@ -588,6 +588,55 @@ func (s *Store) Pull(subscription string, maxMessages int) ([]PubSubMessage, err
 	return msgs, nil
 }
 
+// RecordPushDeliveryFailure increments delivery_attempts after a failed push.
+// When a dead-letter policy is set and attempts reach maxDeliveryAttempts, the
+// message is published to the dead-letter topic and removed (same outcome as Pull).
+func (s *Store) RecordPushDeliveryFailure(subscription, ackID string) (deadLettered bool, err error) {
+	sub, ok, err := s.GetSubscription(subscription)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	var m PubSubMessage
+	var delivered int
+	err = s.db.QueryRow(
+		`SELECT id, subscription, topic, data, attributes_json, publish_time, ack_id, COALESCE(ack_deadline, ''), delivered,
+		        COALESCE(delivery_attempts, 0)
+		 FROM pubsub_messages WHERE subscription = ? AND ack_id = ?`,
+		subscription, ackID,
+	).Scan(&m.ID, &m.Subscription, &m.Topic, &m.Data, &m.AttributesJSON, &m.PublishTime, &m.AckID, &m.AckDeadline, &delivered, &m.DeliveryAttempts)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	attempts := m.DeliveryAttempts + 1
+	if sub.DeadLetterTopic != "" && sub.MaxDeliveryAttempts > 0 && attempts >= sub.MaxDeliveryAttempts {
+		attrs := map[string]string{}
+		if m.AttributesJSON != "" && m.AttributesJSON != "{}" {
+			_ = json.Unmarshal([]byte(m.AttributesJSON), &attrs)
+		}
+		attrs["CloudPubSubDeadLetterSourceSubscription"] = subscription
+		if _, err := s.Publish(sub.DeadLetterTopic, m.Data, attrs); err != nil {
+			return false, fmt.Errorf("dead letter publish: %w", err)
+		}
+		if _, err := s.db.Exec(`DELETE FROM pubsub_messages WHERE ack_id = ?`, m.AckID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if _, err := s.db.Exec(
+		`UPDATE pubsub_messages SET delivery_attempts = ? WHERE ack_id = ?`,
+		attempts, ackID,
+	); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
 // Acknowledge deletes messages by ack id for a subscription.
 func (s *Store) Acknowledge(subscription string, ackIDs []string) error {
 	if len(ackIDs) == 0 {

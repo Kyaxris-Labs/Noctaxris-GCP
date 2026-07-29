@@ -79,6 +79,18 @@ func (s *Service) require(p authn.Principal, permission, projectID string) error
 	return nil
 }
 
+// requireAny allows when any listed resource (or its project parent chain) grants permission.
+func (s *Service) requireAny(p authn.Principal, permission string, resources ...string) error {
+	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, permission, resources...)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errDenied
+	}
+	return nil
+}
+
 var errDenied = fmt.Errorf("permission denied")
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -525,11 +537,12 @@ func (s *Service) deleteJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 }
 
 func (s *Service) invoke(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, id string) {
-	if err := s.require(p, "run.routes.invoke", project); err != nil {
+	name := serviceName(project, location, id)
+	// Project binding or service-resource Invoker (roles/run.invoker → run.routes.invoke).
+	if err := s.requireAny(p, "run.routes.invoke", name, "projects/"+project); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
-	name := serviceName(project, location, id)
 	svc, ok, err := s.Store.GetRunService(name)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())

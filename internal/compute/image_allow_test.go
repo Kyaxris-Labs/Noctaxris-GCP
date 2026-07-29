@@ -78,9 +78,38 @@ func TestMemorystoreRedisContainerName(t *testing.T) {
 	}
 }
 
+func TestLabDaemonNetworkShared(t *testing.T) {
+	t.Parallel()
+	if compute.LabDaemonNetwork != "noctaxris-gcp-lab" {
+		t.Fatalf("LabDaemonNetwork=%q", compute.LabDaemonNetwork)
+	}
+	if compute.MemorystoreRedisNetwork != compute.LabDaemonNetwork {
+		t.Fatalf("MemorystoreRedisNetwork=%q want %q (shared lab bridge)",
+			compute.MemorystoreRedisNetwork, compute.LabDaemonNetwork)
+	}
+}
+
+func TestMemorystoreRedisAuthEnvCmd(t *testing.T) {
+	t.Parallel()
+	if env := compute.MemorystoreRedisAuthEnv(""); env != nil {
+		t.Fatalf("empty password env=%v", env)
+	}
+	if cmd := compute.MemorystoreRedisAuthCmd(""); cmd != nil {
+		t.Fatalf("empty password cmd=%v", cmd)
+	}
+	env := compute.MemorystoreRedisAuthEnv("s3cret")
+	if len(env) != 1 || env[0] != "REDIS_PASSWORD=s3cret" {
+		t.Fatalf("env=%v", env)
+	}
+	cmd := compute.MemorystoreRedisAuthCmd("s3cret")
+	if len(cmd) != 3 || cmd[0] != "redis-server" || cmd[1] != "--requirepass" || cmd[2] != "s3cret" {
+		t.Fatalf("cmd=%v", cmd)
+	}
+}
+
 func TestEnsureMemorystoreRedisFromEnvDisabled(t *testing.T) {
 	t.Setenv(compute.EnvDockerHost, "")
-	res, err := compute.EnsureMemorystoreRedisFromEnv(t.Context(), "lab")
+	res, err := compute.EnsureMemorystoreRedisFromEnv(t.Context(), "lab", "")
 	if err != nil {
 		t.Fatal(err)
 	}

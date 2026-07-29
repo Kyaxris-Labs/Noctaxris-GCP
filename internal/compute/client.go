@@ -159,7 +159,9 @@ type LabDaemonResult struct {
 	Port        int
 }
 
-const labDaemonNetwork = "noctaxris-gcp-lab"
+// LabDaemonNetwork is the shared DinD bridge for nested SQL, Kafka, Redis, and
+// related lab daemons. Created on demand inside the engine; no host port publish.
+const LabDaemonNetwork = "noctaxris-gcp-lab"
 
 // StartLabDaemon pulls (if needed) and starts a long-lived allowlisted image on the lab bridge network.
 // The returned Host is the Docker container name (resolvable from other containers on the same network).
@@ -195,7 +197,7 @@ func (c *Client) StartLabDaemon(ctx context.Context, imageRef, containerName str
 			nat.Port(fmt.Sprintf("%d/tcp", port)): struct{}{},
 		},
 	}, &container.HostConfig{
-		NetworkMode: container.NetworkMode(labDaemonNetwork),
+		NetworkMode: container.NetworkMode(LabDaemonNetwork),
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
@@ -221,6 +223,39 @@ func (c *Client) RemoveLabDaemon(ctx context.Context, containerID string) error 
 		return nil
 	}
 	return c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+}
+
+// ExecLabDaemon runs a command inside a nested lab daemon container (SQL users/databases, etc.).
+func (c *Client) ExecLabDaemon(ctx context.Context, containerID string, cmd []string) error {
+	if !c.Enabled() {
+		return fmt.Errorf("compute: engine disabled (NOCTAXRIS_GCP_DOCKER_HOST empty)")
+	}
+	ref := strings.TrimSpace(containerID)
+	if ref == "" || len(cmd) == 0 {
+		return fmt.Errorf("compute: lab daemon exec requires container and command")
+	}
+	execID, err := c.cli.ContainerExecCreate(ctx, ref, container.ExecOptions{
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          cmd,
+	})
+	if err != nil {
+		return fmt.Errorf("compute: lab daemon exec create: %w", err)
+	}
+	hijacked, err := c.cli.ContainerExecAttach(ctx, execID.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("compute: lab daemon exec attach: %w", err)
+	}
+	defer hijacked.Close()
+	_, _ = io.Copy(io.Discard, hijacked.Reader)
+	inspect, err := c.cli.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return fmt.Errorf("compute: lab daemon exec inspect: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("compute: lab daemon exec exit %d", inspect.ExitCode)
+	}
+	return nil
 }
 
 // EnsureRedpanda starts or reuses a long-lived Redpanda broker on the nested lab network.
@@ -268,7 +303,7 @@ func (c *Client) EnsureRedpanda(ctx context.Context, containerName string) (boot
 			"9092/tcp": struct{}{},
 		},
 	}, &container.HostConfig{
-		NetworkMode: container.NetworkMode(labDaemonNetwork),
+		NetworkMode: container.NetworkMode(LabDaemonNetwork),
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
@@ -298,6 +333,52 @@ func (c *Client) RemoveRedpanda(ctx context.Context, containerName string) error
 	return c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
 }
 
+// CreateRedpandaTopic best-effort creates a topic inside a nested Redpanda via rpk.
+// Soft callers should ignore errors when the engine is off or the container is missing.
+func (c *Client) CreateRedpandaTopic(ctx context.Context, containerRef, topic string, partitions, replicationFactor int) error {
+	if !c.Enabled() {
+		return fmt.Errorf("compute: engine disabled (NOCTAXRIS_GCP_DOCKER_HOST empty)")
+	}
+	ref := strings.TrimSpace(containerRef)
+	topic = strings.TrimSpace(topic)
+	if ref == "" || topic == "" {
+		return fmt.Errorf("compute: redpanda topic create requires container and topic")
+	}
+	if partitions <= 0 {
+		partitions = 1
+	}
+	if replicationFactor <= 0 {
+		replicationFactor = 1
+	}
+	cmd := []string{
+		"rpk", "topic", "create", topic,
+		"-p", fmt.Sprintf("%d", partitions),
+		"-r", fmt.Sprintf("%d", replicationFactor),
+	}
+	execID, err := c.cli.ContainerExecCreate(ctx, ref, container.ExecOptions{
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          cmd,
+	})
+	if err != nil {
+		return fmt.Errorf("compute: redpanda topic exec create: %w", err)
+	}
+	hijacked, err := c.cli.ContainerExecAttach(ctx, execID.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("compute: redpanda topic exec attach: %w", err)
+	}
+	defer hijacked.Close()
+	_, _ = io.Copy(io.Discard, hijacked.Reader)
+	inspect, err := c.cli.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return fmt.Errorf("compute: redpanda topic exec inspect: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("compute: rpk topic create exit %d", inspect.ExitCode)
+	}
+	return nil
+}
+
 // RedpandaContainerNameForCluster returns the stable nested container name for a cluster id.
 func RedpandaContainerNameForCluster(clusterID string) string {
 	safe := strings.Map(func(r rune) rune {
@@ -315,11 +396,11 @@ func RedpandaContainerNameForCluster(clusterID string) string {
 }
 
 func (c *Client) ensureLabNetwork(ctx context.Context) error {
-	_, err := c.cli.NetworkInspect(ctx, labDaemonNetwork, network.InspectOptions{})
+	_, err := c.cli.NetworkInspect(ctx, LabDaemonNetwork, network.InspectOptions{})
 	if err == nil {
 		return nil
 	}
-	_, err = c.cli.NetworkCreate(ctx, labDaemonNetwork, network.CreateOptions{
+	_, err = c.cli.NetworkCreate(ctx, LabDaemonNetwork, network.CreateOptions{
 		Driver: "bridge",
 		Labels: map[string]string{"noctaxris-gcp": "lab"},
 	})

@@ -68,6 +68,14 @@ project then the organization (no folder unless you create one and wire it
 yourself outside this theatre). Org get/set IAM policy lite uses the shared
 policy store.
 
+Authz `Evaluate` walks CRM ancestry for project and folder resources: resource
+policy, then folder parents (when present), then the organization. A binding
+only on `organizations/noctaxris-gcp-org` therefore grants matching permissions
+on seeded projects (and on folders under that org). Seeded projects always
+parent to the lab org in this theatre; folder-under-project placement is not
+stored on the project row yet, but folder Evaluate still walks its own parent
+chain.
+
 ### Folders
 
 Create body requires `parent` (`organizations/...` or `folders/...`) and
@@ -111,7 +119,7 @@ an LRO Operation.
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/resourcemanager/ ./internal/server/ -run 'CRM|Tag' -count=1
+go test ./internal/services/resourcemanager/ ./internal/kernel/authz/ ./internal/server/ -run 'CRM|Tag|OrgIAM|FolderIAM' -count=1
 gcloud config set api_endpoint_overrides/cloudresourcemanager http://127.0.0.1:4588/
 gcloud projects describe noctaxris-gcp-local --format=json
 gcloud resource-manager folders list --organization=noctaxris-gcp-org --format=json

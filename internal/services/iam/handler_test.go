@@ -48,7 +48,7 @@ func openIAM(t *testing.T) *iamTestHarness {
 	}
 	ih := &iam.Handler{
 		Store: st,
-		Authz: &authz.Evaluator{Policies: st},
+		Authz: &authz.Evaluator{Policies: st, Roles: st},
 		Principal: func(r *http.Request) (authn.Principal, bool) {
 			if who.Email == "" && !who.IsRoot {
 				return authn.Principal{}, false
@@ -206,5 +206,148 @@ func TestGenerateAccessTokenViewerDenied(t *testing.T) {
 	h.mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("viewer generateAccessToken expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCustomRolesCRUD(t *testing.T) {
+	h := openIAM(t)
+	const project = "noctaxris-gcp-local"
+	h.setWho("root@"+project+".iam.gserviceaccount.com", true)
+
+	createBody := []byte(`{
+		"roleId":"bucketLister",
+		"role":{
+			"title":"Bucket Lister",
+			"description":"list only",
+			"includedPermissions":["storage.buckets.list"],
+			"stage":"GA"
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles", bytes.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created["name"] != "projects/"+project+"/roles/bucketLister" {
+		t.Fatalf("created=%#v", created)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/roles/bucketLister", nil)
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, getReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/roles", nil)
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, listReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var list map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	roles, _ := list["roles"].([]any)
+	if len(roles) != 1 {
+		t.Fatalf("list roles=%#v", list)
+	}
+
+	patchBody := []byte(`{"includedPermissions":["storage.buckets.list","storage.objects.get"],"updateMask":"includedPermissions"}`)
+	patchReq := httptest.NewRequest(http.MethodPatch, "/v1/projects/"+project+"/roles/bucketLister", bytes.NewReader(patchBody))
+	patchReq.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, patchReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Bind custom role and evaluate least-privilege via Authz wired to store Roles.
+	email := seedServiceAccount(t, h.store, project, "custom-user")
+	if err := h.store.PutIAMPolicyJSON("projects/"+project, authz.Policy{
+		Etag: "c1",
+		Bindings: []authz.Binding{{
+			Role:    "projects/" + project + "/roles/bucketLister",
+			Members: []string{"serviceAccount:" + email},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eval := &authz.Evaluator{Policies: h.store, Roles: h.store}
+	ok, err := eval.Evaluate(email, false, "storage.buckets.list", "projects/"+project)
+	if err != nil || !ok {
+		t.Fatalf("custom role allow: ok=%v err=%v", ok, err)
+	}
+	ok, err = eval.Evaluate(email, false, "storage.buckets.create", "projects/"+project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("custom role must not over-grant create")
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/projects/"+project+"/roles/bucketLister", nil)
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, delReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	ok, err = eval.Evaluate(email, false, "storage.buckets.list", "projects/"+project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("deleted custom role must stop granting")
+	}
+}
+
+func TestCustomRolesAuthzDenied(t *testing.T) {
+	h := openIAM(t)
+	const project = "noctaxris-gcp-local"
+	viewer := seedServiceAccount(t, h.store, project, "role-viewer")
+	if err := h.store.PutIAMPolicyJSON("projects/"+project, authz.Policy{
+		Etag: "v1",
+		Bindings: []authz.Binding{{
+			Role:    "roles/viewer",
+			Members: []string{"serviceAccount:" + viewer},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.setWho(viewer, false)
+	body := []byte(`{"roleId":"x","role":{"title":"x","includedPermissions":["storage.buckets.list"]}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer create role expected 403, got %d", rec.Code)
+	}
+}
+
+func TestCreateKeyDeniedByOrgPolicy(t *testing.T) {
+	h := openIAM(t)
+	const project = "noctaxris-gcp-local"
+	email := seedServiceAccount(t, h.store, project, "key-blocked")
+	if _, err := h.store.SetOrgPolicy("projects/"+project, store.ConstraintDisableServiceAccountKeyCreation, `{"rules":[{"enforce":true}]}`); err != nil {
+		t.Fatal(err)
+	}
+	h.setWho("root@"+project+".iam.gserviceaccount.com", true)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/serviceAccounts/"+url.PathEscape(email)+"/keys", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 FAILED_PRECONDITION, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "iam.disableServiceAccountKeyCreation") {
+		t.Fatalf("body=%s", rec.Body.String())
 	}
 }

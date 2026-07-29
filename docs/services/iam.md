@@ -1,10 +1,10 @@
 # IAM
 
 Lab-complete IAM Admin REST for service accounts and user-managed keys, plus
-Workload Identity Federation pool/provider CRUD, STS token-exchange theatre, and
-service account `generateAccessToken` impersonation theatre. Project IAM
-policies live on Cloud Resource Manager; per-service-account IAM policies are
-stored on the SA resource name.
+Workload Identity Federation pool/provider CRUD, STS token exchange (theatre by
+default; optional OIDC JWKS verify), and service account `generateAccessToken`
+impersonation theatre. Project IAM policies live on Cloud Resource Manager;
+per-service-account IAM policies are stored on the SA resource name.
 
 ## Lab actions
 
@@ -36,19 +36,43 @@ stored on the SA resource name.
 | List WIF providers | `GET` | `.../workloadIdentityPools/{pool}/providers` |
 | Get WIF provider | `GET` | `.../workloadIdentityPools/{pool}/providers/{provider}` |
 | Delete WIF provider | `DELETE` | `.../workloadIdentityPools/{pool}/providers/{provider}` |
+| Create custom role | `POST` | `/v1/projects/{project}/roles` |
+| List custom roles | `GET` | `/v1/projects/{project}/roles` |
+| Get custom role | `GET` | `/v1/projects/{project}/roles/{roleId}` |
+| Patch custom role | `PATCH` | `/v1/projects/{project}/roles/{roleId}` |
+| Delete custom role | `DELETE` | `/v1/projects/{project}/roles/{roleId}` |
 | STS token exchange (lab) | `POST` | `/v1/token` |
 
 Permissions: `iam.serviceAccounts.*`, `iam.serviceAccountKeys.*`,
-`iam.workloadIdentityPools.*`, `iam.workloadIdentityPoolProviders.*` on
+`iam.roles.*`, `iam.workloadIdentityPools.*`, `iam.workloadIdentityPoolProviders.*` on
 `projects/{project}` (custom methods use the same project resource for authz).
 SA IAM policy documents are keyed by
 `projects/{project}/serviceAccounts/{email}`. Nested SA resources also inherit
-project-level bindings in the lab evaluator.
+project-level bindings in the lab evaluator. When CRM ancestry is wired
+(`Parents` on the evaluator), project and folder Evaluate also unions folder
+and organization allow policies (same inheritance model as GCP resource
+hierarchy). Org/folder bindings use the existing CRM getIamPolicy/setIamPolicy
+documents.
+
+### Custom roles
+
+Project custom roles use Google IAM Admin shapes under
+`/v1/projects/{project}/roles`. Create body is
+`{"roleId":"...","role":{"title","description","includedPermissions","stage"}}`.
+Role resource names are `projects/{project}/roles/{roleId}` and may be bound in
+CRM/IAM policies. Authz evaluates only the listed `includedPermissions` (no
+`{svc}.*` catch-all for unknown predefined roles such as `roles/xyz.admin`).
+Delete is soft-delete (`deleted: true`); list omits deleted rows unless
+`showDeleted=true`. Soft-deleted roles stop granting immediately.
 
 Creating a key seals the credentials JSON at rest, returns `privateKeyData`
 (base64) once, and registers a hashed access token so
 `Authorization: Bearer <token>` authenticates as that service account. The lab
 token is stored in the credentials JSON `private_key` field.
+
+When Organization Policy constraint `iam.disableServiceAccountKeyCreation` is
+enforced on the project (or an ancestor), create key returns
+`FAILED_PRECONDITION` (teach path; see [orgpolicy.md](orgpolicy.md)).
 
 Patch accepts `displayName` via body `serviceAccount.displayName` (or top-level
 `displayName`) with optional `updateMask=displayName`.
@@ -84,27 +108,43 @@ still bypasses.
 Pool/provider CRUD stores display name, description, disabled flag, OIDC
 `issuerUri`, and `attributeMapping` JSON. Soft-delete sets `state=DELETED`.
 
-`POST /v1/token` is a public STS theatre endpoint (no Bearer required; the
+`POST /v1/token` is a public STS endpoint (no Bearer required; the
 `subject_token` authenticates the external identity). Required fields:
 
 | Field | Notes |
 |-------|--------|
 | `grant_type` | Must be `urn:ietf:params:oauth:grant-type:token-exchange` |
 | `audience` | WIF provider resource name; optional `//iam.googleapis.com/` prefix |
-| `subject_token` | Lab accepts any non-empty string (no OIDC signature verify) |
+| `subject_token` | Default theatre: any non-empty string. With verify on: compact RS256 JWT |
 
 Optional: `subject_token_type` (accepted, not validated). JSON camelCase and
 form `snake_case` field names are both accepted.
 
+**Theatre (default):** When `NOCTAXRIS_GCP_STS_VERIFY` is unset/off, or the
+provider `issuerUri` is empty, the lab accepts any non-empty `subject_token`
+(unit tests and smoke stay on this path).
+
+**OIDC verify (opt-in):** Set `NOCTAXRIS_GCP_STS_VERIFY=1` (or `true`). When the
+provider has a non-empty `issuerUri`, STS fail-closes unless the subject JWT
+verifies:
+
+1. Fetch OIDC discovery (`{issuer}/.well-known/openid-configuration`) and/or
+   `{issuer}/.well-known/jwks.json` **only** through shared `httpegress`
+   (lab-local loopback `:4588`, or `NOCTAXRIS_GCP_HTTP_EGRESS=1` plus exact
+   allowlist entries for discovery and `jwks_uri`). No open SSRF to arbitrary
+   issuer hosts.
+2. Verify RS256 signature against JWKS; check `iss` (matches `issuerUri`),
+   `aud` (provider resource name or `//iam.googleapis.com/{provider}`), `exp`
+   (required; must be future), optional `nbf`, and non-empty `sub`.
+
 On success the lab returns `access_token`, `token_type=Bearer`, `expires_in=3600`,
 and registers the token as principal `wif:{providerId}:{subject}` where
-`subject` is a sanitized form of `subject_token` (alnum/`-`/`_`/`.`; others
-become `-`; max 64 chars). Unknown, deleted, or disabled pools/providers fail
-closed (`UNAUTHENTICATED`). Bind that principal on CRM/IAM policies using the
-literal member string `wif:{providerId}:{subject}` (the evaluator does not
-rewrite it to `serviceAccount:`).
-
-There is no OIDC discovery document and no real IdP signature verification.
+`subject` is a sanitized form of the subject (theatre: raw `subject_token`;
+verify: JWT `sub`; alnum/`-`/`_`/`.`; others become `-`; max 64 chars).
+Unknown, deleted, or disabled pools/providers fail closed (`UNAUTHENTICATED`).
+Bind that principal on CRM/IAM policies using the literal member string
+`wif:{providerId}:{subject}` (the evaluator does not rewrite it to
+`serviceAccount:`).
 
 List keys accepts `pageSize` (default 100, max 100) and `pageToken` (integer
 offset); responses may include `nextPageToken`.
@@ -114,28 +154,35 @@ Create service account fails with `FAILED_PRECONDITION` when
 
 ## Emulator limits
 
-- STS does not verify OIDC JWTs or call external IdPs; `subject_token` is lab theatre (any non-empty string).
+- STS OIDC verify is opt-in (`NOCTAXRIS_GCP_STS_VERIFY=1`); default theatre accepts any non-empty `subject_token`.
+- Verify fetches JWKS/discovery only via `httpegress` (lab-local `:4588` or egress + exact allowlist); no arbitrary issuer SSRF.
+- Verify accepts RS256 only; `aud` must match the provider resource name (with or without `//iam.googleapis.com/` prefix). Provider `allowedAudiences` CRUD is not stored yet.
 - `generateAccessToken` mints a lab Bearer token for the target SA; scopes are recorded but not enforced against Google APIs.
 - `signBlob` is SHA-256 theatre, not PKCS#1 / RSA signing.
 - `signJwt` is unsigned lab JWT theatre (`alg=none`), not RSA/ES256.
 - Soft-delete has no 30-day purge timer; rows remain until process data is wiped.
 - Key material is a lab credentials JSON (not a PKCS#8 RSA PEM).
+- Custom roles are project-scoped only (no organization custom roles CRUD).
+- Predefined `roles/{svc}.*` grants `{svc}.*` only for an allowlisted set of lab services; unknown services fail closed.
 - gRPC `IAM` admin service is not registered yet; use REST.
 
 ## Deferred depth
 
-- OIDC discovery + JWT signature verification for real external IdPs (STS `POST /v1/token` is exchange theatre only)
-- Custom roles CRUD beyond seeded built-in roles (`roles/owner`, `roles/editor`, `roles/viewer`, `roles/iam.serviceAccountTokenCreator`, and other seeded lab roles)
+- WIF provider `allowedAudiences` persistence and multi-audience config beyond provider resource name
+- Organization-level custom roles CRUD; undelete for soft-deleted custom roles
 - gRPC IAM Admin service registration
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/kernel/authz/ ./internal/services/iam/ ./internal/kernel/authn/ ./internal/server/ -count=1 -run 'TokenCreator|STS|WIF|GenerateAccess|IAM|Token'
+go test ./internal/kernel/authz/ ./internal/services/iam/ ./internal/store/ ./internal/kernel/authn/ ./internal/server/ -count=1 -run 'CustomRole|UnknownRole|TokenCreator|STS|WIF|GenerateAccess|IAM|Token|OrgIAM|FolderIAM'
 gcloud config set api_endpoint_overrides/iam http://127.0.0.1:4588/
 gcloud iam service-accounts create lab-runner \
   --display-name="Lab Runner" --project=noctaxris-gcp-local
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"roleId":"bucketLister","role":{"title":"Bucket Lister","includedPermissions":["storage.buckets.list"]}}' \
+  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/roles"
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"displayName":"Lab Pool"}' \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/workloadIdentityPools?workloadIdentityPoolId=lab-pool"

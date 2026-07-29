@@ -94,6 +94,10 @@ func IsPublicPath(raw string) bool {
 		"/v1/token": // STS token exchange (subject_token authenticates)
 		return true
 	default:
+		// Lab HTTP catcher accept + dump (Pub/Sub / Eventarc / Scheduler / Tasks theatre).
+		if path == "/_noctaxris-gcp/http-catcher" || strings.HasPrefix(path, "/_noctaxris-gcp/http-catcher/") {
+			return true
+		}
 		// Identity Toolkit client auth methods (Firebase Auth emulator shape).
 		if strings.HasPrefix(path, "/identitytoolkit.googleapis.com/v1/accounts") {
 			return true

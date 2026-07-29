@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -510,14 +511,43 @@ func (s *Service) listLogs(w http.ResponseWriter, r *http.Request, p authn.Princ
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
+	calNames, err := s.Store.ListCloudAuditLogNames(project)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	names = mergeUniqueSorted(names, calNames)
 	if names == nil {
 		names = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"logNames": names})
 }
 
+func mergeUniqueSorted(a, b []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(a)+len(b))
+	for _, list := range [][]string{a, b} {
+		for _, n := range list {
+			if _, ok := seen[n]; ok {
+				continue
+			}
+			seen[n] = struct{}{}
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (s *Service) queryEntries(projectID, filter string, pageSize, offset int) ([]store.LogEntry, error) {
 	exactLog, textContains, severity, tsGTE, tsLT := parseFilter(filter)
+	if wantsCloudAudit(exactLog, filter) {
+		return s.Store.ListCloudAuditAsLogEntries(store.ListCloudAuditFilter{
+			ProjectID: projectID, ExactLogName: exactLog,
+			TimestampGTE: tsGTE, TimestampLT: tsLT,
+			PageSize: pageSize, Offset: offset,
+		})
+	}
 	return s.Store.ListLogEntries(store.ListLogEntriesFilter{
 		ProjectID: projectID, ExactLogName: exactLog, TextPayloadContain: textContains,
 		Severity: severity, TimestampGTE: tsGTE, TimestampLT: tsLT,
@@ -541,6 +571,9 @@ func entriesToMaps(entries []store.LogEntry) []map[string]any {
 		}
 		if jp, ok := payload["jsonPayload"]; ok {
 			item["jsonPayload"] = jp
+		}
+		if pp, ok := payload["protoPayload"]; ok {
+			item["protoPayload"] = pp
 		}
 		if e.ResourceJSON != "" && e.ResourceJSON != "{}" {
 			var res any

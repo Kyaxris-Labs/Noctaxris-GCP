@@ -46,12 +46,15 @@ func mountScheduler(t *testing.T, principal func(*http.Request) (authn.Principal
 }
 
 func TestSchedulerJobCreateRunHappyPath(t *testing.T) {
+	store.ClearHTTPCatcher()
+	t.Cleanup(store.ClearHTTPCatcher)
+
 	mux := mountScheduler(t, nil)
 	loc := scheduler.DefaultLocation
 	project := "noctaxris-gcp-local"
 	base := "/v1/projects/" + project + "/locations/" + loc + "/jobs"
 	catcher := "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/sched-unit"
-	body := `{"schedule":"0 9 * * 1","httpTarget":{"uri":"` + catcher + `","httpMethod":"POST"}}`
+	body := `{"schedule":"0 9 * * 1","httpTarget":{"uri":"` + catcher + `","httpMethod":"POST","body":"c2NoZWQtcGF5bG9hZA=="}}`
 	req := httptest.NewRequest(http.MethodPost, base+"?jobId=daily", bytes.NewReader([]byte(body)))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -69,6 +72,10 @@ func TestSchedulerJobCreateRunHappyPath(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &job)
 	if job["lastAttemptTime"] == nil || job["lastAttemptTime"] == "" {
 		t.Fatalf("expected lastAttemptTime: %#v", job)
+	}
+	caught := store.ListHTTPCatcher()
+	if len(caught) != 1 || caught[0] != "sched-payload" {
+		t.Fatalf("catcher deliveries = %#v", caught)
 	}
 }
 

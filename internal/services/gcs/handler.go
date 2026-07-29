@@ -2,6 +2,7 @@ package gcs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -15,6 +16,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -39,6 +41,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /storage/v1/b/{bucket}/iam", h.getBucketIAM)
 	mux.HandleFunc("PUT /storage/v1/b/{bucket}/iam", h.setBucketIAM)
 	mux.HandleFunc("GET /storage/v1/b/{bucket}/iam/testPermissions", h.testBucketIAM)
+	mux.HandleFunc("POST /storage/v1/b/{bucket}/notificationConfigs", h.insertNotification)
+	mux.HandleFunc("GET /storage/v1/b/{bucket}/notificationConfigs", h.listNotifications)
+	mux.HandleFunc("GET /storage/v1/b/{bucket}/notificationConfigs/{notification}", h.getNotification)
+	mux.HandleFunc("DELETE /storage/v1/b/{bucket}/notificationConfigs/{notification}", h.deleteNotification)
 	mux.HandleFunc("GET /storage/v1/b/{bucket}/o", h.listObjects)
 	mux.HandleFunc("GET /storage/v1/b/{bucket}/o/{object...}", h.getOrDownloadObject)
 	mux.HandleFunc("PATCH /storage/v1/b/{bucket}/o/{object...}", h.patchObject)
@@ -115,6 +121,9 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := h.requireStorage(w, r, "storage.buckets.create", "", project); !ok {
+		return
+	}
+	if !restlab.RequireServiceEnabled(w, h.Store, project, "storage.googleapis.com") {
 		return
 	}
 	var body struct {
@@ -278,6 +287,227 @@ func (h *Handler) deleteBucket(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) insertNotification(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.buckets.update", bucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.buckets.update", b.Name, b.ProjectID); !aok {
+		return
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid notification body")
+		return
+	}
+	topic, _ := body["topic"].(string)
+	if topic == "" {
+		gcperrors.InvalidArgument(w, "topic is required")
+		return
+	}
+	if _, err := store.NormalizePubSubNotificationTopic(topic); err != nil {
+		gcperrors.InvalidArgument(w, "invalid topic format")
+		return
+	}
+	payloadFormat := notificationString(body, "payload_format", "payloadFormat")
+	if payloadFormat == "" {
+		gcperrors.InvalidArgument(w, "payload_format is required")
+		return
+	}
+	cfg := store.NotificationConfig{
+		Topic:            topic,
+		PayloadFormat:    payloadFormat,
+		ObjectNamePrefix: notificationString(body, "object_name_prefix", "objectNamePrefix"),
+		EventTypes:       notificationStringSlice(body, "event_types", "eventTypes"),
+		CustomAttributes: notificationStringMap(body, "custom_attributes", "customAttributes"),
+	}
+	n, err := h.Store.CreateNotificationConfig(bucket, cfg)
+	if err != nil {
+		if strings.Contains(err.Error(), "payload_format") || strings.Contains(err.Error(), "custom_attributes") {
+			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, notificationJSON(n))
+}
+
+func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.buckets.get", bucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.buckets.get", b.Name, b.ProjectID); !aok {
+		return
+	}
+	list, err := h.Store.ListNotificationConfigs(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	items := make([]map[string]any, 0, len(list))
+	for i := range list {
+		items = append(items, notificationJSON(&list[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"kind": "storage#notifications", "items": items})
+}
+
+func (h *Handler) getNotification(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	id := r.PathValue("notification")
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.buckets.get", bucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.buckets.get", b.Name, b.ProjectID); !aok {
+		return
+	}
+	n, found, err := h.Store.GetNotificationConfig(bucket, id)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		gcperrors.NotFound(w, "notification not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, notificationJSON(n))
+}
+
+func (h *Handler) deleteNotification(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	id := r.PathValue("notification")
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, "storage.buckets.update", bucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, "storage.buckets.update", b.Name, b.ProjectID); !aok {
+		return
+	}
+	found, err := h.Store.DeleteNotificationConfig(bucket, id)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		gcperrors.NotFound(w, "notification not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func notificationJSON(n *store.NotificationConfig) map[string]any {
+	eventTypes := n.EventTypes
+	if eventTypes == nil {
+		eventTypes = []string{}
+	}
+	attrs := n.CustomAttributes
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	return map[string]any{
+		"kind":               "storage#notification",
+		"id":                 n.ID,
+		"topic":              n.Topic,
+		"event_types":        eventTypes,
+		"custom_attributes":  attrs,
+		"payload_format":     n.PayloadFormat,
+		"object_name_prefix": n.ObjectNamePrefix,
+		"etag":               n.Etag,
+		"selfLink":           "/storage/v1/b/" + n.Bucket + "/notificationConfigs/" + n.ID,
+	}
+}
+
+func notificationString(body map[string]any, snake, camel string) string {
+	if v, ok := body[snake].(string); ok {
+		return v
+	}
+	if v, ok := body[camel].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func notificationStringSlice(body map[string]any, snake, camel string) []string {
+	raw, ok := body[snake]
+	if !ok {
+		raw, ok = body[camel]
+	}
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return v
+	default:
+		return nil
+	}
+}
+
+func notificationStringMap(body map[string]any, snake, camel string) map[string]string {
+	raw, ok := body[snake]
+	if !ok {
+		raw, ok = body[camel]
+	}
+	if !ok || raw == nil {
+		return map[string]string{}
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
 func (h *Handler) getBucketIAM(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("bucket")
 	b, ok, err := h.Store.GetBucket(name)
@@ -338,6 +568,18 @@ func (h *Handler) setBucketIAM(w http.ResponseWriter, r *http.Request) {
 		// GCS setIamPolicy may wrap as {"bindings":...} directly (policy document).
 		gcperrors.InvalidArgument(w, "invalid IAM policy body")
 		return
+	}
+	if iamPolicyHasPublicMembers(policy) {
+		enforced, err := h.Store.IsOrgPolicyConstraintEnforced("projects/"+project, store.ConstraintStoragePublicAccessPrevention)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if enforced {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition,
+				"Public access is disabled by organization policy constraint storage.publicAccessPrevention.")
+			return
+		}
 	}
 	if err := h.Store.PutIAMPolicyJSON(store.BucketIAMResource(name), policy); err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -793,6 +1035,14 @@ func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, srcObject, 
 	if _, aok := h.requireStorage(w, r, "storage.objects.create", db.Name, db.ProjectID); !aok {
 		return
 	}
+	if err := h.Store.VPCSCDenyCrossPerimeter(sb.ProjectID, db.ProjectID, "storage.googleapis.com"); err != nil {
+		if errors.Is(err, store.ErrVPCSCPerimeter) {
+			gcperrors.PermissionDenied(w, err.Error())
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
 	var gen int64
 	if g := r.URL.Query().Get("sourceGeneration"); g != "" {
 		gen, err = strconv.ParseInt(g, 10, 64)
@@ -849,6 +1099,14 @@ func (h *Handler) rewriteObject(w http.ResponseWriter, r *http.Request, srcObjec
 	if _, aok := h.requireStorage(w, r, "storage.objects.create", db.Name, db.ProjectID); !aok {
 		return
 	}
+	if err := h.Store.VPCSCDenyCrossPerimeter(sb.ProjectID, db.ProjectID, "storage.googleapis.com"); err != nil {
+		if errors.Is(err, store.ErrVPCSCPerimeter) {
+			gcperrors.PermissionDenied(w, err.Error())
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
 	var gen int64
 	if g := r.URL.Query().Get("sourceGeneration"); g != "" {
 		gen, err = strconv.ParseInt(g, 10, 64)
@@ -893,8 +1151,21 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 		gcperrors.NotFound(w, "bucket not found")
 		return
 	}
-	if _, aok := h.requireStorage(w, r, "storage.objects.create", b.Name, b.ProjectID); !aok {
+	p, aok := h.requireStorage(w, r, "storage.objects.create", b.Name, b.ProjectID)
+	if !aok {
 		return
+	}
+	if !p.IsRoot {
+		if from := store.ProjectIDFromServiceAccountEmail(p.Email); from != "" {
+			if err := h.Store.VPCSCDenyCrossPerimeter(from, b.ProjectID, "storage.googleapis.com"); err != nil {
+				if errors.Is(err, store.ErrVPCSCPerimeter) {
+					gcperrors.PermissionDenied(w, err.Error())
+					return
+				}
+				gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+				return
+			}
+		}
 	}
 	uploadType := r.URL.Query().Get("uploadType")
 	name := r.URL.Query().Get("name")
@@ -1244,6 +1515,18 @@ func objectJSON(o *store.ObjectMeta) map[string]any {
 		out["contentLanguage"] = o.ContentLanguage
 	}
 	return out
+}
+
+func iamPolicyHasPublicMembers(policy authz.Policy) bool {
+	for _, b := range policy.Bindings {
+		for _, m := range b.Members {
+			switch strings.TrimSpace(m) {
+			case "allUsers", "allAuthenticatedUsers":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

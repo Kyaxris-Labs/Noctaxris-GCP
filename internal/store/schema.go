@@ -88,6 +88,19 @@ CREATE TABLE IF NOT EXISTS objects (
   PRIMARY KEY (bucket, name, generation)
 );
 
+CREATE TABLE IF NOT EXISTS gcs_notification_configs (
+  bucket TEXT NOT NULL,
+  id TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  event_types_json TEXT NOT NULL DEFAULT '[]',
+  custom_attributes_json TEXT NOT NULL DEFAULT '{}',
+  payload_format TEXT NOT NULL DEFAULT 'JSON_API_V1',
+  object_name_prefix TEXT NOT NULL DEFAULT '',
+  etag TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (bucket, id)
+);
+
 CREATE TABLE IF NOT EXISTS pubsub_topics (
   name TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,

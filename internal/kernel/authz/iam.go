@@ -23,16 +23,33 @@ type PolicyStore interface {
 	GetIAMPolicyJSON(resource string) (policyJSON []byte, ok bool, err error)
 }
 
+// RoleStore loads includedPermissions for custom roles (projects/.../roles/... or organizations/.../roles/...).
+type RoleStore interface {
+	GetRoleIncludedPermissions(roleName string) (perms []string, ok bool, err error)
+}
+
+// CRMParentStore resolves Cloud Resource Manager parents for projects and folders.
+// Used by Evaluate to walk folder → organization IAM inheritance (GCP resource hierarchy).
+type CRMParentStore interface {
+	// CRMParent returns the parent resource name (folders/... or organizations/...).
+	// ok is false when the resource has no parent (organization) or is unknown.
+	CRMParent(resource string) (parent string, ok bool, err error)
+}
+
 // Evaluator checks permission grants against stored IAM allow policies.
 // Root principals bypass evaluation (lab operator convenience; documented in docs/security-defaults.md).
 type Evaluator struct {
 	Policies PolicyStore
+	Roles    RoleStore
+	Parents  CRMParentStore // optional; when set, project/folder Evaluate walks CRM ancestry
 }
 
 // Evaluate returns true when principal may perform permission on resource.
 // Deny by default. Root bypasses all checks.
 // For nested resources under projects/{id}/..., project-level bindings also apply
 // (lab parent inheritance; still fail-closed when neither resource grants).
+// When Parents is set, project and folder resources also inherit folder and
+// organization IAM bindings via CRM ancestry (union of allow policies).
 // A nil Evaluator receiver fails closed for non-root (no panic).
 func (e *Evaluator) Evaluate(principalEmail string, isRoot bool, permission, resource string) (bool, error) {
 	if isRoot {
@@ -47,7 +64,11 @@ func (e *Evaluator) Evaluate(principalEmail string, isRoot bool, permission, res
 	if e.Policies == nil {
 		return false, nil
 	}
-	for _, res := range resourcePolicyChain(resource) {
+	chain, err := e.policyChain(resource)
+	if err != nil {
+		return false, err
+	}
+	for _, res := range chain {
 		ok, err := e.evaluateOnResource(principalEmail, permission, res)
 		if err != nil {
 			return false, err
@@ -76,7 +97,11 @@ func (e *Evaluator) evaluateOnResource(principalEmail, permission, resource stri
 		if !memberIn(b.Members, member) {
 			continue
 		}
-		if roleGrants(b.Role, permission) {
+		ok, err := e.roleGrants(b.Role, permission)
+		if err != nil {
+			return false, err
+		}
+		if ok {
 			return true, nil
 		}
 	}
@@ -98,6 +123,62 @@ func resourcePolicyChain(resource string) []string {
 		}
 	}
 	return out
+}
+
+const crmAncestryMaxDepth = 32
+
+// policyChain returns resource → project (when nested) → folder(s) → organization.
+func (e *Evaluator) policyChain(resource string) ([]string, error) {
+	out := resourcePolicyChain(resource)
+	if e == nil || e.Parents == nil {
+		return out, nil
+	}
+	anchor := ""
+	for i := len(out) - 1; i >= 0; i-- {
+		if isCRMHierarchyResource(out[i]) {
+			anchor = out[i]
+			break
+		}
+	}
+	if anchor == "" {
+		return out, nil
+	}
+	seen := make(map[string]struct{}, len(out)+4)
+	for _, r := range out {
+		seen[r] = struct{}{}
+	}
+	cur := anchor
+	for depth := 0; depth < crmAncestryMaxDepth; depth++ {
+		parent, ok, err := e.Parents.CRMParent(cur)
+		if err != nil {
+			return nil, fmt.Errorf("crm parent for %s: %w", cur, err)
+		}
+		if !ok || parent == "" {
+			break
+		}
+		if _, dup := seen[parent]; dup {
+			break
+		}
+		out = append(out, parent)
+		seen[parent] = struct{}{}
+		cur = parent
+		if strings.HasPrefix(parent, "organizations/") {
+			break
+		}
+	}
+	return out, nil
+}
+
+// isCRMHierarchyResource reports bare projects/{id}, folders/{id}, or organizations/{id}.
+func isCRMHierarchyResource(resource string) bool {
+	for _, prefix := range []string{"projects/", "folders/", "organizations/"} {
+		if !strings.HasPrefix(resource, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(resource, prefix)
+		return rest != "" && !strings.Contains(rest, "/")
+	}
+	return false
 }
 
 // EvaluateAny returns true when Evaluate succeeds for any of the resources.
@@ -174,36 +255,96 @@ func memberIn(members []string, want string) bool {
 // roles/owner grants every permission. roles/editor grants mutators except IAM
 // admin / impersonation (aligned with GCP basic roles: no setIamPolicy, no
 // getAccessToken). roles/viewer is read-only metadata (no secret payload access).
-func roleGrants(role, permission string) bool {
+//
+// Unknown predefined roles (for example roles/xyz.admin) do not grant via a
+// catch-all {svc}.* prefix. Custom project/org roles honor includedPermissions
+// from RoleStore when present; missing custom roles fail closed.
+func (e *Evaluator) roleGrants(role, permission string) (bool, error) {
 	switch role {
 	case "roles/owner":
-		return true
+		return true, nil
 	case "roles/editor":
-		return editorGrants(permission)
+		return editorGrants(permission), nil
 	case "roles/viewer":
-		return viewerGrants(permission)
+		return viewerGrants(permission), nil
 	case "roles/iam.securityAdmin":
 		return strings.HasPrefix(permission, "iam.") ||
-			strings.HasPrefix(permission, "resourcemanager.projects.")
+			strings.HasPrefix(permission, "resourcemanager.projects."), nil
 	case "roles/iam.serviceAccountAdmin":
 		return strings.HasPrefix(permission, "iam.serviceAccounts.") ||
-			strings.HasPrefix(permission, "iam.serviceAccountKeys.")
+			strings.HasPrefix(permission, "iam.serviceAccountKeys."), nil
 	case "roles/iam.serviceAccountTokenCreator":
-		return tokenCreatorGrants(permission)
+		return tokenCreatorGrants(permission), nil
 	case "roles/serviceusage.serviceUsageAdmin":
-		return strings.HasPrefix(permission, "serviceusage.")
+		return strings.HasPrefix(permission, "serviceusage."), nil
+	case "roles/run.invoker":
+		return permission == "run.routes.invoke", nil
+	case "roles/cloudfunctions.invoker":
+		return permission == "cloudfunctions.functions.invoke", nil
 	default:
-		// Custom or service roles: grant when permission shares the service prefix before the first dot pair.
-		// Example: roles/storage.admin → storage.*
+		if isCustomRoleName(role) {
+			if e == nil || e.Roles == nil {
+				return false, nil
+			}
+			perms, ok, err := e.Roles.GetRoleIncludedPermissions(role)
+			if err != nil {
+				return false, err
+			}
+			if !ok {
+				return false, nil
+			}
+			for _, p := range perms {
+				if p == permission {
+					return true, nil
+				}
+			}
+			return false, nil
+		}
+		// Narrowed lab predefined roles: only allowlisted services get {svc}.* for roles/{svc}.*
+		// Unknown services (roles/xyz.*) fail closed — no catch-all prefix heuristic.
 		if strings.HasPrefix(role, "roles/") {
 			rest := strings.TrimPrefix(role, "roles/")
 			if i := strings.IndexByte(rest, '.'); i > 0 {
 				svc := rest[:i]
-				return strings.HasPrefix(permission, svc+".")
+				if labPredefinedServicePrefixes[svc] {
+					return strings.HasPrefix(permission, svc+"."), nil
+				}
 			}
 		}
-		return false
+		return false, nil
 	}
+}
+
+// isCustomRoleName matches projects/{id}/roles/{roleId} or organizations/{id}/roles/{roleId}.
+func isCustomRoleName(role string) bool {
+	return (strings.HasPrefix(role, "projects/") && strings.Contains(role, "/roles/")) ||
+		(strings.HasPrefix(role, "organizations/") && strings.Contains(role, "/roles/"))
+}
+
+// labPredefinedServicePrefixes is the allowlist for roles/{svc}.* → {svc}.* grants.
+// Services not listed (for example xyz) never over-grant via prefix matching.
+var labPredefinedServicePrefixes = map[string]bool{
+	"storage":              true,
+	"secretmanager":        true,
+	"cloudkms":             true,
+	"artifactregistry":     true,
+	"pubsub":               true,
+	"bigquery":             true,
+	"logging":              true,
+	"monitoring":           true,
+	"datastore":            true,
+	"firestore":            true,
+	"spanner":              true,
+	"run":                  true,
+	"cloudfunctions":       true,
+	"cloudscheduler":       true,
+	"cloudtasks":           true,
+	"eventarc":             true,
+	"iam":                  true,
+	"resourcemanager":      true,
+	"serviceusage":         true,
+	"accesscontextmanager": true,
+	"cloudasset":           true,
 }
 
 // tokenCreatorGrants mirrors roles/iam.serviceAccountTokenCreator (impersonation).
@@ -311,7 +452,11 @@ func viewerGrants(permission string) bool {
 		"eventarc.triggers.get",
 		"eventarc.triggers.list",
 		"firestore.documents.get",
-		"firestore.documents.list":
+		"firestore.documents.list",
+		"cloudasset.assets.searchAllResources",
+		"cloudasset.assets.listResource",
+		"cloudasset.feeds.get",
+		"cloudasset.feeds.list":
 		return true
 	default:
 		return false

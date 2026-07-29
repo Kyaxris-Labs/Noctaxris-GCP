@@ -10,6 +10,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -38,7 +39,9 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/certificateMaps/{certificateMap}", s.wrap(principalFrom, s.deleteCertificateMap))
 
 	// Lab Operations.get: create returns done:true; poll path succeeds immediately for TF waiters.
-	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/operations/{operation}", s.wrap(principalFrom, s.getOperation))
+	// Same pattern as Memorystore Redis; HandleFuncOnce so shared mux does not panic.
+	restlab.HandleFuncOnce(mux, "GET /v1/projects/{project}/locations/{location}/operations/{operation}",
+		s.wrap(principalFrom, s.getOperation))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)

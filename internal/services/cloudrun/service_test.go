@@ -118,3 +118,76 @@ func TestCloudRunUnauthenticated(t *testing.T) {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
+
+func TestCloudRunInvokeServiceInvokerBinding(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "secrets", "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	const project = "noctaxris-gcp-local"
+	root := "root@" + project + ".iam.gserviceaccount.com"
+	if err := st.EnsureRoot(project, root); err != nil {
+		t.Fatal(err)
+	}
+	invoker := "invoker@example.com"
+	cur := authn.Principal{Email: root, IsRoot: true}
+	mux := http.NewServeMux()
+	svc := &cloudrun.Service{
+		Store:   st,
+		Authz:   &authz.Evaluator{Policies: st},
+		Invoker: compute.MockInvoker{},
+	}
+	svc.Mount(mux, func(*http.Request) (authn.Principal, bool) {
+		return cur, true
+	})
+	loc := cloudrun.DefaultLocation
+	base := "/v2/projects/" + project + "/locations/" + loc + "/services"
+	body := `{"template":{"containers":[{"image":"demo"}],"labResponseBody":"{\"ok\":true}"}}`
+	req := httptest.NewRequest(http.MethodPost, base+"?serviceId=bound", bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create bound status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, base+"?serviceId=unbound", bytes.NewReader([]byte(body)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create unbound status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	pol := `{"policy":{"bindings":[{"role":"roles/run.invoker","members":["serviceAccount:` + invoker + `"]}],"etag":"ACAB"}}`
+	req = httptest.NewRequest(http.MethodPost, base+"/bound:setIamPolicy", bytes.NewReader([]byte(pol)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setIam status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	cur = authn.Principal{Email: invoker, IsRoot: false}
+	req = httptest.NewRequest(http.MethodPost, base+"/bound:invoke", bytes.NewReader([]byte(`{}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("invoker with binding: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, base+"/unbound:invoke", bytes.NewReader([]byte(`{}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("invoker without binding: expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	cur = authn.Principal{Email: root, IsRoot: true}
+	req = httptest.NewRequest(http.MethodPost, base+"/unbound:invoke", bytes.NewReader([]byte(`{}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("root invoke unbound: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}

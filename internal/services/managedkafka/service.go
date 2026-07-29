@@ -12,11 +12,22 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
 // DefaultLocation is the lab default Managed Kafka region.
 const DefaultLocation = "us-central1"
+
+// NestEngine is the nested Redpanda surface (tests inject stubs).
+// When nil, Dial(DockerHost, DockerCertPath) is used.
+type NestEngine interface {
+	Enabled() bool
+	EnsureRedpanda(ctx context.Context, containerName string) (bootstrap, containerID string, err error)
+	RemoveRedpanda(ctx context.Context, containerName string) error
+	CreateRedpandaTopic(ctx context.Context, containerRef, topic string, partitions, replicationFactor int) error
+	Close() error
+}
 
 // Service serves Managed Kafka REST v1 (clusters CRUD lite).
 type Service struct {
@@ -24,16 +35,27 @@ type Service struct {
 	Authz          *authz.Evaluator
 	DockerHost     string
 	DockerCertPath string
+	Engine         NestEngine
 }
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
 
-// Mount registers location-scoped cluster routes.
+// Mount registers location-scoped cluster, topic, and ACL routes.
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/clusters", s.wrap(principalFrom, s.listClusters))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/clusters", s.wrap(principalFrom, s.createCluster))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/clusters/{cluster}", s.wrap(principalFrom, s.getCluster))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/clusters/{cluster}", s.wrap(principalFrom, s.deleteCluster))
+
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/clusters/{cluster}/topics", s.wrap(principalFrom, s.listTopics))
+	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/clusters/{cluster}/topics", s.wrap(principalFrom, s.createTopic))
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/clusters/{cluster}/topics/{topic}", s.wrap(principalFrom, s.getTopic))
+	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/clusters/{cluster}/topics/{topic}", s.wrap(principalFrom, s.deleteTopic))
+
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/clusters/{cluster}/acls", s.wrap(principalFrom, s.listACLs))
+	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/clusters/{cluster}/acls", s.wrap(principalFrom, s.createACL))
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/clusters/{cluster}/acls/{acl...}", s.wrap(principalFrom, s.getACL))
+	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/clusters/{cluster}/acls/{acl...}", s.wrap(principalFrom, s.deleteACL))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -91,6 +113,9 @@ func (s *Service) createCluster(w http.ResponseWriter, r *http.Request, p authn.
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireServiceEnabled(w, s.Store, project, "managedkafka.googleapis.com") {
+		return
+	}
 	clusterID := r.URL.Query().Get("clusterId")
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && r.ContentLength != 0 {
@@ -130,7 +155,12 @@ func (s *Service) createCluster(w http.ResponseWriter, r *http.Request, p authn.
 		return
 	}
 
-	s.tryNestedRedpanda(r.Context(), name, clusterID)
+	if err := s.tryNestedRedpanda(r.Context(), name, clusterID); err != nil {
+		_, _, _ = s.Store.DeleteKafkaCluster(name)
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition,
+			compute.NestedEngineFailClosedMessage(err))
+		return
+	}
 
 	out, ok, err := s.Store.GetKafkaCluster(name)
 	if err != nil || !ok {
@@ -140,21 +170,45 @@ func (s *Service) createCluster(w http.ResponseWriter, r *http.Request, p authn.
 	writeJSON(w, http.StatusOK, toClusterJSON(out))
 }
 
-func (s *Service) tryNestedRedpanda(ctx context.Context, clusterName, clusterID string) {
-	cli, err := compute.Dial(s.DockerHost, s.DockerCertPath)
-	if err != nil || cli == nil || !cli.Enabled() {
-		return
+func (s *Service) tryNestedRedpanda(ctx context.Context, clusterName, clusterID string) error {
+	cli, owned, err := s.nestEngine()
+	if err != nil {
+		if compute.NestedEngineFailClosed() {
+			return err
+		}
+		return nil
 	}
-	defer func() { _ = cli.Close() }()
+	if cli == nil || !cli.Enabled() {
+		return nil
+	}
+	if owned {
+		defer func() { _ = cli.Close() }()
+	}
 
 	containerName := compute.RedpandaContainerNameForCluster(clusterID)
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	bootstrap, containerID, err := cli.EnsureRedpanda(runCtx, containerName)
 	if err != nil {
-		return
+		if compute.NestedEngineFailClosed() {
+			return err
+		}
+		return nil
 	}
 	_ = s.Store.UpdateKafkaClusterNested(clusterName, bootstrap, containerID, "ACTIVE")
+	return nil
+}
+
+// nestEngine returns the nested Redpanda client. owned=true means the caller must Close.
+func (s *Service) nestEngine() (cli NestEngine, owned bool, err error) {
+	if s.Engine != nil {
+		return s.Engine, false, nil
+	}
+	c, err := compute.Dial(s.DockerHost, s.DockerCertPath)
+	if err != nil {
+		return nil, false, err
+	}
+	return c, true, nil
 }
 
 func (s *Service) getCluster(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -219,11 +273,13 @@ func (s *Service) deleteCluster(w http.ResponseWriter, r *http.Request, p authn.
 }
 
 func (s *Service) removeNestedRedpanda(ctx context.Context, clusterID, containerID string) {
-	cli, err := compute.Dial(s.DockerHost, s.DockerCertPath)
+	cli, owned, err := s.nestEngine()
 	if err != nil || cli == nil || !cli.Enabled() {
 		return
 	}
-	defer func() { _ = cli.Close() }()
+	if owned {
+		defer func() { _ = cli.Close() }()
+	}
 	name := compute.RedpandaContainerNameForCluster(clusterID)
 	_ = containerID
 	_ = cli.RemoveRedpanda(ctx, name)

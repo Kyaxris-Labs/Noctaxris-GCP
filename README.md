@@ -75,10 +75,11 @@ Nested Cloud Run invoke needs Compose with `noctaxris-gcp-engine`. Copy `docker/
 | Identity | Cloud Resource Manager, IAM, Service Usage |
 | Crypto | Secret Manager, Cloud KMS |
 | Data | Cloud Storage, Pub/Sub, Firestore, Datastore, Cloud Bigtable, Spanner, Memorystore Redis, Cloud SQL, Managed Kafka, Filestore |
-| Audit and observe | Cloud Logging, Cloud Monitoring |
+| Audit and observe | Cloud Logging, Cloud Audit Logs, Cloud Monitoring, Security Command Center, Cloud Asset Inventory |
 | Compute | Compute Engine (VPC/firewall), Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks, Cloud Build, App Engine |
 | Registry | Artifact Registry |
 | Networking | Cloud DNS, Cloud Armor, Certificate Manager, GKE, HTTP(S) load balancing, Cloud CDN |
+| Policy | Organization Policy, Access Context Manager (VPC Service Controls perimeter lite) |
 | Analytics and AI | BigQuery, Firebase Auth, Eventarc, Workflows, Dataflow, Vertex AI |
 
 Open the service matrix for detailed actions and gaps. Full notes and CLI smoke: [docs/services/](docs/services/index.md).
@@ -97,20 +98,25 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
   </thead>
   <tbody>
     <tr>
-      <td rowspan="3" align="center" valign="middle">Identity</td>
+      <td rowspan="4" align="center" valign="middle">Identity</td>
       <td>Cloud Resource Manager</td>
       <td>Projects get/list/search/patch + IAM; org seed <code>organizations/noctaxris-gcp-org</code>; folders CRUD lite; TagKeys / TagBindings lite; v1 getAncestry theatre.</td>
       <td>Project create/delete; full hierarchy tooling beyond folders lite.</td>
     </tr>
     <tr>
       <td>IAM</td>
-      <td>Service accounts/keys; WIF pool/provider CRUD; STS <code>POST /v1/token</code>; TokenCreator <code>generateAccessToken</code>; allow-policy Evaluate + <code>testIamPermissions</code>.</td>
-      <td>Real OIDC IdP verify; custom roles CRUD beyond seeded roles; PKCS#1 signBlob.</td>
+      <td>Service accounts/keys; WIF pool/provider CRUD; STS <code>POST /v1/token</code>; TokenCreator <code>generateAccessToken</code>; project custom roles CRUD; allow-policy Evaluate + <code>testIamPermissions</code>; optional Org Policy deny on key create.</td>
+      <td>Real OIDC IdP verify; org custom roles; PKCS#1 signBlob.</td>
     </tr>
     <tr>
       <td>Service Usage</td>
       <td>Enable / disable / list / batchEnable / batchDisable / batchGet / get.</td>
       <td>Async LRO worker (operations complete immediately).</td>
+    </tr>
+    <tr>
+      <td>Organization Policy</td>
+      <td>v2 policies get/set/list on org/folder/project; constraints <code>iam.disableServiceAccountKeyCreation</code> + <code>storage.publicAccessPrevention</code> teach enforce.</td>
+      <td>Custom constraints; list constraints; dry-run; full constraint catalog.</td>
     </tr>
     <tr>
       <td rowspan="2" align="center" valign="middle">Crypto</td>
@@ -175,15 +181,30 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
       <td>NFS server; backup/snapshot/restore.</td>
     </tr>
     <tr>
-      <td rowspan="2" align="center" valign="middle">Audit and observe</td>
+      <td rowspan="5" align="center" valign="middle">Audit and observe</td>
       <td>Cloud Logging</td>
       <td>REST v2 entries, sinks, one-shot tail, copy theatre.</td>
       <td>Live log router depth; BigQuery sink export engine.</td>
     </tr>
     <tr>
+      <td>Cloud Audit Logs</td>
+      <td>Env-gated lab inject + listable <code>protoPayload</code> lite via Logging <code>entries:list</code> (honest theatre).</td>
+      <td>Full Admin/Data Access auto-generation; org sinks; Audit Logs Admin APIs.</td>
+    </tr>
+    <tr>
       <td>Cloud Monitoring</td>
       <td>REST v3 descriptors, time series, alertPolicies theatre.</td>
       <td>SLO / uptime check engines; notification channel delivery.</td>
+    </tr>
+    <tr>
+      <td>Security Command Center</td>
+      <td>Sources/findings CRUD lite; lab <code>InjectFindings</code> when <code>NOCTAXRIS_GCP_SCC_INJECT=1</code>.</td>
+      <td>Continuous detectors; mute configs; finding notifications.</td>
+    </tr>
+    <tr>
+      <td>Cloud Asset Inventory</td>
+      <td><code>searchAllResources</code> / <code>listAssets</code> over projects, buckets, topics, SAs; <code>exportAssets</code> done-LRO theatre; feeds + history lite.</td>
+      <td>Full CAI index; real GCS/BQ export bytes; IAM policy search/analyze; feed delivery.</td>
     </tr>
     <tr>
       <td rowspan="7" align="center" valign="middle">Compute</td>
@@ -198,8 +219,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud Functions</td>
-      <td>Functions v2, upload URL + source accept, IAM, <code>:invoke</code> stub.</td>
-      <td>Real build/runtime; Eventarc wiring from Functions create; 1st gen API.</td>
+      <td>Functions v2 CRUD, upload URL + source accept, IAM, <code>:invoke</code> stub; Eventarc eventTrigger wiring.</td>
+      <td>Real build/runtime; cascade-delete wired Eventarc triggers; 1st gen API.</td>
     </tr>
     <tr>
       <td>Cloud Scheduler</td>
@@ -226,6 +247,12 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
       <td>Artifact Registry</td>
       <td>REST v1 repos/packages/versions metadata.</td>
       <td>Blob storage / docker pull plane.</td>
+    </tr>
+    <tr>
+      <td rowspan="1" align="center" valign="middle">Policy</td>
+      <td>Access Context Manager</td>
+      <td>accessPolicies + servicePerimeters CRUD theatre; optional <code>NOCTAXRIS_GCP_VPCSC_ENFORCE</code> cross-perimeter deny on GCS/Pub/Sub.</td>
+      <td>Access levels; ingress/egress eval; bridge perimeters; network context.</td>
     </tr>
     <tr>
       <td rowspan="6" align="center" valign="middle">Networking</td>
@@ -271,7 +298,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Eventarc</td>
-      <td>Triggers/channels; Pub/Sub and GCS delivery + retry; SSRF-gated httpEndpoint.</td>
+      <td>Triggers/channels; Pub/Sub and GCS delivery + retry; httpEndpoint / cloudRun / cloudFunction destinations.</td>
       <td>Audit / Workflows destinations; dead-letter / ordering.</td>
     </tr>
     <tr>
@@ -329,7 +356,7 @@ Full graph and request path: [docs/architecture.md](docs/architecture.md).
 | [docs/index.md](docs/index.md) | Architecture, configuration, ops, security posture |
 | [docs/services/](docs/services/index.md) | Per-service APIs, authz notes, CLI smoke |
 | [docs/ops.md](docs/ops.md) | Backup, restore, upgrade, graceful shutdown, CI matrix |
-| [docs/release.md](docs/release.md) | Cutting a release (`v0.5.0`, Hub `latest` / semver) |
+| [docs/release.md](docs/release.md) | Cutting a release (`v1.0.0`, Hub `latest` / semver) |
 | [tests/README.md](tests/README.md) | SDK and Terraform suites (Compose required for live runs) |
 
 ## Contributors

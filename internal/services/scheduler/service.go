@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -25,6 +27,9 @@ const DefaultLocation = "us-central1"
 type Service struct {
 	Store *store.Store
 	Authz *authz.Evaluator
+
+	// HTTPClient overrides the default httpegress client (tests / in-process delivery).
+	HTTPClient *http.Client
 
 	mu      sync.Mutex
 	tickers map[string]context.CancelFunc
@@ -39,7 +44,9 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	if s.tickers == nil {
 		s.tickers = map[string]context.CancelFunc{}
 	}
-	if s.client == nil {
+	if s.HTTPClient != nil {
+		s.client = s.HTTPClient
+	} else if s.client == nil {
 		s.client = httpegress.Client(5 * time.Second)
 	}
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/jobs", s.wrap(principalFrom, s.listJobs))
@@ -358,7 +365,8 @@ func parseJobBody(project, location, jobID string, body map[string]any) store.Sc
 	oidcAud := ""
 	if ht, ok := body["httpTarget"].(map[string]any); ok {
 		raw, _ := json.Marshal(ht)
-		httpJSON, oidcAud = store.StripSchedulerOIDC(string(raw))
+		httpJSON = string(raw)
+		oidcAud = store.SchedulerOIDCAudience(httpJSON)
 	}
 	if pt, ok := body["pubsubTarget"].(map[string]any); ok {
 		raw, _ := json.Marshal(pt)
@@ -497,14 +505,25 @@ func (s *Service) fire(job store.SchedulerJob) {
 					body = []byte(ht.Body)
 				}
 			}
-			req, err := http.NewRequest(method, ht.URI, bytes.NewReader(body))
-			if err == nil {
-				for k, v := range ht.Headers {
-					req.Header.Set(k, v)
-				}
-				resp, err := s.client.Do(req)
+			// Lab catcher: record without outbound HTTP (same-process theatre).
+			if u, perr := url.Parse(ht.URI); perr == nil && httpegress.IsLabCatcher(u, strings.ToLower(u.Scheme)) {
+				store.RecordHTTPCatcher(string(body))
+			} else {
+				req, err := http.NewRequest(method, ht.URI, bytes.NewReader(body))
 				if err == nil {
-					_ = resp.Body.Close()
+					for k, v := range ht.Headers {
+						req.Header.Set(k, v)
+					}
+					if email := store.HTTPAuthServiceAccountEmail(job.HTTPTargetJSON); email != "" {
+						_ = s.Store.EnsureServiceAccount(job.ProjectID, email, "scheduler dispatch SA")
+						if tok, _, merr := labtoken.Mint(s.Store, email, labtoken.DefaultLifetime); merr == nil {
+							req.Header.Set("Authorization", "Bearer "+tok)
+						}
+					}
+					resp, err := s.client.Do(req)
+					if err == nil {
+						_ = resp.Body.Close()
+					}
 				}
 			}
 		}

@@ -101,6 +101,10 @@ gcloud config set api_endpoint_overrides/logging http://127.0.0.1:4588/
 
 Send `Authorization: Bearer <token>` on every call.
 
+## Related
+
+Cloud Audit Logs inject and `cloudaudit.googleapis.com` list filters: [cloud-audit-logs.md](cloud-audit-logs.md).
+
 ## Deferred depth
 
 - Real sink export, log-based metrics, buckets/views, exclusions

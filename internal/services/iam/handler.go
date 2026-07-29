@@ -30,6 +30,8 @@ type Handler struct {
 	Authz     *authz.Evaluator
 	Principal PrincipalFunc
 	Now       func() time.Time
+	// STSFetch optionally overrides discovery/JWKS GET after httpegress.Validate (unit tests).
+	STSFetch func(url string) ([]byte, error)
 }
 
 // Mount registers IAM Admin routes on mux.
@@ -44,6 +46,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/projects/{project}/serviceAccounts/{account}/keys", h.createKey)
 	mux.HandleFunc("GET /v1/projects/{project}/serviceAccounts/{account}/keys/{key}", h.getKey)
 	mux.HandleFunc("DELETE /v1/projects/{project}/serviceAccounts/{account}/keys/{key}", h.deleteKey)
+	h.MountRoles(mux)
 	h.MountWIF(mux)
 	h.MountSTS(mux)
 }
@@ -653,6 +656,16 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	account := decodeAccount(r.PathValue("account"))
 	resource := "projects/" + projectID
 	if _, ok := h.require(w, r, "iam.serviceAccountKeys.create", resource); !ok {
+		return
+	}
+	enforced, err := h.Store.IsOrgPolicyConstraintEnforced(resource, store.ConstraintDisableServiceAccountKeyCreation)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if enforced {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition,
+			"Service account key creation is disabled by organization policy constraint iam.disableServiceAccountKeyCreation.")
 		return
 	}
 	sa, ok, err := h.Store.GetServiceAccountInProject(projectID, account)

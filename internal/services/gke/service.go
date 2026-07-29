@@ -13,6 +13,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -91,6 +92,9 @@ func (s *Service) createCluster(w http.ResponseWriter, r *http.Request, p authn.
 	location := r.PathValue("location")
 	if err := s.require(p, "container.clusters.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if !restlab.RequireServiceEnabled(w, s.Store, project, "container.googleapis.com") {
 		return
 	}
 	clusterID := r.URL.Query().Get("clusterId")

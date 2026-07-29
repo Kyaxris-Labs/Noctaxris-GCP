@@ -3,6 +3,7 @@ package pubsub
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -66,6 +68,29 @@ func (h *restHandler) require(w http.ResponseWriter, r *http.Request, permission
 	return true
 }
 
+func (h *restHandler) checkVPCSCPublish(w http.ResponseWriter, r *http.Request, topicProject string) bool {
+	if h.svc.Store == nil || !store.VPCSCEnforceEnabled() || h.principal == nil {
+		return true
+	}
+	p, ok := h.principal(r)
+	if !ok || p.IsRoot {
+		return true
+	}
+	from := store.ProjectIDFromServiceAccountEmail(p.Email)
+	if from == "" {
+		return true
+	}
+	if err := h.svc.Store.VPCSCDenyCrossPerimeter(from, topicProject, "pubsub.googleapis.com"); err != nil {
+		if errors.Is(err, store.ErrVPCSCPerimeter) {
+			gcperrors.PermissionDenied(w, err.Error())
+			return false
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	}
+	return true
+}
+
 func splitColon(v string) (id, action string) {
 	if i := strings.IndexByte(v, ':'); i >= 0 {
 		return v[:i], v[i+1:]
@@ -106,6 +131,9 @@ func (h *restHandler) createOrReplaceTopic(w http.ResponseWriter, r *http.Reques
 	project := r.PathValue("project")
 	topicID, _ := splitColon(r.PathValue("topic"))
 	if !h.require(w, r, "pubsub.topics.create", projectResource(project)) {
+		return
+	}
+	if !restlab.RequireServiceEnabled(w, h.svc.Store, project, "pubsub.googleapis.com") {
 		return
 	}
 	var body struct {
@@ -203,6 +231,9 @@ func (h *restHandler) publish(w http.ResponseWriter, r *http.Request) {
 	if !h.require(w, r, "pubsub.topics.publish", projectResource(project)) {
 		return
 	}
+	if !h.checkVPCSCPublish(w, r, project) {
+		return
+	}
 	name := topicName(project, topicID)
 	if _, ok, err := h.svc.Store.GetTopic(name); err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -263,9 +294,9 @@ func (h *restHandler) createOrReplaceSubscription(w http.ResponseWriter, r *http
 		return
 	}
 	var body struct {
-		Topic              string            `json:"topic"`
-		AckDeadlineSeconds int               `json:"ackDeadlineSeconds"`
-		PushConfig         *restPushConfig   `json:"pushConfig"`
+		Topic                     string            `json:"topic"`
+		AckDeadlineSeconds        int               `json:"ackDeadlineSeconds"`
+		PushConfig                *restPushConfig   `json:"pushConfig"`
 		Labels                    map[string]string `json:"labels"`
 		Filter                    string            `json:"filter"`
 		EnableExactlyOnceDelivery bool              `json:"enableExactlyOnceDelivery"`
@@ -337,8 +368,8 @@ func (h *restHandler) patchSubscription(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		AckDeadlineSeconds *int             `json:"ackDeadlineSeconds"`
-		PushConfig         *restPushConfig  `json:"pushConfig"`
+		AckDeadlineSeconds        *int               `json:"ackDeadlineSeconds"`
+		PushConfig                *restPushConfig    `json:"pushConfig"`
 		Labels                    *map[string]string `json:"labels"`
 		Filter                    *string            `json:"filter"`
 		EnableExactlyOnceDelivery *bool              `json:"enableExactlyOnceDelivery"`

@@ -2,6 +2,7 @@ package gcs_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -294,3 +295,217 @@ func TestGCSAuthzDenyNonRoot(t *testing.T) {
 		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestGCSNotificationConfigsCRUDAndPublish(t *testing.T) {
+	mux, st, project := openGCS(t)
+	host := "127.0.0.1:4588"
+	topic := "projects/" + project + "/topics/gcs-notify"
+	sub := "projects/" + project + "/subscriptions/gcs-notify-sub"
+	if _, created, err := st.CreateTopic(topic, project); err != nil || !created {
+		t.Fatalf("topic: %v %v", created, err)
+	}
+	if _, created, err := st.CreateSubscription(sub, topic, project, 10); err != nil || !created {
+		t.Fatalf("sub: %v %v", created, err)
+	}
+
+	create := httptest.NewRequest(http.MethodPost, "/storage/v1/b?project="+project, strings.NewReader(`{"name":"notify-b","location":"US"}`))
+	create.Header.Set("Content-Type", "application/json")
+	create.Host = host
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, create)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create bucket: %d %s", rec.Code, rec.Body.String())
+	}
+
+	topicURI := "//pubsub.googleapis.com/" + topic
+	insBody := fmt.Sprintf(`{"topic":%q,"payload_format":"JSON_API_V1","event_types":["OBJECT_FINALIZE","OBJECT_DELETE"],"object_name_prefix":"in/","custom_attributes":{"lab":"a5"}}`, topicURI)
+	ins := httptest.NewRequest(http.MethodPost, "/storage/v1/b/notify-b/notificationConfigs", strings.NewReader(insBody))
+	ins.Header.Set("Content-Type", "application/json")
+	ins.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, ins)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("insert notification: %d %s", rec.Code, rec.Body.String())
+	}
+	var nResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &nResp); err != nil {
+		t.Fatal(err)
+	}
+	if nResp["kind"] != "storage#notification" || nResp["id"] != "1" {
+		t.Fatalf("notification = %#v", nResp)
+	}
+	if nResp["payload_format"] != "JSON_API_V1" {
+		t.Fatalf("payload_format = %#v", nResp["payload_format"])
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/storage/v1/b/notify-b/notificationConfigs", nil)
+	list.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, list)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	var listResp struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Items) != 1 {
+		t.Fatalf("items = %#v", listResp.Items)
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/storage/v1/b/notify-b/notificationConfigs/1", nil)
+	get.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, get)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get: %d %s", rec.Code, rec.Body.String())
+	}
+
+	up := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/notify-b/o?uploadType=media&name=in/hello.txt", strings.NewReader("hello-notify"))
+	up.Header.Set("Content-Type", "text/plain")
+	up.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, up)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var msgs []store.PubSubMessage
+	for time.Now().Before(deadline) {
+		var err error
+		msgs, err = st.Pull(sub, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected finalize message, got %#v", msgs)
+	}
+	var attrs map[string]string
+	if err := json.Unmarshal([]byte(msgs[0].AttributesJSON), &attrs); err != nil {
+		t.Fatal(err)
+	}
+	if attrs["eventType"] != "OBJECT_FINALIZE" || attrs["objectId"] != "in/hello.txt" || attrs["lab"] != "a5" {
+		t.Fatalf("attrs = %#v", attrs)
+	}
+	if !strings.Contains(string(msgs[0].Data), `"name":"in/hello.txt"`) {
+		t.Fatalf("payload = %s", msgs[0].Data)
+	}
+	if err := st.Acknowledge(sub, []string{msgs[0].AckID}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prefix miss should not publish.
+	skip := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/notify-b/o?uploadType=media&name=out/skip.txt", strings.NewReader("skip"))
+	skip.Header.Set("Content-Type", "text/plain")
+	skip.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, skip)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload skip: %d %s", rec.Code, rec.Body.String())
+	}
+	time.Sleep(50 * time.Millisecond)
+	msgs, err := st.Pull(sub, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("prefix miss published: %#v", msgs)
+	}
+
+	delObj := httptest.NewRequest(http.MethodDelete, "/storage/v1/b/notify-b/o/in/hello.txt", nil)
+	delObj.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, delObj)
+	if rec.Code != http.StatusNoContent && rec.Code != http.StatusOK {
+		t.Fatalf("delete object: %d %s", rec.Code, rec.Body.String())
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	msgs = nil
+	for time.Now().Before(deadline) {
+		var err error
+		msgs, err = st.Pull(sub, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected delete message, got %#v", msgs)
+	}
+	if err := json.Unmarshal([]byte(msgs[0].AttributesJSON), &attrs); err != nil {
+		t.Fatal(err)
+	}
+	if attrs["eventType"] != "OBJECT_DELETE" {
+		t.Fatalf("attrs = %#v", attrs)
+	}
+	if err := st.Acknowledge(sub, []string{msgs[0].AckID}); err != nil {
+		t.Fatal(err)
+	}
+
+	del := httptest.NewRequest(http.MethodDelete, "/storage/v1/b/notify-b/notificationConfigs/1", nil)
+	del.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, del)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete notification: %d %s", rec.Code, rec.Body.String())
+	}
+	get = httptest.NewRequest(http.MethodGet, "/storage/v1/b/notify-b/notificationConfigs/1", nil)
+	get.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, get)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get after delete: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGCSNotificationConfigsAuthzDeny(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	const project = "noctaxris-gcp-local"
+	const rootEmail = "root@" + project + ".iam.gserviceaccount.com"
+	if err := st.EnsureRoot(project, rootEmail); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := st.CreateBucket("deny-notify", project, "US", "STANDARD"); err != nil || !created {
+		t.Fatalf("bucket: %v %v", created, err)
+	}
+	mux := http.NewServeMux()
+	h := &gcshandler.Handler{
+		Store:          st,
+		Authz:          &authz.Evaluator{Policies: st},
+		DefaultProject: project,
+		Principal: func(*http.Request) (authn.Principal, bool) {
+			return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
+		},
+	}
+	h.Register(mux)
+	body := `{"topic":"//pubsub.googleapis.com/projects/noctaxris-gcp-local/topics/t","payload_format":"JSON_API_V1"}`
+	req := httptest.NewRequest(http.MethodPost, "/storage/v1/b/deny-notify/notificationConfigs", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "127.0.0.1:4588"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+

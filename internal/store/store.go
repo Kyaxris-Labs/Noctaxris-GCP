@@ -86,10 +86,25 @@ func (s *Store) migrate() error {
 	if err := s.migrateWIF(); err != nil {
 		return err
 	}
+	if err := s.migrateIAMRoles(); err != nil {
+		return err
+	}
 	if err := s.migrateCRMTags(); err != nil {
 		return err
 	}
 	if err := s.migrateGKEEdge(); err != nil {
+		return err
+	}
+	if err := s.migrateCloudAudit(); err != nil {
+		return err
+	}
+	if err := s.migrateSecurityCenter(); err != nil {
+		return err
+	}
+	if err := s.migrateOrgPolicy(); err != nil {
+		return err
+	}
+	if err := s.MigrateAccessContextManager(); err != nil {
 		return err
 	}
 	if err := s.ensureDataColumns(); err != nil {
@@ -151,6 +166,7 @@ func (s *Store) ensureDataColumns() error {
 		`ALTER TABLE appengine_services ADD COLUMN split_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE appengine_services ADD COLUMN shard_by TEXT NOT NULL DEFAULT 'UNSPECIFIED'`,
 		`ALTER TABLE appengine_services ADD COLUMN migrate_traffic INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE eventarc_triggers ADD COLUMN service_account TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range alters {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -295,6 +311,7 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 		"file.googleapis.com",
 		"aiplatform.googleapis.com",
 		"container.googleapis.com",
+		"managedkafka.googleapis.com",
 	}
 	for _, svc := range wave1 {
 		if _, err := tx.Exec(

@@ -212,6 +212,43 @@ func (s *Store) GetOrganization(nameOrID string) (Organization, bool, error) {
 	return o, true, nil
 }
 
+// CRMParent implements authz.CRMParentStore for projects and folders.
+// Seeded projects hang under DefaultOrganizationName (same theatre as getAncestry /
+// project JSON parent). Folders use the stored parent chain. Organizations have
+// no parent.
+func (s *Store) CRMParent(resource string) (string, bool, error) {
+	resource = strings.TrimSpace(resource)
+	switch {
+	case strings.HasPrefix(resource, "organizations/"):
+		rest := strings.TrimPrefix(resource, "organizations/")
+		if rest == "" || strings.Contains(rest, "/") {
+			return "", false, nil
+		}
+		return "", false, nil
+	case strings.HasPrefix(resource, "folders/"):
+		rest := strings.TrimPrefix(resource, "folders/")
+		if rest == "" || strings.Contains(rest, "/") {
+			return "", false, nil
+		}
+		f, ok, err := s.GetFolder(resource)
+		if err != nil || !ok {
+			return "", ok, err
+		}
+		if f.Parent == "" {
+			return "", false, nil
+		}
+		return f.Parent, true, nil
+	case strings.HasPrefix(resource, "projects/"):
+		rest := strings.TrimPrefix(resource, "projects/")
+		if rest == "" || strings.Contains(rest, "/") {
+			return "", false, nil
+		}
+		return DefaultOrganizationName, true, nil
+	default:
+		return "", false, nil
+	}
+}
+
 // ListOrganizations returns all organizations ordered by id.
 func (s *Store) ListOrganizations() ([]Organization, error) {
 	rows, err := s.db.Query(

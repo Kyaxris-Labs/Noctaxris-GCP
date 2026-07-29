@@ -239,6 +239,9 @@ func (s *Store) DeleteBucket(name string) (found bool, err error) {
 	if n > 0 {
 		return true, fmt.Errorf("bucket not empty")
 	}
+	if _, err := s.db.Exec(`DELETE FROM gcs_notification_configs WHERE bucket = ?`, name); err != nil {
+		return false, err
+	}
 	res, err := s.db.Exec(`DELETE FROM buckets WHERE name = ?`, name)
 	if err != nil {
 		return false, err
@@ -326,8 +329,9 @@ func (s *Store) PutObjectBytesMeta(bucket, name, contentType string, data []byte
 		ContentEncoding: contentEncoding, ContentLanguage: contentLanguage, Metageneration: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	// Best-effort Eventarc delivery for GCS object finalize triggers.
+	// Best-effort Eventarc + classic Pub/Sub notificationConfigs delivery.
 	go s.DeliverEventarcForGCSFinalize(bucket, name, nextGen, int64(len(data)), contentType)
+	go s.DeliverGCSNotifications(GCSEventObjectFinalize, out)
 	return out, nil
 }
 
@@ -684,6 +688,7 @@ func (s *Store) DeleteObject(bucket, name string, generation int64) (bool, error
 		return false, nil
 	}
 	_ = os.Remove(filepath.Join(s.dataRoot, "gcs", o.BlobPath))
+	go s.DeliverGCSNotifications(GCSEventObjectDelete, o)
 	return true, nil
 }
 

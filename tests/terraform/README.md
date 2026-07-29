@@ -46,8 +46,8 @@ STACKS="lab-storage lab-run lab-dns lab-compute lab-armor" bash tests/terraform/
 | `google_compute_instance` | Images list/get/family theatre exists for ResolveImage; lab still has no disks/boot attach (metadata instances only). |
 | `google_bigtable_*` | Instance Admin gRPC lite is present (Create/Get/List/Delete instance; Create returns a done Operation). Still no Table Admin gRPC, app profiles, cluster CRUD, or backups; provider table/app-profile resources will not apply end-to-end |
 | `google_filestore_instance` | Provider BaseUrl is `https://file.googleapis.com/v1/`; lab mounts under `/file/v1/` (Spanner owns bare `/v1/.../instances`; Memorystore is location-scoped), so `filestore_custom_endpoint` must end in `/file/v1/`. Create returns completed Operation (`done: true` + `response`) theatre; Operations.get is immediate. |
-| `google_sql_database_instance` | Provider targets `…/sql/v1beta4/` + Operations; lab Admin CRUD is `/sql/v1/` with synchronous create. |
-| `google_redis_instance` | Provider expects LRO + fuller Memorystore settings; lab create is synchronous lite JSON. |
+| `google_sql_database_instance` | Provider targets `…/sql/v1beta4/` + Operations; lab mounts `/sql/v1` and `/sql/v1beta4` with DONE Operations theatre. |
+| `google_redis_instance` | Create returns completed Operation (`done: true` + `response`); Operations.get is immediate done theatre. Fuller Memorystore settings (connect-mode / VPC / CMEK) still lite. |
 | `google_managed_kafka_cluster` | Provider requires capacity + VPC subnet blocks; lab cluster CRUD is lite. |
 | GKE / HTTP(S) LB / Cloud CDN | GKE lab path is `/container/v1/...` (Managed Kafka owns `/v1/.../clusters`); LB/CDN use lab GCS dataplane shapes, not standard NEG/backend-bucket stacks. |
 | BigQuery / Spanner / Cloud Build / Workflows / Dataflow / Vertex / Firebase Auth / App Engine / KMS | Honest theatre or Identity Toolkit host; no dedicated stacks. Soft-skip Go SDK list/CLI coverage instead. |

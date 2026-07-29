@@ -1,4 +1,5 @@
-// Package httpegress gates lab outbound HTTP (Pub/Sub push, Eventarc, Tasks, Scheduler).
+// Package httpegress gates lab outbound HTTP (Pub/Sub push, Eventarc, Tasks, Scheduler,
+// STS OIDC JWKS/discovery).
 // Default deny: only the lab HTTP catcher on loopback :4588, or other loopback :4588
 // lab-local URLs. Open-internet delivery requires NOCTAXRIS_GCP_HTTP_EGRESS=1 plus an
 // exact URL allowlist; private/metadata/loopback hosts never pass the allowlist path.

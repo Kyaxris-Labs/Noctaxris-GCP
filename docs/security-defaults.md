@@ -30,6 +30,9 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 - Nested invoke soft-fail responses expose engine mode (`mock` / `nested`) but
   not raw dial/run error strings to clients. Set `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED=1`
   (or `true`) to return an error on dial/run/disabled instead of soft-failing to mock.
+- Nested SQL/Kafka/Redis create soft-fails to theatre by default when DinD start fails.
+  Set `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED=1` (or `true`) so create returns
+  `FAILED_PRECONDITION` (resource rolled back) instead.
 - If nested containers fail on Desktop/WSL2, add `compose.engine-privileged.yaml`
   (`privileged: true`). Keep host publish on `127.0.0.1:4588`.
 
@@ -37,17 +40,20 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 
 - API requests require `Authorization: Bearer <token>`.
 - Root token comes from `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` and maps to `NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT`.
-- Other tokens are SHA-256 hashed and looked up in `access_tokens` (minted when IAM creates a service account key).
+- Other tokens are SHA-256 hashed and looked up in `access_tokens` (minted when IAM creates a service account key, `generateAccessToken`, STS exchange, or interservice dispatch via `labtoken.Mint` for Scheduler/Tasks/Eventarc).
 - Missing or invalid credentials return Google JSON `UNAUTHENTICATED` (HTTP 401).
 - Public paths (Bearer skipped):
   - `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`
+  - Lab HTTP catcher `POST`/`GET` `/_noctaxris-gcp/http-catcher` (and `POST` under
+    `/_noctaxris-gcp/http-catcher/…`); dump returns `{"deliveries":[…]}`
   - STS `POST /v1/token` (WIF subject_token exchange)
   - Identity Toolkit client methods under `/identitytoolkit.googleapis.com/v1/accounts…`
     (admin paths under `/v1/projects/{project}/accounts…` still require Bearer)
   - Lab edge dataplane `GET`/`HEAD` `/lb/{project}/{rule}/…` and `/cdn/{id}/…`
     (serve configured lab GCS object bytes without auth; control-plane CRUD stays Bearer)
-- Lab HTTP catcher deliveries are recorded in-process (no public POST required).
-  See [services/iam.md](services/iam.md) for TokenCreator and STS theatre.
+- Lab HTTP catcher deliveries are recorded in-process (Pub/Sub push, Eventarc,
+  Scheduler, Cloud Tasks short-circuit, or public POST accept).
+  See [services/iam.md](services/iam.md) for TokenCreator and STS (theatre default; opt-in OIDC verify).
 
 ## Lab edge dataplane risk
 
@@ -83,14 +89,16 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
 
 ## Outbound HTTP (SSRF fail-closed)
 
-- Pub/Sub push, Eventarc `httpEndpoint`, Cloud Tasks `httpRequest`, and
-  Scheduler `httpTarget` are deny-by-default.
+- Pub/Sub push, Eventarc `httpEndpoint`, Cloud Tasks `httpRequest`,
+  Scheduler `httpTarget`, and STS OIDC JWKS/discovery fetches are deny-by-default.
 - Allowed without opt-in: lab HTTP catcher
   `http://127.0.0.1:4588/_noctaxris-gcp/http-catcher...` and other loopback
   `:4588` lab-local URLs (self-invoke theatre).
 - Open-internet delivery requires `NOCTAXRIS_GCP_HTTP_EGRESS=1` plus an exact
   URL in `NOCTAXRIS_GCP_HTTP_ALLOWLIST`. Allowlisted destinations still reject
   private/metadata/loopback hosts; clients do not follow redirects.
+- STS JWT verify is off by default (`NOCTAXRIS_GCP_STS_VERIFY`); when on, issuer
+  hosts are reached only through the same egress gate (see [services/iam.md](services/iam.md)).
 - See [configuration.md](configuration.md).
 
 ## Secrets at rest

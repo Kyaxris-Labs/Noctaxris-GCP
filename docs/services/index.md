@@ -8,12 +8,16 @@ with honest emulator limits on each page.
 | Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects, org seed, folders, tag keys/bindings lite |
 | IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys, WIF pool/provider + STS `/v1/token`, TokenCreator `generateAccessToken` |
 | Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable |
+| Organization Policy | lab | [orgpolicy.md](orgpolicy.md) | REST v2 policies get/set/list; boolean constraints theatre (SA keys + GCS public IAM) |
 | Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL; bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
 | Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST topics/subscriptions/snapshots; dead-letter + exactly-once; push `oidcToken` Bearer JWT (`PUBSUB_EMULATOR_HOST`) |
 | Secret Manager | lab | [secret-manager.md](secret-manager.md) | REST + gRPC; rotation config + lab `:rotateSecret` |
 | Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1; atomic Commit + BatchWrite (`FIRESTORE_EMULATOR_HOST`) |
 | Cloud KMS | lab | [kms.md](kms.md) | REST v1 symmetric + RSA_SIGN_PSS sign/verify |
 | Cloud Logging | lab | [logging.md](logging.md) | REST v2 entries, sinks, one-shot tail, copy theatre |
+| Cloud Audit Logs | lab (theatre) | [cloud-audit-logs.md](cloud-audit-logs.md) | Env-gated inject + listable `protoPayload` lite via Logging `entries:list` |
+| Security Command Center | lab | [security-command-center.md](security-command-center.md) | Sources/findings CRUD lite; lab InjectFindings (`NOCTAXRIS_GCP_SCC_INJECT`) |
+| Cloud Asset Inventory | lab (theatre) | [cloud-asset-inventory.md](cloud-asset-inventory.md) | searchAllResources / listAssets / exportAssets lite over store resources; feeds + history |
 | Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke` status/delay; opt-in nested fail-closed |
 | Cloud Functions | lab | [cloud-functions.md](cloud-functions.md) | REST Functions v2, upload URL + source accept, IAM, `:invoke` stub |
 | Cloud Scheduler | lab | [cloud-scheduler.md](cloud-scheduler.md) | REST v1 jobs, 5-field cron next-run, pause/resume, OIDC audience |
@@ -31,7 +35,7 @@ with honest emulator limits on each page.
 | Compute Engine | lab | [compute-engine.md](compute-engine.md) | REST compute/v1 instances (metadata) + VPC/firewall CRUD; Images list/get/family stubs; firewall `:validate` |
 | Cloud Bigtable | lab | [bigtable.md](bigtable.md) | REST Admin API v2 + Instance Admin gRPC lite (instances/tables control-plane) |
 | Memorystore Redis | lab | [memorystore.md](memorystore.md) | REST v1 location-scoped instances; theatre host by default; optional nested `redis:7-alpine` via DinD |
-| Cloud SQL | lab | [cloud-sql.md](cloud-sql.md) | REST `/sql/v1/` instances CRUD; POSTGRES/MYSQL; optional nested DinD |
+| Cloud SQL | lab | [cloud-sql.md](cloud-sql.md) | REST `/sql/v1/` instances/users/databases CRUD; POSTGRES/MYSQL; optional nested DinD |
 | Managed Service for Apache Kafka | lab | [managed-kafka.md](managed-kafka.md) | REST v1 clusters CRUD; optional nested Redpanda (no host Kafka ports) |
 | Filestore | lab | [filestore.md](filestore.md) | REST `/file/v1/` instances CRUD; create returns completed Operation (`done:true`; no NFS; path prefix avoids Spanner/Memorystore clash) |
 | Vertex AI | lab | [vertex-ai.md](vertex-ai.md) | Publisher `:predict` / `:generateContent` canned JSON; allowlisted model ids |
@@ -42,6 +46,7 @@ with honest emulator limits on each page.
 | GKE | lab | [gke.md](gke.md) | Container API v1 clusters CRUD; optional k3s one-shot with nested engine |
 | HTTP(S) load balancing | lab | [load-balancing.md](load-balancing.md) | Global LB metadata + public `/lb/{project}/{rule}/...` GCS dataplane |
 | Cloud CDN | lab | [cloud-cdn.md](cloud-cdn.md) | Distributions CRUD + public `/cdn/{id}/...` edge |
+| Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC cross-perimeter deny on GCS/Pub/Sub |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 Seeded organization: `organizations/noctaxris-gcp-org`.
@@ -70,6 +75,7 @@ Per-service deferred depth lives on each page. Shared gaps:
 - GKE stores cluster metadata; optional k3s one-shot only (no apiserver host publish)
 - HTTP(S) LB dataplane is loopback-only GCS fetch (no Internet origins)
 - Cloud CDN edge is loopback-only with theatre cache headers
+- Access Context Manager is perimeter CRUD theatre; enforce is opt-in env only (no network context)
 
 ## Nested DinD
 
@@ -84,11 +90,14 @@ docker compose -f compose.yaml -f compose.engine.yaml --env-file .env up --build
 
 `compose.engine.yaml` starts restricted DinD (`noctaxris-gcp-engine`, `privileged: false`)
 on the Compose network only (no host publish of 2375/2376) and sets
-`NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH`. Host `docker.sock`,
-`unix://`, and `npipe://` are rejected. If nested containers fail on Desktop/WSL2,
-add `-f compose.engine-privileged.yaml`. Details:
+`NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH`. Nested SQL,
+Managed Kafka, and Memorystore Redis share the engine-internal
+`noctaxris-gcp-lab` bridge (API-created; no host publish of broker/DB ports).
+Cloud Run one-shot invoke stays off that bridge (`NetworkMode: none`). Host
+`docker.sock`, `unix://`, and `npipe://` are rejected. If nested containers fail
+on Desktop/WSL2, add `-f compose.engine-privileged.yaml`. Details:
 [configuration.md](../configuration.md), [security-defaults.md](../security-defaults.md),
-[cloud-run.md](cloud-run.md).
+[architecture.md](../architecture.md), [cloud-run.md](cloud-run.md).
 
 ## Client smoke
 
@@ -163,12 +172,14 @@ Point selected command groups at the lab (then use
 gcloud config set api_endpoint_overrides/cloudresourcemanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/iam http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/serviceusage http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/orgpolicy http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/storage http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/pubsub http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/secretmanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/firestore http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/cloudkms http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/logging http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/cloudasset http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/run http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/cloudfunctions http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/cloudscheduler http://127.0.0.1:4588/

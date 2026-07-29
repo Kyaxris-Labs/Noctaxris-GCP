@@ -82,3 +82,66 @@ func TestWriteAuthzErr(t *testing.T) {
 		t.Fatalf("internal status=%d", rec.Code)
 	}
 }
+
+type stubUsage struct {
+	enabled bool
+	err     error
+}
+
+func (s stubUsage) IsServiceEnabled(string, string) (bool, error) {
+	return s.enabled, s.err
+}
+
+func TestRequireServiceEnabled(t *testing.T) {
+	rec := httptest.NewRecorder()
+	if !RequireServiceEnabled(rec, stubUsage{enabled: true}, "p", "sqladmin.googleapis.com") {
+		t.Fatal("enabled should pass")
+	}
+	if rec.Code != http.StatusOK && rec.Body.Len() != 0 {
+		t.Fatalf("enabled wrote response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	if RequireServiceEnabled(rec, stubUsage{enabled: false}, "p", "sqladmin.googleapis.com") {
+		t.Fatal("disabled should stop")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	var body gcperrors.ErrorBody
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Status != gcperrors.StatusFailedPrecondition {
+		t.Fatalf("status=%q", body.Error.Status)
+	}
+	if body.Error.Message != ServiceDisabledMessage("sqladmin.googleapis.com") {
+		t.Fatalf("message=%q", body.Error.Message)
+	}
+}
+
+func TestHandleFuncOnce(t *testing.T) {
+	mux := http.NewServeMux()
+	var hits int
+	first := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("first"))
+	})
+	second := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("second handler must not run")
+	})
+	pattern := "GET /v1/projects/{project}/locations/{location}/operations/{operation}"
+	HandleFuncOnce(mux, pattern, first)
+	HandleFuncOnce(mux, pattern, second)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/projects/p/locations/us-central1/operations/op1", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "first" {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if hits != 1 {
+		t.Fatalf("hits=%d", hits)
+	}
+}
+

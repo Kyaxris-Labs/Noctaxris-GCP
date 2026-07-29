@@ -74,7 +74,7 @@ func (h *Handler) stsToken(w http.ResponseWriter, r *http.Request) {
 		gcperrors.InvalidArgument(w, "subject_token is required")
 		return
 	}
-	_ = subjectTokenType // accepted; lab does not validate JWT signature
+	_ = subjectTokenType // accepted; OIDC type checked only when STS verify is on
 
 	providerName := normalizeWIFAudience(audience)
 	prov, ok, err := h.Store.GetWIFProvider(providerName)
@@ -97,6 +97,14 @@ func (h *Handler) stsToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	subject := labSubjectFromToken(subjectToken)
+	if stsOIDCShouldVerify(prov.IssuerURI) {
+		verifiedSub, verr := h.verifyOIDCSubjectToken(subjectToken, prov)
+		if verr != nil {
+			gcperrors.WriteREST(w, http.StatusUnauthorized, gcperrors.StatusUnauthenticated, "invalid subject_token: "+verr.Error())
+			return
+		}
+		subject = verifiedSub
+	}
 	principalEmail := "wif:" + prov.ProviderID + ":" + subject
 	token := newAccessToken()
 	expire := h.now().Add(time.Hour)

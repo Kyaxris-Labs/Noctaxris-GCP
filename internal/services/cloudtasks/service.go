@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 )
@@ -22,8 +24,12 @@ const DefaultLocation = "us-central1"
 
 // Service serves Cloud Tasks v2 REST (queues/tasks CRUD + :run dispatch).
 type Service struct {
-	Store  *store.Store
-	Authz  *authz.Evaluator
+	Store *store.Store
+	Authz *authz.Evaluator
+
+	// HTTPClient overrides the default httpegress client (tests / in-process delivery).
+	HTTPClient *http.Client
+
 	client *http.Client
 }
 
@@ -32,7 +38,9 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 // Mount registers Cloud Tasks v2 REST routes.
 // Colon methods (:run) are parsed from the task path segment.
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
-	if s.client == nil {
+	if s.HTTPClient != nil {
+		s.client = s.HTTPClient
+	} else if s.client == nil {
 		s.client = httpegress.Client(5 * time.Second)
 	}
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/queues", s.wrap(principalFrom, s.listQueues))
@@ -470,6 +478,11 @@ func (s *Service) dispatchHTTP(task store.CloudTask) {
 			body = []byte(hr.Body)
 		}
 	}
+	// Lab catcher: record without outbound HTTP (same-process theatre).
+	if u, perr := url.Parse(hr.URL); perr == nil && httpegress.IsLabCatcher(u, strings.ToLower(u.Scheme)) {
+		store.RecordHTTPCatcher(string(body))
+		return
+	}
 	req, err := http.NewRequest(method, hr.URL, bytes.NewReader(body))
 	if err != nil {
 		return
@@ -477,10 +490,26 @@ func (s *Service) dispatchHTTP(task store.CloudTask) {
 	for k, v := range hr.Headers {
 		req.Header.Set(k, v)
 	}
+	if email := store.HTTPAuthServiceAccountEmail(task.HTTPRequestJSON); email != "" {
+		projectID := projectFromQueueName(task.QueueName)
+		_ = s.Store.EnsureServiceAccount(projectID, email, "cloud tasks dispatch SA")
+		if tok, _, merr := labtoken.Mint(s.Store, email, labtoken.DefaultLifetime); merr == nil {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+	}
 	resp, err := s.client.Do(req)
 	if err == nil {
 		_ = resp.Body.Close()
 	}
+}
+
+func projectFromQueueName(queueName string) string {
+	// projects/{project}/locations/{loc}/queues/{q}
+	parts := strings.Split(queueName, "/")
+	if len(parts) >= 2 && parts[0] == "projects" {
+		return parts[1]
+	}
+	return ""
 }
 
 func toQueueJSON(q store.CloudTasksQueue) map[string]any {

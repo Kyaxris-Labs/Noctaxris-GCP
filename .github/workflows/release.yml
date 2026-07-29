@@ -1,0 +1,148 @@
+name: release
+
+# Publish semver Docker Hub tags when a v* git tag is pushed (e.g. v1.0.0).
+# Docker Hub push runs only after required CI gates pass (ci-required.yml).
+# Nightly tags use docker-nightly.yml instead.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing git tag to build (e.g. v1.0.0). Leave empty to use the push tag.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: kyaxris/noctaxris-gcp
+  CANONICAL_REPO: Kyaxris-Labs/Noctaxris-GCP
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.gate.outputs.publish }}
+      raw: ${{ steps.ref.outputs.raw }}
+    steps:
+      - name: Gate (canonical repo + secrets)
+        id: gate
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.repository }}" != "${CANONICAL_REPO}" ]; then
+            echo "Skipping Docker Hub release publish: not canonical repo (${{ github.repository }})."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${DOCKERHUB_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets are required." >&2
+            exit 1
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve git ref
+        if: steps.gate.outputs.publish == 'true'
+        id: ref
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW="${{ inputs.tag }}"
+            if [ -z "$RAW" ]; then
+              echo "workflow_dispatch requires inputs.tag (e.g. v1.0.0)." >&2
+              exit 1
+            fi
+          else
+            RAW="${GITHUB_REF_NAME}"
+          fi
+          echo "raw=${RAW}" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
+    uses: ./.github/workflows/ci-required.yml
+    with:
+      ref: ${{ needs.resolve.outputs.raw }}
+
+  publish:
+    needs: [resolve, verify]
+    # Never push when verify failed/cancelled/skipped; forks keep publish=false.
+    if: >
+      always() &&
+      needs.resolve.outputs.publish == 'true' &&
+      needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.raw }}
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          set -euo pipefail
+          RAW="${{ needs.resolve.outputs.raw }}"
+          case "$RAW" in
+            v*) VERSION="${RAW#v}" ;;
+            *)
+              echo "Tag must look like v1.0.0 (got: $RAW)" >&2
+              exit 1
+              ;;
+          esac
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$'; then
+            echo "Refusing non-semver tag payload: $VERSION" >&2
+            exit 1
+          fi
+          FILE_VER=$(tr -d '[:space:]' < VERSION)
+          if [ "$FILE_VER" != "$VERSION" ] && [ "$FILE_VER" != "${VERSION%%-*}" ]; then
+            echo "WARNING: VERSION file is ${FILE_VER} but tag version is ${VERSION}" >&2
+          fi
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          MAJOR="${VERSION%%.*}"
+          REST="${VERSION#*.}"
+          MINOR="${REST%%.*}"
+          {
+            echo "version=${VERSION}"
+            echo "short_sha=${SHORT_SHA}"
+            echo "tags<<EOF"
+            echo "${IMAGE_NAME}:${VERSION}"
+            echo "${IMAGE_NAME}:${MAJOR}.${MINOR}"
+            echo "${IMAGE_NAME}:${MAJOR}"
+            echo "${IMAGE_NAME}:latest"
+            echo "${IMAGE_NAME}:sha-${SHORT_SHA}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.ver.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+            GIT_SHA=${{ steps.ver.outputs.short_sha }}
+          labels: |
+            org.opencontainers.image.title=Noctaxris-GCP
+            org.opencontainers.image.source=https://github.com/Kyaxris-Labs/Noctaxris-GCP
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}

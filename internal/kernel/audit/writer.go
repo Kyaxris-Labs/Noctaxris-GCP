@@ -26,11 +26,25 @@ type Event struct {
 	Message          string    `json:"message,omitempty"`
 }
 
+// Sink optionally mirrors a written Event (for example into Cloud Audit Logs SQLite).
+type Sink func(ctx context.Context, ev Event) error
+
 // Writer appends JSON lines to audit.jsonl under a directory.
 type Writer struct {
 	path string
 	file *os.File
 	mu   sync.Mutex
+	sink Sink
+}
+
+// SetSink registers an optional post-write sink. Nil clears the sink.
+func (w *Writer) SetSink(sink Sink) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.sink = sink
+	w.mu.Unlock()
 }
 
 // NewWriter opens or creates dir/audit.jsonl.
@@ -64,9 +78,15 @@ func (w *Writer) Write(ctx context.Context, ev Event) error {
 	}
 	w.mu.Lock()
 	_, err = w.file.Write(append(data, '\n'))
+	sink := w.sink
 	w.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("audit: write event: %w", err)
+	}
+	if sink != nil {
+		if err := sink(ctx, ev); err != nil {
+			return fmt.Errorf("audit: sink: %w", err)
+		}
 	}
 	return nil
 }

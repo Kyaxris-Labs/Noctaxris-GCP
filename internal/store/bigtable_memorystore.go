@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS memorystore_redis_instances (
   labels_json TEXT NOT NULL DEFAULT '{}',
   authorized_network TEXT NOT NULL DEFAULT '',
   container_id TEXT NOT NULL DEFAULT '',
+  auth_enabled INTEGER NOT NULL DEFAULT 0,
+  auth_string TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   UNIQUE (project_id, location, instance_id)
 );
@@ -59,9 +61,18 @@ func (s *Store) migrateBigtableMemorystore() error {
 	if _, err := s.db.Exec(bigtableMemorystoreSchema); err != nil {
 		return fmt.Errorf("apply bigtable/memorystore schema: %w", err)
 	}
-	if _, err := s.db.Exec(`ALTER TABLE memorystore_redis_instances ADD COLUMN container_id TEXT NOT NULL DEFAULT ''`); err != nil {
-		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
-			return fmt.Errorf("migrate memorystore container_id: %w", err)
+	for _, stmt := range []struct {
+		sql string
+		msg string
+	}{
+		{`ALTER TABLE memorystore_redis_instances ADD COLUMN container_id TEXT NOT NULL DEFAULT ''`, "container_id"},
+		{`ALTER TABLE memorystore_redis_instances ADD COLUMN auth_enabled INTEGER NOT NULL DEFAULT 0`, "auth_enabled"},
+		{`ALTER TABLE memorystore_redis_instances ADD COLUMN auth_string TEXT NOT NULL DEFAULT ''`, "auth_string"},
+	} {
+		if _, err := s.db.Exec(stmt.sql); err != nil {
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+				return fmt.Errorf("migrate memorystore %s: %w", stmt.msg, err)
+			}
 		}
 	}
 	return nil
@@ -94,21 +105,23 @@ type BigtableTable struct {
 
 // MemorystoreRedisInstance is a Memorystore for Redis instance row (no Redis process).
 type MemorystoreRedisInstance struct {
-	Name               string
-	ProjectID          string
-	Location           string
-	InstanceID         string
-	DisplayName        string
-	Tier               string
-	MemorySizeGb       int
-	RedisVersion       string
-	Host               string
-	Port               int
-	State              string
-	LabelsJSON         string
-	AuthorizedNetwork  string
-	ContainerID        string
-	CreatedAt          string
+	Name              string
+	ProjectID         string
+	Location          string
+	InstanceID        string
+	DisplayName       string
+	Tier              string
+	MemorySizeGb      int
+	RedisVersion      string
+	Host              string
+	Port              int
+	State             string
+	LabelsJSON        string
+	AuthorizedNetwork string
+	ContainerID       string
+	AuthEnabled       bool
+	AuthString        string
+	CreatedAt         string
 }
 
 // CreateBigtableInstance inserts an instance. created=false means already exists.
@@ -339,13 +352,18 @@ func (s *Store) CreateMemorystoreRedisInstance(inst MemorystoreRedisInstance) (b
 	if inst.CreatedAt == "" {
 		inst.CreatedAt = now
 	}
+	authEnabled := 0
+	if inst.AuthEnabled {
+		authEnabled = 1
+	}
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO memorystore_redis_instances
 		 (name, project_id, location, instance_id, display_name, tier, memory_size_gb, redis_version,
-		  host, port, state, labels_json, authorized_network, container_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  host, port, state, labels_json, authorized_network, container_id, auth_enabled, auth_string, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		inst.Name, inst.ProjectID, inst.Location, inst.InstanceID, inst.DisplayName, inst.Tier, inst.MemorySizeGb,
-		inst.RedisVersion, inst.Host, inst.Port, inst.State, inst.LabelsJSON, inst.AuthorizedNetwork, inst.ContainerID, inst.CreatedAt,
+		inst.RedisVersion, inst.Host, inst.Port, inst.State, inst.LabelsJSON, inst.AuthorizedNetwork, inst.ContainerID,
+		authEnabled, inst.AuthString, inst.CreatedAt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("create memorystore redis instance: %w", err)
@@ -360,13 +378,15 @@ func (s *Store) CreateMemorystoreRedisInstance(inst MemorystoreRedisInstance) (b
 // GetMemorystoreRedisInstance loads an instance by name.
 func (s *Store) GetMemorystoreRedisInstance(name string) (MemorystoreRedisInstance, bool, error) {
 	var inst MemorystoreRedisInstance
+	var authEnabled int
 	err := s.db.QueryRow(
 		`SELECT name, project_id, location, instance_id, display_name, tier, memory_size_gb, redis_version,
-		        host, port, state, labels_json, authorized_network, container_id, created_at
+		        host, port, state, labels_json, authorized_network, container_id, auth_enabled, auth_string, created_at
 		 FROM memorystore_redis_instances WHERE name = ?`, name,
 	).Scan(
 		&inst.Name, &inst.ProjectID, &inst.Location, &inst.InstanceID, &inst.DisplayName, &inst.Tier, &inst.MemorySizeGb,
-		&inst.RedisVersion, &inst.Host, &inst.Port, &inst.State, &inst.LabelsJSON, &inst.AuthorizedNetwork, &inst.ContainerID, &inst.CreatedAt,
+		&inst.RedisVersion, &inst.Host, &inst.Port, &inst.State, &inst.LabelsJSON, &inst.AuthorizedNetwork, &inst.ContainerID,
+		&authEnabled, &inst.AuthString, &inst.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return MemorystoreRedisInstance{}, false, nil
@@ -374,6 +394,7 @@ func (s *Store) GetMemorystoreRedisInstance(name string) (MemorystoreRedisInstan
 	if err != nil {
 		return MemorystoreRedisInstance{}, false, fmt.Errorf("get memorystore redis instance: %w", err)
 	}
+	inst.AuthEnabled = authEnabled != 0
 	return inst, true, nil
 }
 
@@ -381,7 +402,7 @@ func (s *Store) GetMemorystoreRedisInstance(name string) (MemorystoreRedisInstan
 func (s *Store) ListMemorystoreRedisInstances(projectID, location string) ([]MemorystoreRedisInstance, error) {
 	rows, err := s.db.Query(
 		`SELECT name, project_id, location, instance_id, display_name, tier, memory_size_gb, redis_version,
-		        host, port, state, labels_json, authorized_network, container_id, created_at
+		        host, port, state, labels_json, authorized_network, container_id, auth_enabled, auth_string, created_at
 		 FROM memorystore_redis_instances WHERE project_id = ? AND location = ? ORDER BY name`,
 		projectID, location,
 	)
@@ -392,12 +413,15 @@ func (s *Store) ListMemorystoreRedisInstances(projectID, location string) ([]Mem
 	var out []MemorystoreRedisInstance
 	for rows.Next() {
 		var inst MemorystoreRedisInstance
+		var authEnabled int
 		if err := rows.Scan(
 			&inst.Name, &inst.ProjectID, &inst.Location, &inst.InstanceID, &inst.DisplayName, &inst.Tier, &inst.MemorySizeGb,
-			&inst.RedisVersion, &inst.Host, &inst.Port, &inst.State, &inst.LabelsJSON, &inst.AuthorizedNetwork, &inst.ContainerID, &inst.CreatedAt,
+			&inst.RedisVersion, &inst.Host, &inst.Port, &inst.State, &inst.LabelsJSON, &inst.AuthorizedNetwork, &inst.ContainerID,
+			&authEnabled, &inst.AuthString, &inst.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
+		inst.AuthEnabled = authEnabled != 0
 		out = append(out, inst)
 	}
 	return out, rows.Err()

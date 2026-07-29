@@ -58,6 +58,7 @@ func TestBigtableAndMemorystoreStoreCRUD(t *testing.T) {
 	msOK, err := st.CreateMemorystoreRedisInstance(store.MemorystoreRedisInstance{
 		Name: "projects/p/locations/us-central1/instances/r1", ProjectID: "p",
 		Location: "us-central1", InstanceID: "r1", Tier: "STANDARD_HA", MemorySizeGb: 2,
+		AuthEnabled: true, AuthString: "store-auth-pass",
 	})
 	if err != nil || !msOK {
 		t.Fatalf("create redis: ok=%v err=%v", msOK, err)
@@ -65,6 +66,9 @@ func TestBigtableAndMemorystoreStoreCRUD(t *testing.T) {
 	ms, ok, err := st.GetMemorystoreRedisInstance("projects/p/locations/us-central1/instances/r1")
 	if err != nil || !ok || ms.State != "READY" || ms.Host == "" || ms.Port != 6379 {
 		t.Fatalf("get redis: %#v ok=%v err=%v", ms, ok, err)
+	}
+	if !ms.AuthEnabled || ms.AuthString != "store-auth-pass" {
+		t.Fatalf("auth fields: enabled=%v string=%q", ms.AuthEnabled, ms.AuthString)
 	}
 	list, err := st.ListMemorystoreRedisInstances("p", "us-central1")
 	if err != nil || len(list) != 1 {

@@ -7,7 +7,8 @@ var (
 	httpCatcherMsgs []string
 )
 
-// RecordHTTPCatcher appends a lab HTTP catcher delivery (Pub/Sub push / Eventarc).
+// RecordHTTPCatcher appends a lab HTTP catcher delivery
+// (Pub/Sub push, Eventarc, Scheduler, Cloud Tasks, or POST accept).
 func RecordHTTPCatcher(body string) {
 	httpCatcherMu.Lock()
 	defer httpCatcherMu.Unlock()

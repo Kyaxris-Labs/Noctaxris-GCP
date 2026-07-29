@@ -1,10 +1,14 @@
 # Eventarc
 
-Lab Eventarc Triggers and Channels REST for Pub/Sub and GCS finalize events with best-effort HTTP / Cloud Run delivery (one retry on failed deliver).
+Lab Eventarc Triggers and Channels REST for Pub/Sub and GCS finalize events with
+best-effort HTTP / Cloud Run / Cloud Functions delivery (one retry on failed
+HTTP deliver).
 
 ## Status
 
-**lab** — trigger CRUD; channel stub; attribute filters including `values` maps; deliver on Pub/Sub publish and GCS object finalize with one retry.
+**lab** — trigger CRUD; channel stub; attribute filters including `values` maps;
+deliver on Pub/Sub publish and GCS object finalize with one retry;
+`cloudFunction` destination (resource name or service+region object).
 
 ## Wire protocol
 
@@ -33,8 +37,21 @@ Additional filters: `bucket` (GCS), any other attribute equality, and `values` m
 |-------|----------|
 | `destination.httpEndpoint.uri` | Best-effort HTTP POST (CloudEvents-ish JSON) |
 | `destination.cloudRunService` | Resolves Cloud Run service `uri` when present; otherwise posts to lab `:invoke` theatre path |
+| `destination.cloudFunction` | Resource name string, or `{"service"|"function","region"|"location"}` / `{"name":...}` object. Resolves function `uri` when present; delivers in-process to the Functions invoke theatre when the function exists (no Bearer required on that path). Otherwise posts to lab `:invoke` URI |
+| `serviceAccount` | Trigger-level SA email persisted and echoed; preferred identity for HTTP delivery Bearer mint |
 
-Delivery is fire-and-forget (3s timeout). On transport error or HTTP 5xx, the lab retries once.
+Cloud Functions v2 create with `eventTrigger` / `eventarcTrigger` auto-inserts a
+trigger whose destination is that function (see
+[cloud-functions.md](cloud-functions.md)).
+
+Delivery is fire-and-forget (3s timeout for HTTP). On transport error or HTTP
+5xx, the lab retries once. In-process Cloud Functions delivery does not use HTTP.
+
+For HTTP / Cloud Run `:invoke` delivery, the lab mints a registered Bearer
+(`access_tokens`, same registration as IAM `generateAccessToken`) using, in
+order: trigger `serviceAccount`, `destination.cloudRunService.serviceAccount`,
+or `{project}-compute@developer.gserviceaccount.com` (auto-ensured). Fail closed
+(skip deliver + log) when targeting lab `:invoke` with no resolvable SA.
 
 Channels store `provider`, `pubsubTopic`, and `state` metadata only (no provider handshake).
 
@@ -58,21 +75,29 @@ gcloud config set api_endpoint_overrides/eventarc http://127.0.0.1:4588/
 - HTTP destinations require the lab catcher / loopback `:4588` or
   `NOCTAXRIS_GCP_HTTP_EGRESS=1` + exact allowlist (see security-defaults);
   non-allowlisted URIs are rejected at create (fail-closed)
+- Lab catcher destinations are recorded in-process (no outbound HTTP); dump with
+  `GET /_noctaxris-gcp/http-catcher` (`{"deliveries":[…]}`)
 - Channel provider handshake is not implemented
-- Delivery is best-effort HTTP with one retry on transport error or HTTP 5xx;
+- HTTP delivery is best-effort with one retry on transport error or HTTP 5xx;
   no dead-letter queue
+- HTTP / Cloud Run `:invoke` delivery mints a lab Bearer (registered hash, not
+  Google-signed OIDC); grant `roles/run.invoker` for the delivery SA. In-process
+  `cloudFunction` delivery does not require Bearer
 
 ## Deferred depth
 
 - Audit / Eventarc Advanced / Workflows destinations
 - Dead-letter, ordering, full CloudEvents binary mode
+- Real Google-signed OIDC JWTs
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/eventarc/ ./internal/server/ -run Eventarc -count=1
+go test ./internal/services/eventarc/ ./internal/services/cloudfunctions/ ./internal/server/ -run 'Eventarc|HTTPCatcher|CloudFunctionsCreateWires' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/us-central1/triggers?triggerId=lab" \
   -d '{"eventFilters":[{"attribute":"type","value":"google.cloud.pubsub.topic.v1.messagePublished"}],"destination":{"httpEndpoint":{"uri":"http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/eventarc-smoke"}}}'
+curl -s http://127.0.0.1:4588/_noctaxris-gcp/http-catcher
+# Or destination.cloudFunction after creating a function (see cloud-functions.md)
 ```

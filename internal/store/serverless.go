@@ -957,24 +957,6 @@ func (s *Store) DeleteCloudTasksQueue(name string) (bool, error) {
 	return n > 0, nil
 }
 
-// StripTaskAuthTokens removes oidcToken/oauthToken from an httpRequest JSON object.
-func StripTaskAuthTokens(httpRequestJSON string) string {
-	if strings.TrimSpace(httpRequestJSON) == "" {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(httpRequestJSON), &m); err != nil {
-		return httpRequestJSON
-	}
-	delete(m, "oidcToken")
-	delete(m, "oauthToken")
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return httpRequestJSON
-	}
-	return string(raw)
-}
-
 // CreateCloudTask inserts a task. created=false means already exists.
 func (s *Store) CreateCloudTask(task CloudTask) (created bool, err error) {
 	if task.Name == "" || task.QueueName == "" {
@@ -986,7 +968,6 @@ func (s *Store) CreateCloudTask(task CloudTask) (created bool, err error) {
 	if task.ScheduleTime == "" {
 		task.ScheduleTime = task.CreateTime
 	}
-	task.HTTPRequestJSON = StripTaskAuthTokens(task.HTTPRequestJSON)
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO cloud_tasks
 		 (name, queue_name, schedule_time, create_time, http_request_json, app_engine_http_request_json, dispatch_count, response_count)
@@ -1079,26 +1060,42 @@ func (s *Store) IncrementCloudTaskResponse(name string) error {
 	return nil
 }
 
-// StripSchedulerOIDC removes oidcToken from httpTarget JSON and returns audience if present.
-func StripSchedulerOIDC(httpTargetJSON string) (cleaned string, audience string) {
+// SchedulerOIDCAudience returns oidcToken.audience from httpTarget JSON when present.
+func SchedulerOIDCAudience(httpTargetJSON string) string {
 	if strings.TrimSpace(httpTargetJSON) == "" {
-		return "", ""
+		return ""
 	}
 	var m map[string]any
 	if err := json.Unmarshal([]byte(httpTargetJSON), &m); err != nil {
-		return httpTargetJSON, ""
+		return ""
 	}
-	if oidc, ok := m["oidcToken"].(map[string]any); ok {
-		if aud, ok := oidc["audience"].(string); ok {
-			audience = aud
+	oidc, ok := m["oidcToken"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	aud, _ := oidc["audience"].(string)
+	return aud
+}
+
+// HTTPAuthServiceAccountEmail extracts oidcToken or oauthToken serviceAccountEmail from HTTP target JSON.
+func HTTPAuthServiceAccountEmail(httpJSON string) string {
+	if strings.TrimSpace(httpJSON) == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(httpJSON), &m); err != nil {
+		return ""
+	}
+	for _, key := range []string{"oidcToken", "oauthToken"} {
+		tok, ok := m[key].(map[string]any)
+		if !ok {
+			continue
 		}
-		delete(m, "oidcToken")
+		if email, _ := tok["serviceAccountEmail"].(string); strings.TrimSpace(email) != "" {
+			return strings.TrimSpace(email)
+		}
 	}
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return httpTargetJSON, audience
-	}
-	return string(raw), audience
+	return ""
 }
 
 // NextCronRunRFC3339 best-effort next run for a 5-field cron (minute hour dom mon dow).

@@ -14,7 +14,7 @@ address; Terraform typically uses the REST surface.
 | Topics | Create / Get / List / Delete / Update (gRPC + REST); Publish |
 | Subscriptions | Create / Get / List / Delete / Update (gRPC + REST); Pull; Acknowledge; ModifyAckDeadline |
 | Snapshots | Create / Get / List / Delete (gRPC + REST); metadata only |
-| Dead letter | `deadLetterPolicy.deadLetterTopic` + `maxDeliveryAttempts` (5–100); after max pulls without ack, message is published to the DL topic and removed |
+| Dead letter | `deadLetterPolicy.deadLetterTopic` + `maxDeliveryAttempts` (5–100); after max pull or failed push attempts, message is published to the DL topic and removed |
 | Exactly-once | `enableExactlyOnceDelivery` stored and returned (theatre flag; no ordering/EOS lease semantics beyond storage) |
 | Filters | Attribute equality: `attributes.key = "value"` (AND-combined terms); non-matching messages are not delivered |
 | Seek | Seek to time (gRPC + REST `:seek`); clears ack state for later messages, deletes earlier backlog |
@@ -37,7 +37,10 @@ Response includes `name`, `topic` (from the subscription), `expireTime` (lab: cr
 
 Publish fans out one stored copy per matching subscription. Pull leases messages for the
 subscription ack deadline; Acknowledge deletes them. Push delivery is best-effort
-and does not block publish success when the endpoint is unreachable.
+and does not block publish success when the endpoint is unreachable. Failed push
+attempts (HTTP error or non-2xx) increment the same `delivery_attempts` counter as
+Pull; when `deadLetterPolicy` is set and attempts reach `maxDeliveryAttempts`, the
+message is published to the dead-letter topic and removed from the source subscription.
 
 When `pushConfig.oidcToken.serviceAccountEmail` is set, push requests include
 `Authorization: Bearer <lab JWT>`. The lab JWT is unsigned theatre (`alg=none`,
@@ -64,7 +67,7 @@ re-check IAM when a principal is present.
 - Filter language is attribute equality only (no HAS, OR, NOT)
 - Message retention and backlog quotas are not enforced
 - Push OIDC uses unsigned lab JWT theatre (`alg=none`), not real Google-signed tokens
-- Dead-letter publishes on pull attempt count only (no separate deliveryAttempt metric API; push delivery does not advance DLQ counters)
+- Dead-letter publishes when pull or failed-push attempt count reaches `maxDeliveryAttempts` (no separate deliveryAttempt metric API)
 - Push endpoints use the shared HTTP egress gate (metadata / link-local / private hosts fail closed even when egress is enabled)
 
 ## Pointing clients
@@ -123,7 +126,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 ```
 
 Also: `go test ./internal/services/pubsub/ ./internal/store/ -run 'PubSub|DeadLetter|OIDC|Push|Deliver' -count=1`
-(DLQ redelivery needs repeated pull + `modifyAckDeadline` 0 or expired lease; see store test.)
+(Pull DLQ redelivery needs repeated pull + `modifyAckDeadline` 0 or expired lease; push DLQ needs repeated failed push attempts; see store and `TestDeliverPushDeadLetterAfterMaxAttempts`.)
 
 ## Deferred depth
 

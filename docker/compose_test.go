@@ -68,6 +68,13 @@ func TestComposeEngineOverlayOptIn(t *testing.T) {
 	if strings.Contains(content, "2376:2376") || strings.Contains(content, `"2376:`) {
 		t.Fatal("engine API must not be published to the host")
 	}
+	if strings.Contains(content, "6379:") || strings.Contains(content, "3306:") ||
+		strings.Contains(content, "5432:") || strings.Contains(content, "9092:") {
+		t.Fatal("engine overlay must not host-publish Redis/SQL/Kafka ports")
+	}
+	if !strings.Contains(content, "noctaxris-gcp-lab") {
+		t.Fatal("engine overlay comment should document shared noctaxris-gcp-lab bridge")
+	}
 
 	priv, err := os.ReadFile("compose.engine-privileged.yaml")
 	if err != nil {

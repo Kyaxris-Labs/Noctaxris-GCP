@@ -41,6 +41,7 @@ flowchart TB
 
   subgraph nested [Opt-in nested DinD]
     ENGINE[noctaxris-gcp-engine TLS :2376]
+    LABNET[noctaxris-gcp-lab bridge]
     SQL[Cloud SQL Postgres MySQL]
     REDIS[Memorystore Redis]
     KAFKA[Managed Kafka Redpanda]
@@ -69,9 +70,10 @@ flowchart TB
   INV -.->|NOCTAXRIS_GCP_DOCKER_HOST set| ENGINE
   CDATA -.->|opt-in DinD| ENGINE
   EDGE -.->|opt-in DinD| ENGINE
-  ENGINE --> SQL
-  ENGINE --> REDIS
-  ENGINE --> KAFKA
+  ENGINE --> LABNET
+  LABNET --> SQL
+  LABNET --> REDIS
+  LABNET --> KAFKA
   ENGINE --> K3S
   ID --> AUTHZ
   DATA --> AUTHZ
@@ -91,6 +93,12 @@ flowchart TB
   AUDIT --> DATAVOL
 ```
 
+Nested SQL, Managed Kafka (Redpanda), and Memorystore Redis share the engine-internal
+`noctaxris-gcp-lab` bridge so containers can resolve each other by DNS. Cloud Run
+one-shot invoke keeps `NetworkMode: none`. No broker or DB ports are published to
+the operator host. The Compose volume `noctaxris-gcp-data` is sealed API state only
+(not a DinD network).
+
 ## Kernel packages
 
 | Package | Role |
@@ -98,7 +106,7 @@ flowchart TB
 | `internal/config` | `NOCTAXRIS_GCP_*` load + loopback / TLS gate + Docker host validation |
 | `internal/compute` | Opt-in nested DinD dial, image allowlist, Cloud Run invoker (mock default) |
 | `internal/kernel/authn` | Bearer extraction; root vs registered tokens |
-| `internal/kernel/authz` | IAM policy Evaluate / testIamPermissions |
+| `internal/kernel/authz` | IAM policy Evaluate / testIamPermissions (project parent + CRM folder/org ancestry) |
 | `internal/kernel/audit` | JSONL audit writer |
 | `internal/store` | SQLite schema, Seal/Unseal, EnsureRoot |
 | `internal/gcperrors` | Google REST JSON errors + gRPC status helpers |
@@ -111,14 +119,17 @@ flowchart TB
 | Helper | Surface |
 |--------|---------|
 | `registerIdentity` | Cloud Resource Manager (projects, org seed, folders), IAM Admin, Service Usage (REST); creates gRPC server + Bearer interceptors |
+| `registerOrgPolicy` | Organization Policy API v2 (policies get/set/list; boolean constraints theatre) |
 | `registerData` | Cloud Storage (REST), Pub/Sub (gRPC + REST), Secret Manager (REST + gRPC) |
 | `registerDocsCrypto` | Firestore (gRPC), Cloud KMS (REST), Cloud Logging (REST) |
 | `registerServerless` | Cloud Run, Cloud Functions, Cloud Scheduler, Cloud Tasks (REST) |
 | `registerAnalytics` | BigQuery (REST), Firebase Auth / Identity Toolkit (REST), Cloud Monitoring (REST), Datastore (gRPC), Eventarc (REST) |
 | `registerAppsBuild` | Artifact Registry, Cloud Build, Workflows, Cloud Spanner, App Engine (REST) |
 | `registerComputeData` | Compute Engine (incl. VPC/firewall), Bigtable Admin, Memorystore Redis, Cloud SQL (`/sql/v1/`), Cloud DNS, Dataflow (REST) |
-| `registerManagedKafka` | Managed Kafka clusters under `/v1/projects/.../locations/.../clusters` |
+| `registerManagedKafka` | Managed Kafka clusters/topics/ACLs under `/v1/projects/.../locations/.../clusters` |
 | `registerSecurity` | Cloud Armor (Compute securityPolicies), Certificate Manager (REST) |
+| `registerAccessContextManager` | Access Context Manager accessPolicies + servicePerimeters (VPC SC lite) |
+| `registerCloudAsset` | Cloud Asset Inventory search/list/export lite (+ feeds/history) |
 | `registerStorageAI` | Filestore (`/file/v1/` instances), Vertex AI publisher predict/generateContent (REST) |
 | `registerGKEEdge` | GKE Container API (`/container/v1/...`), HTTP(S) LB metadata + `/lb/...` dataplane, Cloud CDN + `/cdn/...` edge |
 

@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,12 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
 
 func openTestStore(t *testing.T) *store.Store {
 	t.Helper()
@@ -128,5 +136,70 @@ func TestOidcFromPushConfig(t *testing.T) {
 	email, aud := oidcFromPushConfig(nil)
 	if email != "" || aud != "" {
 		t.Fatalf("nil config: email=%q aud=%q", email, aud)
+	}
+}
+
+func TestDeliverPushDeadLetterAfterMaxAttempts(t *testing.T) {
+	st := openTestStore(t)
+	project := "noctaxris-gcp-local"
+	topic := "projects/" + project + "/topics/push-dlq-main"
+	dlTopic := "projects/" + project + "/topics/push-dlq"
+	sub := "projects/" + project + "/subscriptions/push-dlq-sub"
+	dlSub := "projects/" + project + "/subscriptions/push-dlq-reader"
+	// Lab-local non-catcher URL so deliverPush uses HTTPClient (not catcher short-circuit).
+	failURL := "http://127.0.0.1:4588/lab-push-fail"
+
+	if _, created, err := st.CreateTopic(topic, project); err != nil || !created {
+		t.Fatalf("topic: created=%v err=%v", created, err)
+	}
+	if _, created, err := st.CreateTopic(dlTopic, project); err != nil || !created {
+		t.Fatalf("dl topic: created=%v err=%v", created, err)
+	}
+	if _, created, err := st.CreateSubscriptionFull(sub, topic, project, 10, failURL, nil, "", dlTopic, 5, false, "", ""); err != nil || !created {
+		t.Fatalf("sub: created=%v err=%v", created, err)
+	}
+	if _, created, err := st.CreateSubscription(dlSub, dlTopic, project, 10); err != nil || !created {
+		t.Fatalf("dl sub: created=%v err=%v", created, err)
+	}
+
+	svc := &Service{
+		Store: st,
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       io.NopCloser(strings.NewReader("fail")),
+				Header:     make(http.Header),
+			}, nil
+		})},
+	}
+
+	_, copies, err := st.PublishFanout(topic, []byte("poison-push"), map[string]string{"k": "v"})
+	if err != nil || len(copies) != 1 {
+		t.Fatalf("fanout: copies=%d err=%v", len(copies), err)
+	}
+	for i := 0; i < 5; i++ {
+		svc.deliverPush(copies)
+	}
+
+	still, err := st.Pull(sub, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(still) != 0 {
+		t.Fatalf("expected source message dead-lettered, still have %#v", still)
+	}
+	dlMsgs, err := st.Pull(dlSub, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dlMsgs) != 1 || string(dlMsgs[0].Data) != "poison-push" {
+		t.Fatalf("dl msgs = %#v", dlMsgs)
+	}
+	attrs := map[string]string{}
+	if dlMsgs[0].AttributesJSON != "" {
+		_ = json.Unmarshal([]byte(dlMsgs[0].AttributesJSON), &attrs)
+	}
+	if attrs["CloudPubSubDeadLetterSourceSubscription"] != sub {
+		t.Fatalf("dl attrs = %#v", attrs)
 	}
 }

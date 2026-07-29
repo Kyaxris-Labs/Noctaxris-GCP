@@ -12,6 +12,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -23,21 +24,41 @@ const (
 	imageMySQL    = "mysql:8.0"
 )
 
+// NestedLabPassword is the fixed root/postgres password for nested SQL containers.
+const NestedLabPassword = "noctaxris-gcp-lab"
+
+// LabDaemon is the nested DinD surface used by Cloud SQL (tests inject stubs).
+type LabDaemon interface {
+	Enabled() bool
+	StartLabDaemon(ctx context.Context, imageRef, containerName string, env []string, port int) (compute.LabDaemonResult, error)
+	RemoveLabDaemon(ctx context.Context, containerID string) error
+	ExecLabDaemon(ctx context.Context, containerID string, cmd []string) error
+}
+
 // Service serves Cloud SQL Admin REST v1 (instances CRUD; optional nested engine).
 type Service struct {
 	Store   *store.Store
 	Authz   *authz.Evaluator
-	Compute *compute.Client
+	Compute LabDaemon
 }
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
 
-// Mount registers Cloud SQL Admin routes under /sql/v1/ (avoids Spanner /v1/projects/.../instances).
+// Mount registers Cloud SQL Admin routes under /sql/v1/ and /sql/v1beta4/
+// (avoids Spanner /v1/projects/.../instances; v1beta4 is the TF provider alias).
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
-	mux.HandleFunc("GET /sql/v1/projects/{project}/instances", s.wrap(principalFrom, s.listInstances))
-	mux.HandleFunc("POST /sql/v1/projects/{project}/instances", s.wrap(principalFrom, s.createInstance))
-	mux.HandleFunc("GET /sql/v1/projects/{project}/instances/{instance}", s.wrap(principalFrom, s.getInstance))
-	mux.HandleFunc("DELETE /sql/v1/projects/{project}/instances/{instance}", s.wrap(principalFrom, s.deleteInstance))
+	s.mountAPI(mux, principalFrom, "/sql/v1")
+	s.mountV1Beta4(mux, principalFrom)
+}
+
+func (s *Service) mountAPI(mux *http.ServeMux, principalFrom principalFunc, prefix string) {
+	mux.HandleFunc("GET "+prefix+"/projects/{project}/instances", s.wrap(principalFrom, s.listInstances))
+	mux.HandleFunc("POST "+prefix+"/projects/{project}/instances", s.wrap(principalFrom, s.createInstance))
+	mux.HandleFunc("GET "+prefix+"/projects/{project}/instances/{instance}", s.wrap(principalFrom, s.getInstance))
+	mux.HandleFunc("DELETE "+prefix+"/projects/{project}/instances/{instance}", s.wrap(principalFrom, s.deleteInstance))
+	s.mountUsers(mux, principalFrom, prefix)
+	s.mountDatabases(mux, principalFrom, prefix)
+	s.mountOperations(mux, principalFrom, prefix)
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -84,6 +105,9 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 	project := r.PathValue("project")
 	if err := s.require(p, "cloudsql.instances.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if !restlab.RequireServiceEnabled(w, s.Store, project, "sqladmin.googleapis.com") {
 		return
 	}
 	var body map[string]any
@@ -146,14 +170,18 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 		return
 	}
 
-	s.tryStartNested(r.Context(), name, instanceID, dbVersion)
+	if err := s.tryStartNested(r.Context(), name, instanceID, dbVersion); err != nil {
+		_, _, _ = s.Store.DeleteCloudSQLInstance(name)
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition,
+			compute.NestedEngineFailClosedMessage(err))
+		return
+	}
 
-	out, ok, err := s.Store.GetCloudSQLInstance(name)
-	if err != nil || !ok {
+	if _, ok, err := s.Store.GetCloudSQLInstance(name); err != nil || !ok {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created instance missing")
 		return
 	}
-	writeJSON(w, http.StatusOK, toInstanceJSON(out))
+	writeJSON(w, http.StatusOK, sqlOperationJSON("CREATE", instanceID, project))
 }
 
 func (s *Service) getInstance(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -213,39 +241,72 @@ func (s *Service) deleteInstance(w http.ResponseWriter, r *http.Request, p authn
 	if s.Compute != nil && s.Compute.Enabled() && containerID != "" {
 		_ = s.Compute.RemoveLabDaemon(r.Context(), containerID)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"kind":     "sql#operation",
-		"status":   "DONE",
-		"targetId": id,
-	})
+	writeJSON(w, http.StatusOK, sqlOperationJSON("DELETE", id, project))
 }
 
-func (s *Service) tryStartNested(ctx context.Context, resourceName, instanceID, databaseVersion string) {
+func (s *Service) tryStartNested(ctx context.Context, resourceName, instanceID, databaseVersion string) error {
 	if s.Compute == nil || !s.Compute.Enabled() {
-		return
+		return nil
 	}
 	image, env, port := nestedImageEnv(databaseVersion)
 	if image == "" {
-		return
+		return nil
 	}
 	containerName := "noctaxris-gcp-sql-" + sanitizeContainerSuffix(instanceID)
 	out, err := s.Compute.StartLabDaemon(ctx, image, containerName, env, port)
 	if err != nil {
-		return
+		if compute.NestedEngineFailClosed() {
+			return err
+		}
+		return nil
 	}
 	_ = s.Store.UpdateCloudSQLInstanceNested(resourceName, out.Host, out.Port, out.ContainerID)
+	return nil
 }
 
 func nestedImageEnv(databaseVersion string) (image string, env []string, port int) {
 	v := strings.ToUpper(databaseVersion)
 	switch {
 	case strings.HasPrefix(v, "MYSQL"):
-		return imageMySQL, []string{"MYSQL_ROOT_PASSWORD=noctaxris-gcp-lab"}, 3306
+		return imageMySQL, []string{"MYSQL_ROOT_PASSWORD=" + NestedLabPassword}, 3306
 	case strings.HasPrefix(v, "POSTGRES"):
-		return imagePostgres, []string{"POSTGRES_PASSWORD=noctaxris-gcp-lab"}, 5432
+		return imagePostgres, []string{"POSTGRES_PASSWORD=" + NestedLabPassword}, 5432
 	default:
 		return "", nil, 0
 	}
+}
+
+func isMySQLVersion(databaseVersion string) bool {
+	return strings.HasPrefix(strings.ToUpper(databaseVersion), "MYSQL")
+}
+
+func quoteSQLLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func quoteSQLIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+// safeSQLName allows lab identifiers used in nested CREATE USER/DATABASE.
+func safeSQLName(name string) bool {
+	if name == "" || len(name) > 63 {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (s *Service) softExecNested(ctx context.Context, containerID string, cmd []string) {
+	if s.Compute == nil || !s.Compute.Enabled() || strings.TrimSpace(containerID) == "" || len(cmd) == 0 {
+		return
+	}
+	_ = s.Compute.ExecLabDaemon(ctx, containerID, cmd)
 }
 
 func sanitizeContainerSuffix(id string) string {

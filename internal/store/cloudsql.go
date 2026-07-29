@@ -28,6 +28,35 @@ CREATE TABLE IF NOT EXISTS cloudsql_instances (
 );
 
 CREATE INDEX IF NOT EXISTS idx_cloudsql_instances_project ON cloudsql_instances (project_id);
+
+CREATE TABLE IF NOT EXISTS cloudsql_users (
+  instance_name TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  instance_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  host TEXT NOT NULL DEFAULT '',
+  password TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT 'BUILT_IN',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (instance_name, name, host),
+  FOREIGN KEY (instance_name) REFERENCES cloudsql_instances(name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_cloudsql_users_instance ON cloudsql_users (instance_name);
+
+CREATE TABLE IF NOT EXISTS cloudsql_databases (
+  instance_name TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  instance_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  charset TEXT NOT NULL DEFAULT '',
+  collation TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (instance_name, name),
+  FOREIGN KEY (instance_name) REFERENCES cloudsql_instances(name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_cloudsql_databases_instance ON cloudsql_databases (instance_name);
 `
 
 func (s *Store) migrateCloudSQL() error {
@@ -223,4 +252,188 @@ func scanCloudSQLInstances(rows *sql.Rows) ([]CloudSQLInstance, error) {
 		out = append(out, inst)
 	}
 	return out, rows.Err()
+}
+
+// CloudSQLUser is a Cloud SQL Admin user row (password write-only on wire).
+type CloudSQLUser struct {
+	InstanceName string
+	ProjectID    string
+	InstanceID   string
+	Name         string
+	Host         string
+	Password     string
+	Type         string
+	CreatedAt    string
+}
+
+// CloudSQLDatabase is a Cloud SQL Admin database row.
+type CloudSQLDatabase struct {
+	InstanceName string
+	ProjectID    string
+	InstanceID   string
+	Name         string
+	Charset      string
+	Collation    string
+	CreatedAt    string
+}
+
+// CreateCloudSQLUser inserts a user. created=false means already exists.
+func (s *Store) CreateCloudSQLUser(u CloudSQLUser) (bool, error) {
+	if u.InstanceName == "" || u.ProjectID == "" || u.InstanceID == "" || u.Name == "" {
+		return false, fmt.Errorf("cloudsql user requires instance, project, instance id, and name")
+	}
+	if u.Type == "" {
+		u.Type = "BUILT_IN"
+	}
+	if u.CreatedAt == "" {
+		u.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO cloudsql_users
+		 (instance_name, project_id, instance_id, name, host, password, type, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.InstanceName, u.ProjectID, u.InstanceID, u.Name, u.Host, u.Password, u.Type, u.CreatedAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("create cloudsql user: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// GetCloudSQLUser loads a user by instance resource name, user name, and host.
+func (s *Store) GetCloudSQLUser(instanceName, name, host string) (CloudSQLUser, bool, error) {
+	var u CloudSQLUser
+	err := s.db.QueryRow(
+		`SELECT instance_name, project_id, instance_id, name, host, password, type, created_at
+		 FROM cloudsql_users WHERE instance_name = ? AND name = ? AND host = ?`,
+		instanceName, name, host,
+	).Scan(&u.InstanceName, &u.ProjectID, &u.InstanceID, &u.Name, &u.Host, &u.Password, &u.Type, &u.CreatedAt)
+	if err == sql.ErrNoRows {
+		return CloudSQLUser{}, false, nil
+	}
+	if err != nil {
+		return CloudSQLUser{}, false, fmt.Errorf("get cloudsql user: %w", err)
+	}
+	return u, true, nil
+}
+
+// ListCloudSQLUsers lists users for an instance resource name.
+func (s *Store) ListCloudSQLUsers(instanceName string) ([]CloudSQLUser, error) {
+	rows, err := s.db.Query(
+		`SELECT instance_name, project_id, instance_id, name, host, password, type, created_at
+		 FROM cloudsql_users WHERE instance_name = ? ORDER BY name, host`,
+		instanceName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list cloudsql users: %w", err)
+	}
+	defer rows.Close()
+	var out []CloudSQLUser
+	for rows.Next() {
+		var u CloudSQLUser
+		if err := rows.Scan(&u.InstanceName, &u.ProjectID, &u.InstanceID, &u.Name, &u.Host, &u.Password, &u.Type, &u.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan cloudsql user: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// DeleteCloudSQLUser deletes by instance name, user name, and host.
+func (s *Store) DeleteCloudSQLUser(instanceName, name, host string) (bool, error) {
+	res, err := s.db.Exec(
+		`DELETE FROM cloudsql_users WHERE instance_name = ? AND name = ? AND host = ?`,
+		instanceName, name, host,
+	)
+	if err != nil {
+		return false, fmt.Errorf("delete cloudsql user: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// CreateCloudSQLDatabase inserts a database. created=false means already exists.
+func (s *Store) CreateCloudSQLDatabase(d CloudSQLDatabase) (bool, error) {
+	if d.InstanceName == "" || d.ProjectID == "" || d.InstanceID == "" || d.Name == "" {
+		return false, fmt.Errorf("cloudsql database requires instance, project, instance id, and name")
+	}
+	if d.CreatedAt == "" {
+		d.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO cloudsql_databases
+		 (instance_name, project_id, instance_id, name, charset, collation, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		d.InstanceName, d.ProjectID, d.InstanceID, d.Name, d.Charset, d.Collation, d.CreatedAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("create cloudsql database: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// GetCloudSQLDatabase loads a database by instance resource name and database name.
+func (s *Store) GetCloudSQLDatabase(instanceName, name string) (CloudSQLDatabase, bool, error) {
+	var d CloudSQLDatabase
+	err := s.db.QueryRow(
+		`SELECT instance_name, project_id, instance_id, name, charset, collation, created_at
+		 FROM cloudsql_databases WHERE instance_name = ? AND name = ?`,
+		instanceName, name,
+	).Scan(&d.InstanceName, &d.ProjectID, &d.InstanceID, &d.Name, &d.Charset, &d.Collation, &d.CreatedAt)
+	if err == sql.ErrNoRows {
+		return CloudSQLDatabase{}, false, nil
+	}
+	if err != nil {
+		return CloudSQLDatabase{}, false, fmt.Errorf("get cloudsql database: %w", err)
+	}
+	return d, true, nil
+}
+
+// ListCloudSQLDatabases lists databases for an instance resource name.
+func (s *Store) ListCloudSQLDatabases(instanceName string) ([]CloudSQLDatabase, error) {
+	rows, err := s.db.Query(
+		`SELECT instance_name, project_id, instance_id, name, charset, collation, created_at
+		 FROM cloudsql_databases WHERE instance_name = ? ORDER BY name`,
+		instanceName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list cloudsql databases: %w", err)
+	}
+	defer rows.Close()
+	var out []CloudSQLDatabase
+	for rows.Next() {
+		var d CloudSQLDatabase
+		if err := rows.Scan(&d.InstanceName, &d.ProjectID, &d.InstanceID, &d.Name, &d.Charset, &d.Collation, &d.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan cloudsql database: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// DeleteCloudSQLDatabase deletes by instance name and database name.
+func (s *Store) DeleteCloudSQLDatabase(instanceName, name string) (bool, error) {
+	res, err := s.db.Exec(
+		`DELETE FROM cloudsql_databases WHERE instance_name = ? AND name = ?`,
+		instanceName, name,
+	)
+	if err != nil {
+		return false, fmt.Errorf("delete cloudsql database: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

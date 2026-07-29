@@ -65,20 +65,33 @@ func TestCRMFolderCRUD(t *testing.T) {
 		t.Fatalf("list len = %d", len(list))
 	}
 
+	parent, ok, err := st.CRMParent(f.Name)
+	if err != nil || !ok || parent != store.DefaultOrganizationName {
+		t.Fatalf("folder CRMParent = %q ok=%v err=%v", parent, ok, err)
+	}
+	projParent, ok, err := st.CRMParent("projects/noctaxris-gcp-local")
+	if err != nil || !ok || projParent != store.DefaultOrganizationName {
+		t.Fatalf("project CRMParent = %q ok=%v err=%v", projParent, ok, err)
+	}
+	_, ok, err = st.CRMParent(store.DefaultOrganizationName)
+	if err != nil || ok {
+		t.Fatalf("org CRMParent should be empty: ok=%v err=%v", ok, err)
+	}
+
 	patched, ok, err := st.UpdateFolderDisplayName(f.FolderID, "Renamed")
 	if err != nil || !ok || patched.DisplayName != "Renamed" {
 		t.Fatalf("patch = %#v ok=%v err=%v", patched, ok, err)
 	}
 
-	parent, created, err := st.CreateFolder(store.Folder{
+	parentFolder, created, err := st.CreateFolder(store.Folder{
 		Parent:      store.DefaultOrganizationName,
 		DisplayName: "Parent",
 	})
 	if err != nil || !created {
 		t.Fatalf("create parent created=%v err=%v", created, err)
 	}
-	moved, ok, err := st.MoveFolder(f.FolderID, parent.Name)
-	if err != nil || !ok || moved.Parent != parent.Name {
+	moved, ok, err := st.MoveFolder(f.FolderID, parentFolder.Name)
+	if err != nil || !ok || moved.Parent != parentFolder.Name {
 		t.Fatalf("move = %#v ok=%v err=%v", moved, ok, err)
 	}
 
@@ -87,14 +100,14 @@ func TestCRMFolderCRUD(t *testing.T) {
 		t.Fatalf("delete = %#v ok=%v err=%v", deleted, ok, err)
 	}
 
-	active, err := st.ListFolders(parent.Name, false)
+	active, err := st.ListFolders(parentFolder.Name, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(active) != 0 {
 		t.Fatalf("active after delete = %#v", active)
 	}
-	withDeleted, err := st.ListFolders(parent.Name, true)
+	withDeleted, err := st.ListFolders(parentFolder.Name, true)
 	if err != nil {
 		t.Fatal(err)
 	}

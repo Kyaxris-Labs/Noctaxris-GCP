@@ -8,6 +8,10 @@
 # Never mount host docker.sock. Engine TLS listens on the Compose network only
 # (no host publish of 2375/2376). Restricted DinD: privileged: false + caps.
 #
+# Nested SQL / Kafka / Redis / GKE lab containers are created inside the engine
+# on the shared bridge noctaxris-gcp-lab (API-managed; not a Compose network).
+# Broker and DB ports are not published to the operator host.
+#
 # If nested containers fail to start on your host, also add:
 #   -f compose.engine-privileged.yaml
 

@@ -46,6 +46,9 @@ func mountCloudTasks(t *testing.T, principal func(*http.Request) (authn.Principa
 }
 
 func TestCloudTasksQueueTaskRun(t *testing.T) {
+	store.ClearHTTPCatcher()
+	t.Cleanup(store.ClearHTTPCatcher)
+
 	mux := mountCloudTasks(t, nil)
 	loc := cloudtasks.DefaultLocation
 	project := "noctaxris-gcp-local"
@@ -59,13 +62,15 @@ func TestCloudTasksQueueTaskRun(t *testing.T) {
 	}
 
 	catcher := "http://127.0.0.1:4588/_noctaxris-gcp/http-catcher/tasks-unit"
-	taskBody := fmt.Sprintf(`{"taskId":"t1","task":{"httpRequest":{"url":"%s","httpMethod":"POST"}}}`, catcher)
+	taskBody := fmt.Sprintf(`{"taskId":"t1","task":{"httpRequest":{"url":"%s","httpMethod":"POST","body":"dGFzay1wYXlsb2Fk"}}}`, catcher)
 	req = httptest.NewRequest(http.MethodPost, qBase+"/q1/tasks", bytes.NewReader([]byte(taskBody)))
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create task status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	// Create may dispatch immediately when scheduleTime is due; isolate :run recording.
+	store.ClearHTTPCatcher()
 
 	req = httptest.NewRequest(http.MethodPost, qBase+"/q1/tasks/t1:run", bytes.NewReader([]byte("{}")))
 	rec = httptest.NewRecorder()
@@ -77,6 +82,10 @@ func TestCloudTasksQueueTaskRun(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &task)
 	if dc, _ := task["dispatchCount"].(float64); dc < 1 {
 		t.Fatalf("dispatchCount=%v", task["dispatchCount"])
+	}
+	caught := store.ListHTTPCatcher()
+	if len(caught) != 1 || caught[0] != "task-payload" {
+		t.Fatalf("catcher deliveries = %#v", caught)
 	}
 }
 

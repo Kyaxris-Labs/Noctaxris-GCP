@@ -128,6 +128,121 @@ func TestFirebaseAuthSignUpSignInAdminCRUDVerify(t *testing.T) {
 	}
 }
 
+func signUpUser(t *testing.T, mux *http.ServeMux, email string) (localID, idToken string) {
+	t.Helper()
+	body := `{"email":"` + email + `","password":"secret123","returnSecureToken":true}`
+	req := httptest.NewRequest(http.MethodPost, "/identitytoolkit.googleapis.com/v1/accounts:signUp", bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("signUp status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var user map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &user)
+	localID, _ = user["localId"].(string)
+	idToken, _ = user["idToken"].(string)
+	if localID == "" || idToken == "" {
+		t.Fatalf("signUp=%#v", user)
+	}
+	return localID, idToken
+}
+
+func TestFirebaseClientDeleteUpdateRequireIDToken(t *testing.T) {
+	mux := testFirebaseMux(t)
+	localID, idToken := signUpUser(t, mux, "client-auth@example.com")
+	otherID, _ := signUpUser(t, mux, "other@example.com")
+
+	t.Run("delete missing idToken", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/identitytoolkit.googleapis.com/v1/accounts:delete",
+			bytes.NewReader([]byte(`{"localId":"`+localID+`"}`)))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("MISSING_ID_TOKEN")) {
+			t.Fatalf("body=%s", rec.Body.String())
+		}
+	})
+
+	t.Run("update missing idToken", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/identitytoolkit.googleapis.com/v1/accounts:update",
+			bytes.NewReader([]byte(`{"localId":"`+localID+`","displayName":"Nope"}`)))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("MISSING_ID_TOKEN")) {
+			t.Fatalf("body=%s", rec.Body.String())
+		}
+	})
+
+	t.Run("delete invalid idToken", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/identitytoolkit.googleapis.com/v1/accounts:delete",
+			bytes.NewReader([]byte(`{"localId":"`+localID+`","idToken":"not-a-jwt"}`)))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("INVALID_ID_TOKEN")) {
+			t.Fatalf("body=%s", rec.Body.String())
+		}
+	})
+
+	t.Run("update idToken localId mismatch", func(t *testing.T) {
+		payload := `{"localId":"` + otherID + `","idToken":"` + idToken + `","displayName":"Hijack"}`
+		req := httptest.NewRequest(http.MethodPost, "/identitytoolkit.googleapis.com/v1/accounts:update",
+			bytes.NewReader([]byte(payload)))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("INVALID_ID_TOKEN")) {
+			t.Fatalf("body=%s", rec.Body.String())
+		}
+	})
+
+	t.Run("update with matching idToken", func(t *testing.T) {
+		payload := `{"localId":"` + localID + `","idToken":"` + idToken + `","displayName":"Client Updated"}`
+		req := httptest.NewRequest(http.MethodPost, "/identitytoolkit.googleapis.com/v1/accounts:update",
+			bytes.NewReader([]byte(payload)))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var user map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &user)
+		if user["displayName"] != "Client Updated" {
+			t.Fatalf("user=%#v", user)
+		}
+	})
+
+	t.Run("delete with matching idToken", func(t *testing.T) {
+		payload := `{"localId":"` + localID + `","idToken":"` + idToken + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/identitytoolkit.googleapis.com/v1/accounts:delete",
+			bytes.NewReader([]byte(payload)))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("admin delete still Bearer without idToken", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete,
+			"/identitytoolkit.googleapis.com/v1/projects/noctaxris-gcp-local/accounts/"+otherID, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("admin delete status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
 func TestFirebaseAuthAdminAuthzFailClosed(t *testing.T) {
 	dir := t.TempDir()
 	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))

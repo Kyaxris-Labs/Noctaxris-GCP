@@ -171,6 +171,48 @@ func parseLabJWT(token string) (map[string]any, error) {
 	return claims, nil
 }
 
+// uidFromClaims returns user_id/sub from lab JWT claims (same fields as verifyIdToken).
+func uidFromClaims(claims map[string]any) string {
+	uid, _ := claims["user_id"].(string)
+	if uid == "" {
+		uid, _ = claims["sub"].(string)
+	}
+	return uid
+}
+
+// uidFromLabIDToken returns user_id/sub from an unsigned lab idToken (same path as verifyIdToken).
+func uidFromLabIDToken(idToken string) (string, error) {
+	claims, err := parseLabJWT(idToken)
+	if err != nil {
+		return "", err
+	}
+	uid := uidFromClaims(claims)
+	if uid == "" {
+		return "", fmt.Errorf("idToken missing sub")
+	}
+	return uid, nil
+}
+
+// requireClientIDToken enforces Identity Toolkit client delete/update auth:
+// missing idToken → 401 MISSING_ID_TOKEN; invalid or localId mismatch → 400 INVALID_ID_TOKEN.
+// Returns the uid from the token (localID may be empty and is then taken from the token).
+func requireClientIDToken(w http.ResponseWriter, idToken, localID string) (uid string, ok bool) {
+	if idToken == "" {
+		gcperrors.Unauthenticated(w, "MISSING_ID_TOKEN")
+		return "", false
+	}
+	uid, err := uidFromLabIDToken(idToken)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "INVALID_ID_TOKEN")
+		return "", false
+	}
+	if localID != "" && localID != uid {
+		gcperrors.InvalidArgument(w, "INVALID_ID_TOKEN")
+		return "", false
+	}
+	return uid, true
+}
+
 func mintCustomToken(projectID, uid string, claims map[string]any) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
 	body := map[string]any{
@@ -407,21 +449,22 @@ func (s *Service) resetPassword(w http.ResponseWriter, r *http.Request, _ authn.
 func (s *Service) deleteAccount(w http.ResponseWriter, r *http.Request, _ authn.Principal) {
 	var body struct {
 		LocalID string `json:"localId"`
+		IDToken string `json:"idToken"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")
 		return
 	}
-	if body.LocalID == "" {
-		gcperrors.InvalidArgument(w, "localId is required")
+	uid, ok := requireClientIDToken(w, body.IDToken, body.LocalID)
+	if !ok {
 		return
 	}
-	ok, err := s.Store.DeleteFirebaseUser(body.LocalID)
+	deleted, err := s.Store.DeleteFirebaseUser(uid)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	if !ok {
+	if !deleted {
 		gcperrors.NotFound(w, "user not found")
 		return
 	}
@@ -431,6 +474,7 @@ func (s *Service) deleteAccount(w http.ResponseWriter, r *http.Request, _ authn.
 func (s *Service) updateAccount(w http.ResponseWriter, r *http.Request, _ authn.Principal) {
 	var body struct {
 		LocalID     string `json:"localId"`
+		IDToken     string `json:"idToken"`
 		DisplayName string `json:"displayName"`
 		Password    string `json:"password"`
 		DisableUser *bool  `json:"disableUser"`
@@ -439,7 +483,11 @@ func (s *Service) updateAccount(w http.ResponseWriter, r *http.Request, _ authn.
 		gcperrors.InvalidArgument(w, "invalid JSON body")
 		return
 	}
-	u, ok, err := s.Store.GetFirebaseUserByLocalID(body.LocalID)
+	uid, ok := requireClientIDToken(w, body.IDToken, body.LocalID)
+	if !ok {
+		return
+	}
+	u, ok, err := s.Store.GetFirebaseUserByLocalID(uid)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -751,10 +799,7 @@ func (s *Service) verifyIdToken(w http.ResponseWriter, r *http.Request, p authn.
 		gcperrors.InvalidArgument(w, "invalid idToken")
 		return
 	}
-	uid, _ := claims["user_id"].(string)
-	if uid == "" {
-		uid, _ = claims["sub"].(string)
-	}
+	uid := uidFromClaims(claims)
 	if uid == "" {
 		gcperrors.InvalidArgument(w, "idToken missing sub")
 		return

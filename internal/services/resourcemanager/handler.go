@@ -9,6 +9,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/cloudasset"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -231,7 +232,16 @@ func (h *Handler) handleProjectV1Post(w http.ResponseWriter, r *http.Request) {
 	raw := r.PathValue("project")
 	projectID, action := splitColonAction(raw)
 	if projectID == "" || action == "" {
-		gcperrors.InvalidArgument(w, "expected projects/{project}:getAncestry")
+		gcperrors.InvalidArgument(w, "expected projects/{project}:getAncestry or :exportAssets")
+		return
+	}
+	if action == "exportAssets" {
+		p, ok := h.principal(r)
+		if !ok {
+			gcperrors.Unauthenticated(w, "")
+			return
+		}
+		cloudasset.HandleProjectExport(w, r, h.Store, h.Authz, projectID, p)
 		return
 	}
 	if action != "getAncestry" {

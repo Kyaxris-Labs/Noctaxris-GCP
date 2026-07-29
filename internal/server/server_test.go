@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/config"
@@ -89,5 +90,33 @@ func TestAPIWithRootBearerOK(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPCatcherDumpAfterPost(t *testing.T) {
+	store.ClearHTTPCatcher()
+	t.Cleanup(store.ClearHTTPCatcher)
+
+	srv, _ := testServer(t)
+	post := httptest.NewRequest(http.MethodPost, "/_noctaxris-gcp/http-catcher/lab", strings.NewReader(`{"ping":"catcher"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, post)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/_noctaxris-gcp/http-catcher", nil)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, get)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var dump map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &dump); err != nil {
+		t.Fatalf("decode dump: %v body=%s", err, rec.Body.String())
+	}
+	deliveries, _ := dump["deliveries"].([]any)
+	if len(deliveries) != 1 || deliveries[0] != `{"ping":"catcher"}` {
+		t.Fatalf("deliveries = %#v", dump["deliveries"])
 	}
 }

@@ -38,10 +38,23 @@ EnsureRoot seeds known lab APIs as `ENABLED` for the default project
 Logging, Run, Functions, Scheduler, Tasks, BigQuery, Identity Toolkit,
 Monitoring, Datastore, Eventarc, App Engine, Artifact Registry, Cloud Build,
 Workflows, Spanner, Compute Engine, Cloud DNS, Dataflow, Bigtable Admin,
-Memorystore Redis, Certificate Manager, Filestore, Vertex AI).
+Memorystore Redis, Cloud SQL Admin, Certificate Manager, Filestore, Vertex AI,
+GKE Container, Managed Kafka).
 
-IAM create service account refuses with `FAILED_PRECONDITION` when
-`iam.googleapis.com` is DISABLED (example Service Usage gate).
+Primary create mutators refuse with `FAILED_PRECONDITION` when the matching API
+is DISABLED (same shape as IAM create service account):
+
+| Mutator | Service Usage name |
+|---------|-------------------|
+| IAM create service account | `iam.googleapis.com` |
+| Cloud Storage create bucket | `storage.googleapis.com` |
+| Pub/Sub create topic | `pubsub.googleapis.com` |
+| Cloud SQL create instance | `sqladmin.googleapis.com` |
+| GKE create cluster | `container.googleapis.com` |
+| Managed Kafka create cluster | `managedkafka.googleapis.com` |
+
+Handlers call `store.IsServiceEnabled` via `internal/kernel/restlab.RequireServiceEnabled`
+(REST) or `CheckServiceEnabled` (gRPC).
 
 ## Emulator limits
 
