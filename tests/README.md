@@ -76,13 +76,24 @@ cd tests/sdk/nodejs && npm install && npm test
 
 cd tests/sdk/python && pip install -r requirements.txt && pytest
 
-# Terraform apply + destroy (default set includes storage, run, dns, compute, armor, kms, bigquery, iam, sql, redis)
+# Terraform apply + destroy (default set: storage, run, dns, compute, armor, kms, bigquery, iam, sql, redis)
 bash tests/terraform/run.sh
 
-# One stack
-STACK=lab-armor bash tests/terraform/run.sh
+# Compute VM stack (parity; not in default STACKS)
+STACK=lab-compute-instance bash tests/terraform/run.sh
+
+# Managed Kafka stack (parity / isolated; not in default STACKS until Compose nested fail-closed is proven)
+STACK=lab-kafka bash tests/terraform/run.sh
+
+# LB Armor attach stack (parity; not in default STACKS)
+STACK=lab-lb-armor bash tests/terraform/run.sh
+
+# Opt-in parity Terraform loop (lab-compute-instance, lab-lb-armor, lab-kafka)
+TF_GCP_PARITY=1 bash tests/run-all.sh
 ```
 
 When Compose publishes `127.0.0.1:4588` on a Windows host, run Terraform from that host (not WSL loopback).
+
+Tag/release `ci-required` is unit + compose-static + smoke-core + govulncheck. Full SDK/TF proof needs green `integration-suites` or a manual `bash tests/run-all.sh` (optionally `NOCTAXRIS_GCP_NESTED=1`, `TF_GCP_PARITY=1`).
 
 Maintainer gap list: [HANDOFF.md](HANDOFF.md). Stack notes: [terraform/README.md](terraform/README.md).

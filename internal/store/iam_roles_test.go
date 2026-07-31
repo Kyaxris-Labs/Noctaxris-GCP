@@ -78,3 +78,48 @@ func TestCustomRoleCRUD(t *testing.T) {
 		t.Fatalf("showDeleted list: n=%d err=%v", len(list), err)
 	}
 }
+
+func TestCustomRoleDeleteBlocksCreateUntilUndelete(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	const project = "noctaxris-gcp-local"
+	const roleID = "undeleteMe"
+	created, err := st.CreateCustomRole(project, roleID, "t", "d", "GA", []string{"storage.buckets.list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.DeleteCustomRole(created.Name); err != nil || !ok {
+		t.Fatalf("delete: ok=%v err=%v", ok, err)
+	}
+
+	_, err = st.CreateCustomRole(project, roleID, "t2", "d2", "GA", []string{"storage.buckets.get"})
+	if !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("recreate while soft-deleted: %v", err)
+	}
+
+	got, ok, err := st.GetCustomRole(created.Name)
+	if err != nil || !ok || !got.Deleted {
+		t.Fatalf("get deleted: ok=%v deleted=%v err=%v", ok, got.Deleted, err)
+	}
+
+	restored, ok, err := st.UndeleteCustomRole(created.Name)
+	if err != nil || !ok || restored.Deleted {
+		t.Fatalf("undelete: ok=%v role=%+v err=%v", ok, restored, err)
+	}
+	if _, err := st.CreateCustomRole(project, roleID, "t3", "", "GA", nil); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("create after undelete (active row): %v", err)
+	}
+	perms, ok, err := st.GetRoleIncludedPermissions(created.Name)
+	if err != nil || !ok || len(perms) != 1 {
+		t.Fatalf("grants after undelete: ok=%v perms=%v err=%v", ok, perms, err)
+	}
+}

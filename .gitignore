@@ -23,12 +23,15 @@ go.work.sum
 
 # env file
 .env
+*.pem
+_labkey*
 
 # Editor/IDE
 # .idea/
 # .vscode/
 .cursor/
 .local/
+.local-verify*.log
 .superpowers/
 
 # Local files

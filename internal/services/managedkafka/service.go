@@ -56,6 +56,7 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/clusters/{cluster}/acls", s.wrap(principalFrom, s.createACL))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/clusters/{cluster}/acls/{acl...}", s.wrap(principalFrom, s.getACL))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/clusters/{cluster}/acls/{acl...}", s.wrap(principalFrom, s.deleteACL))
+	s.mountSharedLocationOperations(mux, principalFrom)
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -138,13 +139,23 @@ func (s *Service) createCluster(w http.ResponseWriter, r *http.Request, p authn.
 		raw, _ := json.Marshal(labels)
 		labelsJSON = string(raw)
 	}
+	capacityJSON := "{}"
+	if capacity, ok := body["capacityConfig"]; ok {
+		raw, _ := json.Marshal(capacity)
+		capacityJSON = string(raw)
+	}
+	gcpJSON := "{}"
+	if gcp, ok := body["gcpConfig"]; ok {
+		raw, _ := json.Marshal(gcp)
+		gcpJSON = string(raw)
+	}
 	name := clusterName(project, location, clusterID)
 	bootstrap := theatreBootstrap(clusterID, location)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	created, err := s.Store.CreateKafkaCluster(store.KafkaCluster{
 		Name: name, ProjectID: project, Location: location, ClusterID: clusterID,
 		DisplayName: displayName, State: "ACTIVE", BootstrapServers: bootstrap,
-		LabelsJSON: labelsJSON, CreatedAt: now,
+		LabelsJSON: labelsJSON, CapacityConfigJSON: capacityJSON, GCPConfigJSON: gcpJSON, CreatedAt: now,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -167,7 +178,8 @@ func (s *Service) createCluster(w http.ResponseWriter, r *http.Request, p authn.
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created cluster missing")
 		return
 	}
-	writeJSON(w, http.StatusOK, toClusterJSON(out))
+	resp := withClusterType(toClusterJSON(out))
+	writeDoneOperation(w, project, location, "create-"+clusterID, resp)
 }
 
 func (s *Service) tryNestedRedpanda(ctx context.Context, clusterName, clusterID string) error {
@@ -269,7 +281,7 @@ func (s *Service) deleteCluster(w http.ResponseWriter, r *http.Request, p authn.
 		return
 	}
 	s.removeNestedRedpanda(r.Context(), clusterID, c.ContainerID)
-	writeJSON(w, http.StatusOK, map[string]any{})
+	writeDoneOperation(w, project, location, "delete-"+clusterID, nil)
 }
 
 func (s *Service) removeNestedRedpanda(ctx context.Context, clusterID, containerID string) {
@@ -299,6 +311,18 @@ func toClusterJSON(c store.KafkaCluster) map[string]any {
 	}
 	if c.BootstrapServers != "" {
 		out["bootstrapServers"] = c.BootstrapServers
+	}
+	if raw := strings.TrimSpace(c.CapacityConfigJSON); raw != "" && raw != "{}" {
+		var capacity any
+		if err := json.Unmarshal([]byte(raw), &capacity); err == nil && capacity != nil {
+			out["capacityConfig"] = capacity
+		}
+	}
+	if raw := strings.TrimSpace(c.GCPConfigJSON); raw != "" && raw != "{}" {
+		var gcp any
+		if err := json.Unmarshal([]byte(raw), &gcp); err == nil && gcp != nil {
+			out["gcpConfig"] = gcp
+		}
 	}
 	return out
 }

@@ -167,6 +167,9 @@ func (s *Store) ensureDataColumns() error {
 		`ALTER TABLE appengine_services ADD COLUMN shard_by TEXT NOT NULL DEFAULT 'UNSPECIFIED'`,
 		`ALTER TABLE appengine_services ADD COLUMN migrate_traffic INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE eventarc_triggers ADD COLUMN service_account TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE wif_providers ADD COLUMN allowed_audiences_json TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE gce_instances ADD COLUMN numeric_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE lb_backend_services ADD COLUMN security_policy TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range alters {
 		if _, err := s.db.Exec(stmt); err != nil {

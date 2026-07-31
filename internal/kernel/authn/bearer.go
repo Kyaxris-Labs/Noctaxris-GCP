@@ -106,6 +106,10 @@ func IsPublicPath(raw string) bool {
 		if strings.HasPrefix(path, "/lb/") || strings.HasPrefix(path, "/cdn/") {
 			return true
 		}
+		// oidc-lab discovery/JWKS (STS verify self-fetch must not require Bearer).
+		if strings.HasPrefix(path, "/_noctaxris-gcp/oidc-lab/.well-known/") {
+			return true
+		}
 		return false
 	}
 }

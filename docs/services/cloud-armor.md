@@ -3,7 +3,8 @@
 Lab Cloud Armor via Compute Engine `securityPolicies` REST. Policies store rules
 with official `SRC_IPS_V1` match shapes plus a lab `byteMatchSet` theatre for
 URI path / single-header CONTAINS or EXACTLY evaluation. `:validate` previews
-allow/deny for a sample request. No real edge enforcement or backend association.
+allow/deny for a sample request. Backend services and target HTTPS proxies can
+reference a policy self link for Terraform attach; no real edge enforcement.
 
 ## Status
 
@@ -52,8 +53,7 @@ Seeded Service Usage: `compute.googleapis.com` (Armor is the Compute API).
 
 ## Emulator limits
 
-- No backend service / target proxy attachment
-- No preconfigured WAF / Adaptive Protection / rate-limit enforcement
+- No preconfigured WAF / Adaptive Protection / rate-limit enforcement on the dataplane
 - `SRC_IPS_V1` matches `*` or exact IP string only (no CIDR parse)
 - CEL `match.expr` is stored but not evaluated
 - Private keys N/A; no DDoS dataplane
@@ -84,6 +84,15 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   -d '{"uriPath":"/admin"}'
 ```
 
+Backend attach (metadata only; see [load-balancing.md](load-balancing.md)):
+
+```bash
+# Policy self_link on google_compute_backend_service.security_policy:
+STACK=lab-lb-armor bash tests/terraform/run.sh   # parity; not in default STACKS
+# or: TF_GCP_PARITY=1 bash tests/run-all.sh
+```
+
 ```bash
 gcloud config set api_endpoint_overrides/compute http://127.0.0.1:4588/
+STACK=lab-armor bash tests/terraform/run.sh
 ```

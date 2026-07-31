@@ -69,6 +69,7 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 		now:   func() time.Time { return time.Now().UTC() },
 	}
 	s.registerREST()
+	s.registerOIDCLab()
 	s.registerIdentity()
 	s.registerData()
 	s.registerDocsCrypto()

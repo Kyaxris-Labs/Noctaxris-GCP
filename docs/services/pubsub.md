@@ -128,6 +128,14 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 Also: `go test ./internal/services/pubsub/ ./internal/store/ -run 'PubSub|DeadLetter|OIDC|Push|Deliver' -count=1`
 (Pull DLQ redelivery needs repeated pull + `modifyAckDeadline` 0 or expired lease; push DLQ needs repeated failed push attempts; see store and `TestDeliverPushDeadLetterAfterMaxAttempts`.)
 
+Live SDK OIDC push smokes (soft-skip without endpoint; hard-fail `oidcToken` round-trip + publish; catcher Bearer soft-skips when dump empty or unavailable):
+
+```bash
+go test ./tests/sdk/go/ -run TestPubSubOIDCPushSmoke -count=1
+# node --test tests/sdk/nodejs/pubsub.test.mjs
+# pytest tests/sdk/python/ -k oidc_push
+```
+
 ## Deferred depth
 
 - Ordering keys / full exactly-once ack semantics / schemas

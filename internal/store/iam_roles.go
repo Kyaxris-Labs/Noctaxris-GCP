@@ -97,7 +97,8 @@ func (s *Store) CreateCustomRole(projectID, roleID, title, description, stage st
 	}, nil
 }
 
-// GetCustomRole loads a custom role by resource name (including soft-deleted).
+// GetCustomRole loads a custom role by resource name.
+// Soft-deleted roles are returned with Deleted=true (GET does not 404); use ListCustomRoles(showDeleted) to enumerate them.
 func (s *Store) GetCustomRole(name string) (CustomRole, bool, error) {
 	var r CustomRole
 	var permsJSON string
@@ -234,6 +235,26 @@ func (s *Store) DeleteCustomRole(name string) (CustomRole, bool, error) {
 	r.Deleted = true
 	r.UpdatedAt = now
 	return r, true, nil
+}
+
+// UndeleteCustomRole clears soft-delete for a custom role.
+func (s *Store) UndeleteCustomRole(name string) (CustomRole, bool, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.Exec(
+		`UPDATE iam_custom_roles SET deleted = 0, updated_at = ? WHERE name = ? AND deleted = 1`,
+		now, name,
+	)
+	if err != nil {
+		return CustomRole{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return CustomRole{}, false, err
+	}
+	if n == 0 {
+		return CustomRole{}, false, nil
+	}
+	return s.GetCustomRole(name)
 }
 
 func decodePermissionList(raw string) ([]string, error) {

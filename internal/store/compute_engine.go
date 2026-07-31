@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS gce_instances (
   project_id TEXT NOT NULL,
   zone TEXT NOT NULL,
   instance_id TEXT NOT NULL,
+  numeric_id TEXT NOT NULL DEFAULT '',
   machine_type TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'RUNNING',
   network_interfaces_json TEXT NOT NULL DEFAULT '[]',
@@ -61,16 +62,17 @@ func (s *Store) migrateComputeEngine() error {
 
 // GCEInstance is Compute Engine instance metadata (no nested VM).
 type GCEInstance struct {
-	Name                   string
-	ProjectID              string
-	Zone                   string
-	InstanceID             string
-	MachineType            string
-	Status                 string
-	NetworkInterfacesJSON  string
-	BodyJSON               string
-	CreatedAt              string
-	UpdatedAt              string
+	Name                  string
+	ProjectID             string
+	Zone                  string
+	InstanceID            string
+	NumericID             string
+	MachineType           string
+	Status                string
+	NetworkInterfacesJSON string
+	BodyJSON              string
+	CreatedAt             string
+	UpdatedAt             string
 }
 
 // GCENetwork is a VPC network metadata row.
@@ -121,6 +123,9 @@ func (s *Store) CreateGCEInstance(inst GCEInstance) (created bool, err error) {
 	if inst.BodyJSON == "" {
 		inst.BodyJSON = "{}"
 	}
+	if inst.NumericID == "" {
+		inst.NumericID = NewGCEResourceID()
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if inst.CreatedAt == "" {
 		inst.CreatedAt = now
@@ -130,9 +135,9 @@ func (s *Store) CreateGCEInstance(inst GCEInstance) (created bool, err error) {
 	}
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO gce_instances
-		 (name, project_id, zone, instance_id, machine_type, status, network_interfaces_json, body_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		inst.Name, inst.ProjectID, inst.Zone, inst.InstanceID, inst.MachineType, inst.Status,
+		 (name, project_id, zone, instance_id, numeric_id, machine_type, status, network_interfaces_json, body_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		inst.Name, inst.ProjectID, inst.Zone, inst.InstanceID, inst.NumericID, inst.MachineType, inst.Status,
 		inst.NetworkInterfacesJSON, inst.BodyJSON, inst.CreatedAt, inst.UpdatedAt,
 	)
 	if err != nil {
@@ -149,10 +154,10 @@ func (s *Store) CreateGCEInstance(inst GCEInstance) (created bool, err error) {
 func (s *Store) GetGCEInstance(name string) (GCEInstance, bool, error) {
 	var inst GCEInstance
 	err := s.db.QueryRow(
-		`SELECT name, project_id, zone, instance_id, machine_type, status, network_interfaces_json, body_json, created_at, updated_at
+		`SELECT name, project_id, zone, instance_id, numeric_id, machine_type, status, network_interfaces_json, body_json, created_at, updated_at
 		 FROM gce_instances WHERE name = ?`, name,
 	).Scan(
-		&inst.Name, &inst.ProjectID, &inst.Zone, &inst.InstanceID, &inst.MachineType, &inst.Status,
+		&inst.Name, &inst.ProjectID, &inst.Zone, &inst.InstanceID, &inst.NumericID, &inst.MachineType, &inst.Status,
 		&inst.NetworkInterfacesJSON, &inst.BodyJSON, &inst.CreatedAt, &inst.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -167,7 +172,7 @@ func (s *Store) GetGCEInstance(name string) (GCEInstance, bool, error) {
 // ListGCEInstances lists instances in a project/zone.
 func (s *Store) ListGCEInstances(projectID, zone string) ([]GCEInstance, error) {
 	rows, err := s.db.Query(
-		`SELECT name, project_id, zone, instance_id, machine_type, status, network_interfaces_json, body_json, created_at, updated_at
+		`SELECT name, project_id, zone, instance_id, numeric_id, machine_type, status, network_interfaces_json, body_json, created_at, updated_at
 		 FROM gce_instances WHERE project_id = ? AND zone = ? ORDER BY name`,
 		projectID, zone,
 	)
@@ -179,7 +184,7 @@ func (s *Store) ListGCEInstances(projectID, zone string) ([]GCEInstance, error) 
 	for rows.Next() {
 		var inst GCEInstance
 		if err := rows.Scan(
-			&inst.Name, &inst.ProjectID, &inst.Zone, &inst.InstanceID, &inst.MachineType, &inst.Status,
+			&inst.Name, &inst.ProjectID, &inst.Zone, &inst.InstanceID, &inst.NumericID, &inst.MachineType, &inst.Status,
 			&inst.NetworkInterfacesJSON, &inst.BodyJSON, &inst.CreatedAt, &inst.UpdatedAt,
 		); err != nil {
 			return nil, err

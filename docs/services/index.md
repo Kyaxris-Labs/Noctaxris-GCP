@@ -125,7 +125,7 @@ HTTP live smokes under `tests/sdk/` (Go, Node.js, Python) cover:
 | Cloud SQL | list instances (`/sql/v1/`) |
 | Managed Kafka | list clusters in `us-central1` |
 | GKE | list clusters (`/container/v1/...`) |
-| HTTP(S) LB | list global backendServices |
+| HTTP(S) LB | global backendServices, targetHttpsProxies; backend `securityPolicy` attach |
 | Cloud CDN | list distributions |
 | Dataflow | list jobs in `us-central1` |
 | Cloud Armor | list securityPolicies (global) |
@@ -144,13 +144,24 @@ Terraform apply/destroy soft-skips the same way. Stacks under
 |-------|-------|
 | `lab-storage` | Cloud Storage bucket, Secret Manager secret, Pub/Sub topic |
 | `lab-run` | Cloud Run v2 service |
-| `lab-dns` | Cloud DNS managed zone |
+| `lab-dns` | Cloud DNS managed zone + `google_dns_record_set` |
 | `lab-compute` | Compute Engine VPC network |
 | `lab-armor` | Cloud Armor `google_compute_security_policy` (SRC_IPS_V1 rules) |
+| `lab-kms` | KMS key ring + crypto key |
+| `lab-bigquery` | BigQuery dataset + table |
+| `lab-iam` | Service account |
+| `lab-sql` | Cloud SQL Postgres (nested when Compose engine healthy) |
+| `lab-redis` | Memorystore Redis (nested when Compose engine healthy) |
+| `lab-kafka` | Managed Kafka cluster (parity; not default `STACKS`) |
+| `lab-compute-instance` | VPC + VM + boot disk (parity; not default `STACKS`) |
+| `lab-lb-armor` | Armor policy + backend `security_policy` (parity; not default `STACKS`) |
 
-Default run (`bash tests/terraform/run.sh`) applies all five stacks.
-Override with `STACK=lab-armor` or `STACKS="lab-storage lab-run"`. Honest skips
-(Filestore `/file/v1/` BaseUrl prefix, and others): [tests/terraform/README.md](../../tests/terraform/README.md).
+Default run (`bash tests/terraform/run.sh`) applies the default `STACKS` list
+(`lab-storage` … `lab-redis`). Override with `STACK=lab-armor` or
+`STACKS="lab-storage lab-run"`. Parity stacks:
+`STACK=lab-compute-instance` / `STACK=lab-lb-armor` / `STACK=lab-kafka`, or
+`TF_GCP_PARITY=1 bash tests/run-all.sh`. Honest skips (Filestore `/file/v1/`
+BaseUrl prefix, and others): [tests/terraform/README.md](../../tests/terraform/README.md).
 
 ```bash
 export NOCTAXRIS_GCP_ENDPOINT=http://127.0.0.1:4588
@@ -162,6 +173,10 @@ go test ./tests/sdk/go/ -count=1
 # STACK=lab-armor bash tests/terraform/run.sh
 # STACK=lab-dns bash tests/terraform/run.sh
 # STACK=lab-compute bash tests/terraform/run.sh
+# STACK=lab-compute-instance bash tests/terraform/run.sh
+# STACK=lab-lb-armor bash tests/terraform/run.sh
+# STACK=lab-kafka bash tests/terraform/run.sh
+# TF_GCP_PARITY=1 bash tests/run-all.sh
 ```
 
 ## gcloud `api_endpoint_overrides`

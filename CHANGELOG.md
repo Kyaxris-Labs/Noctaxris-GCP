@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added
+
+| Area | Change |
+|------|--------|
+| IAM WIF | Provider `oidc.allowedAudiences` persisted on create/PATCH (`updateMask`); STS verify accepts stored audiences plus provider resource `aud` (string or array JWT `aud`) |
+| IAM STS | Lab `oidc-lab` issuer: public discovery + JWKS at `/_noctaxris-gcp/oidc-lab/.well-known/...` (no mint); discovery `jwks_uri` honored only at `{issuer}/.well-known/jwks.json`; generic `invalid subject_token` on verify failure |
+| IAM roles | Project custom role `:undelete` (`iam.roles.undelete`); get on soft-deleted role returns `deleted: true` |
+| Managed Kafka | Cluster create/delete return done Operations (`create-{id}` / `delete-{id}`); create poll echoes typed Cluster `response`; `capacityConfig` / `gcpConfig` persist and echo on get/list; shared location Operations.get via Memorystore mount + hook |
+| Compute Engine | Instance GET echoes canonical `disks[]` / `bootDisk` / `initializeParams`; stable instance `id` (`numeric_id`); zone/region/global Operations.get return `status: DONE` |
+| Load balancing / Armor | Backend `securityPolicy` persist/echo; `POST .../setSecurityPolicy`; global `targetHttpsProxies` CRUD; backend/proxy insert/delete return DONE `compute#operation` |
+| Terraform | `lab-kafka` stack (`google_managed_kafka_cluster` via `managed_kafka_custom_endpoint` `…/v1/`; `capacity_config` + `network_configs`); opt-in via `STACK=lab-kafka` / `TF_GCP_PARITY=1` until Compose nested fail-closed apply+destroy earns default `STACKS` |
+| Terraform | `lab-compute-instance` stack (VPC + subnetwork + `google_compute_instance` boot disk); opt-in via `STACK=lab-compute-instance` / `TF_GCP_PARITY=1` (parity loop in `run-all.sh`; not in default `STACKS`) |
+| Terraform | `lab-lb-armor` stack (minimal `google_compute_security_policy` + `google_compute_backend_service` with `security_policy`; backend `setSecurityPolicy` + insert/delete DONE operations); opt-in via `STACK=lab-lb-armor` / `TF_GCP_PARITY=1` |
+| Terraform / SDK | `lab-dns` adds `google_dns_record_set`; Go live smoke `TestDNSChangesRrsetSmoke` (Changes + rrset get) |
+| SDK tests | Node.js and Python Pub/Sub push `oidcToken` smokes mirror Go (`oidcToken` round-trip + publish hard-fail; catcher dump unavailable soft-skips citing unit `TestPubSubOIDCPushCatcher`; empty dump soft-skips without that cite) |
+
+### Changed
+
+| Area | Change |
+|------|--------|
+| Docs | IAM, configuration, security defaults, README service rows, and per-service pages (DNS/Kafka/Compute/Armor/LB/Pub/Sub) + services index / terraform README align with WIF audiences, oidc-lab, role undelete, Kafka LRO, DNS `record_set`, Compute disks/ops, Armor backend attach, and Pub/Sub OIDC SDK smokes |
+| Terraform / HANDOFF | `lab-kafka` + `lab-compute-instance` + `lab-lb-armor` parity loop + HANDOFF note; SQL/Redis TF gap rows retired; `TF_GCP_PARITY=1` / `NOCTAXRIS_GCP_ADVANCED=1` parity loop in `run-all.sh` |
+| Integration | HANDOFF release-gates note (`ci-required` vs `integration-suites` / manual `run-all.sh`); parity/default TF wording aligned with loopback apply+destroy |
+| Compose | `compose.engine.yaml` thinned to API env + depends_on so merge with base `compose.yaml` validates (no duplicate engine `security_opt`) |
+
 ## [1.0.1] - 2026-07-31
 
 Default Compose turns nested DinD on; Terraform and SDK suites widen accordingly.

@@ -21,7 +21,8 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   `unix://`, `npipe://`, and any host string containing `docker.sock`.
 - Engine is digest-pinned `docker:27-dind` as restricted DinD (`privileged: false` +
   caps / devices / `cgroup: host` / writable `/sys/fs/cgroup`). The engine API is
-  not published to the host. Compatibility overlay `compose.engine.yaml` still works.
+  not published to the host. Compatibility overlay `compose.engine.yaml` only
+  reasserts API Docker env + depends_on (do not redeclare the engine service).
 - Non-default engine URLs require `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST`. TLS
   client PEMs are required whenever Docker host is set.
 - Image pulls fail closed: pinned lab bases (`alpine:3.20`, …) only, unless
@@ -43,6 +44,7 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   - Lab HTTP catcher `POST`/`GET` `/_noctaxris-gcp/http-catcher` (and `POST` under
     `/_noctaxris-gcp/http-catcher/…`); dump returns `{"deliveries":[…]}`
   - STS `POST /v1/token` (WIF subject_token exchange)
+  - OIDC lab discovery/JWKS `GET /_noctaxris-gcp/oidc-lab/.well-known/...` (no mint route)
   - Identity Toolkit client methods under `/identitytoolkit.googleapis.com/v1/accounts…`
     (admin paths under `/v1/projects/{project}/accounts…` still require Bearer)
   - Lab edge dataplane `GET`/`HEAD` `/lb/{project}/{rule}/…` and `/cdn/{id}/…`
@@ -88,8 +90,9 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
 - Pub/Sub push, Eventarc `httpEndpoint`, Cloud Tasks `httpRequest`,
   Scheduler `httpTarget`, and STS OIDC JWKS/discovery fetches are deny-by-default.
 - Allowed without opt-in: lab HTTP catcher
-  `http://127.0.0.1:4588/_noctaxris-gcp/http-catcher...` and other loopback
-  `:4588` lab-local URLs (self-invoke theatre).
+  `http://127.0.0.1:4588/_noctaxris-gcp/http-catcher...`, loopback
+  `/_noctaxris-gcp/oidc-lab/.well-known/...`, and other loopback `:4588`
+  lab-local URLs (self-invoke theatre).
 - Open-internet delivery requires `NOCTAXRIS_GCP_HTTP_EGRESS=1` plus an exact
   URL in `NOCTAXRIS_GCP_HTTP_ALLOWLIST`. Allowlisted destinations still reject
   private/metadata/loopback hosts; clients do not follow redirects.

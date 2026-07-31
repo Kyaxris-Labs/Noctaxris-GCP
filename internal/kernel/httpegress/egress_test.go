@@ -14,6 +14,7 @@ func TestValidateLabCatcherAndLocal(t *testing.T) {
 		"http://127.0.0.1:4588" + httpegress.LabHTTPCatcherPath + "/x",
 		"http://localhost:4588/v2/projects/p/locations/us/services/s:invoke",
 		"http://[::1]:4588/_noctaxris-gcp/health",
+		"http://127.0.0.1:59999/_noctaxris-gcp/oidc-lab/.well-known/jwks.json",
 	}
 	for _, ep := range ok {
 		if err := httpegress.Validate(ep); err != nil {

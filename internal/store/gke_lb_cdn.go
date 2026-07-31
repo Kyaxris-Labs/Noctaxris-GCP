@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS lb_backend_services (
   description TEXT NOT NULL DEFAULT '',
   protocol TEXT NOT NULL DEFAULT 'HTTP',
   backends_json TEXT NOT NULL DEFAULT '[]',
+  security_policy TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   UNIQUE (project_id, region, service_id)
 );
@@ -72,6 +73,21 @@ CREATE TABLE IF NOT EXISTS lb_forwarding_rules (
 );
 
 CREATE INDEX IF NOT EXISTS idx_lb_forwarding_project ON lb_forwarding_rules (project_id);
+
+CREATE TABLE IF NOT EXISTS lb_target_https_proxies (
+  name TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  region TEXT NOT NULL DEFAULT 'global',
+  proxy_id TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  url_map TEXT NOT NULL DEFAULT '',
+  security_policy TEXT NOT NULL DEFAULT '',
+  ssl_certificates_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  UNIQUE (project_id, region, proxy_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lb_target_https_proxies_project ON lb_target_https_proxies (project_id);
 
 CREATE TABLE IF NOT EXISTS cdn_distributions (
   name TEXT PRIMARY KEY,
@@ -208,14 +224,15 @@ func (s *Store) UpdateGKEClusterNestedDetail(name, nestedJSON string) error {
 
 // LBBackendService is a Compute backendServices row.
 type LBBackendService struct {
-	Name         string
-	ProjectID    string
-	Region       string
-	ServiceID    string
-	Description  string
-	Protocol     string
-	BackendsJSON string
-	CreatedAt    string
+	Name            string
+	ProjectID       string
+	Region          string
+	ServiceID       string
+	Description     string
+	Protocol        string
+	BackendsJSON    string
+	SecurityPolicy  string
+	CreatedAt       string
 }
 
 // CreateLBBackendService inserts a backend service.
@@ -237,9 +254,9 @@ func (s *Store) CreateLBBackendService(bs LBBackendService) (bool, error) {
 		bs.CreatedAt = now
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO lb_backend_services (name, project_id, region, service_id, description, protocol, backends_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		bs.Name, bs.ProjectID, bs.Region, bs.ServiceID, bs.Description, bs.Protocol, bs.BackendsJSON, bs.CreatedAt,
+		`INSERT INTO lb_backend_services (name, project_id, region, service_id, description, protocol, backends_json, security_policy, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		bs.Name, bs.ProjectID, bs.Region, bs.ServiceID, bs.Description, bs.Protocol, bs.BackendsJSON, bs.SecurityPolicy, bs.CreatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -255,9 +272,9 @@ func (s *Store) CreateLBBackendService(bs LBBackendService) (bool, error) {
 func (s *Store) GetLBBackendService(name string) (LBBackendService, bool, error) {
 	var bs LBBackendService
 	err := s.db.QueryRow(
-		`SELECT name, project_id, region, service_id, description, protocol, backends_json, created_at
+		`SELECT name, project_id, region, service_id, description, protocol, backends_json, security_policy, created_at
 		 FROM lb_backend_services WHERE name = ?`, name,
-	).Scan(&bs.Name, &bs.ProjectID, &bs.Region, &bs.ServiceID, &bs.Description, &bs.Protocol, &bs.BackendsJSON, &bs.CreatedAt)
+	).Scan(&bs.Name, &bs.ProjectID, &bs.Region, &bs.ServiceID, &bs.Description, &bs.Protocol, &bs.BackendsJSON, &bs.SecurityPolicy, &bs.CreatedAt)
 	if err == sql.ErrNoRows {
 		return LBBackendService{}, false, nil
 	}
@@ -282,7 +299,7 @@ func (s *Store) ListLBBackendServices(projectID, region string) ([]LBBackendServ
 		region = "global"
 	}
 	rows, err := s.db.Query(
-		`SELECT name, project_id, region, service_id, description, protocol, backends_json, created_at
+		`SELECT name, project_id, region, service_id, description, protocol, backends_json, security_policy, created_at
 		 FROM lb_backend_services WHERE project_id = ? AND region = ? ORDER BY service_id`,
 		projectID, region,
 	)
@@ -297,12 +314,22 @@ func scanLBBackendServices(rows *sql.Rows) ([]LBBackendService, error) {
 	var out []LBBackendService
 	for rows.Next() {
 		var bs LBBackendService
-		if err := rows.Scan(&bs.Name, &bs.ProjectID, &bs.Region, &bs.ServiceID, &bs.Description, &bs.Protocol, &bs.BackendsJSON, &bs.CreatedAt); err != nil {
+		if err := rows.Scan(&bs.Name, &bs.ProjectID, &bs.Region, &bs.ServiceID, &bs.Description, &bs.Protocol, &bs.BackendsJSON, &bs.SecurityPolicy, &bs.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, bs)
 	}
 	return out, rows.Err()
+}
+
+// UpdateLBBackendServiceSecurityPolicy sets Cloud Armor policy self link on a backend service.
+func (s *Store) UpdateLBBackendServiceSecurityPolicy(name, securityPolicy string) (bool, error) {
+	res, err := s.db.Exec(`UPDATE lb_backend_services SET security_policy = ? WHERE name = ?`, securityPolicy, name)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // DeleteLBBackendService deletes by full name.
@@ -529,6 +556,113 @@ func (s *Store) DeleteLBForwardingRule(name string) (bool, error) {
 	return n > 0, nil
 }
 
+// LBTargetHTTPSProxy is a targetHttpsProxies row.
+type LBTargetHTTPSProxy struct {
+	Name                 string
+	ProjectID            string
+	Region               string
+	ProxyID              string
+	Description          string
+	URLMap               string
+	SecurityPolicy       string
+	SSLCertificatesJSON  string
+	CreatedAt            string
+}
+
+// CreateLBTargetHTTPSProxy inserts a target HTTPS proxy.
+func (s *Store) CreateLBTargetHTTPSProxy(p LBTargetHTTPSProxy) (bool, error) {
+	if p.Name == "" || p.ProjectID == "" || p.ProxyID == "" {
+		return false, fmt.Errorf("lb target https proxy name/project/proxy id required")
+	}
+	if p.Region == "" {
+		p.Region = "global"
+	}
+	if p.SSLCertificatesJSON == "" {
+		p.SSLCertificatesJSON = "[]"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if p.CreatedAt == "" {
+		p.CreatedAt = now
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO lb_target_https_proxies (name, project_id, region, proxy_id, description, url_map, security_policy, ssl_certificates_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.Name, p.ProjectID, p.Region, p.ProxyID, p.Description, p.URLMap, p.SecurityPolicy, p.SSLCertificatesJSON, p.CreatedAt,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return false, nil
+		}
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// GetLBTargetHTTPSProxy returns a proxy by full self link name.
+func (s *Store) GetLBTargetHTTPSProxy(name string) (LBTargetHTTPSProxy, bool, error) {
+	var p LBTargetHTTPSProxy
+	err := s.db.QueryRow(
+		`SELECT name, project_id, region, proxy_id, description, url_map, security_policy, ssl_certificates_json, created_at
+		 FROM lb_target_https_proxies WHERE name = ?`, name,
+	).Scan(&p.Name, &p.ProjectID, &p.Region, &p.ProxyID, &p.Description, &p.URLMap, &p.SecurityPolicy, &p.SSLCertificatesJSON, &p.CreatedAt)
+	if err == sql.ErrNoRows {
+		return LBTargetHTTPSProxy{}, false, nil
+	}
+	if err != nil {
+		return LBTargetHTTPSProxy{}, false, err
+	}
+	return p, true, nil
+}
+
+// ListLBTargetHTTPSProxies lists proxies for a project (global scope).
+func (s *Store) ListLBTargetHTTPSProxies(projectID, region string) ([]LBTargetHTTPSProxy, error) {
+	if region == "" {
+		region = "global"
+	}
+	rows, err := s.db.Query(
+		`SELECT name, project_id, region, proxy_id, description, url_map, security_policy, ssl_certificates_json, created_at
+		 FROM lb_target_https_proxies WHERE project_id = ? AND region = ? ORDER BY proxy_id`,
+		projectID, region,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LBTargetHTTPSProxy
+	for rows.Next() {
+		var p LBTargetHTTPSProxy
+		if err := rows.Scan(&p.Name, &p.ProjectID, &p.Region, &p.ProxyID, &p.Description, &p.URLMap, &p.SecurityPolicy, &p.SSLCertificatesJSON, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// UpdateLBTargetHTTPSProxy patches url map, security policy, and description.
+func (s *Store) UpdateLBTargetHTTPSProxy(name, description, urlMap, securityPolicy string) (bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE lb_target_https_proxies SET description = ?, url_map = ?, security_policy = ? WHERE name = ?`,
+		description, urlMap, securityPolicy, name,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// DeleteLBTargetHTTPSProxy deletes by full name.
+func (s *Store) DeleteLBTargetHTTPSProxy(name string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM lb_target_https_proxies WHERE name = ?`, name)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // CDNDistribution is a Cloud CDN distribution row.
 type CDNDistribution struct {
 	Name           string
@@ -669,6 +803,13 @@ func lbForwardingRuleName(projectID, region, ruleID string) string {
 		return fmt.Sprintf("projects/%s/global/forwardingRules/%s", projectID, ruleID)
 	}
 	return fmt.Sprintf("projects/%s/regions/%s/forwardingRules/%s", projectID, region, ruleID)
+}
+
+func lbTargetHTTPSProxyName(projectID, region, proxyID string) string {
+	if region == "" || region == "global" {
+		return fmt.Sprintf("projects/%s/global/targetHttpsProxies/%s", projectID, proxyID)
+	}
+	return fmt.Sprintf("projects/%s/regions/%s/targetHttpsProxies/%s", projectID, region, proxyID)
 }
 
 func cdnDistributionName(projectID, distributionID string) string {

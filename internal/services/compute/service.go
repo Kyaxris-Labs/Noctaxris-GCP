@@ -34,6 +34,9 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("DELETE /compute/v1/projects/{project}/zones/{zone}/instances/{instance}", s.wrap(principalFrom, s.deleteInstance))
 	mux.HandleFunc("PATCH /compute/v1/projects/{project}/zones/{zone}/instances/{instance}", s.wrap(principalFrom, s.patchInstance))
 	mux.HandleFunc("POST /compute/v1/projects/{project}/zones/{zone}/instances/{rest...}", s.wrap(principalFrom, s.instancePOSTAction))
+	mux.HandleFunc("GET /compute/v1/projects/{project}/zones/{zone}/operations/{operation}", s.wrap(principalFrom, s.getZoneOperation))
+	mux.HandleFunc("GET /compute/v1/projects/{project}/regions/{region}/operations/{operation}", s.wrap(principalFrom, s.getRegionOperation))
+	mux.HandleFunc("GET /compute/v1/projects/{project}/global/operations/{operation}", s.wrap(principalFrom, s.getGlobalOperation))
 
 	// Global networks
 	mux.HandleFunc("GET /compute/v1/projects/{project}/global/networks", s.wrap(principalFrom, s.listNetworks))
@@ -131,21 +134,31 @@ func firewallResourceName(project, id string) string {
 }
 
 func doneOperation(project, opType, targetLink, zone, region string) map[string]any {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
 	id := store.NewGCEResourceID()
 	name := "operation-" + id
+	return operationJSON(project, name, id, opType, targetLink, zone, region)
+}
+
+// operationJSON is a completed Operation using a fixed name (for Operations.get polls).
+func operationJSON(project, name, id, opType, targetLink, zone, region string) map[string]any {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if id == "" {
+		id = store.NewGCEResourceID()
+	}
 	op := map[string]any{
 		"kind":          "compute#operation",
 		"id":            id,
 		"name":          name,
 		"operationType": opType,
-		"targetLink":    targetLink,
 		"status":        "DONE",
 		"progress":      100,
 		"insertTime":    now,
 		"startTime":     now,
 		"endTime":       now,
 		"selfLink":      selfLink("projects", project, "global", "operations", name),
+	}
+	if targetLink != "" {
+		op["targetLink"] = targetLink
 	}
 	if zone != "" {
 		op["zone"] = selfLink("projects", project, "zones", zone)
@@ -306,6 +319,44 @@ func (s *Service) getInstance(w http.ResponseWriter, r *http.Request, p authn.Pr
 	writeJSON(w, http.StatusOK, toInstanceJSON(inst))
 }
 
+func (s *Service) getZoneOperation(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	zone := r.PathValue("zone")
+	opName := r.PathValue("operation")
+	if err := s.require(p, "compute.zoneOperations.get", project); err != nil {
+		if err2 := s.require(p, "compute.instances.get", project); err2 != nil {
+			writeAuthzErr(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, operationJSON(project, opName, "", "insert", "", zone, ""))
+}
+
+func (s *Service) getRegionOperation(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	region := r.PathValue("region")
+	opName := r.PathValue("operation")
+	if err := s.require(p, "compute.regionOperations.get", project); err != nil {
+		if err2 := s.require(p, "compute.subnetworks.get", project); err2 != nil {
+			writeAuthzErr(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, operationJSON(project, opName, "", "insert", "", "", region))
+}
+
+func (s *Service) getGlobalOperation(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	opName := r.PathValue("operation")
+	if err := s.require(p, "compute.globalOperations.get", project); err != nil {
+		if err2 := s.require(p, "compute.networks.get", project); err2 != nil {
+			writeAuthzErr(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, operationJSON(project, opName, "", "insert", "", "", ""))
+}
+
 func (s *Service) deleteInstance(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	zone := r.PathValue("zone")
@@ -452,7 +503,7 @@ func toInstanceJSON(inst store.GCEInstance) map[string]any {
 		nis = []any{}
 	}
 	out["kind"] = "compute#instance"
-	out["id"] = store.NewGCEResourceID()
+	out["id"] = instanceNumericID(inst)
 	out["name"] = inst.InstanceID
 	out["machineType"] = inst.MachineType
 	out["status"] = inst.Status
@@ -460,6 +511,7 @@ func toInstanceJSON(inst store.GCEInstance) map[string]any {
 	out["networkInterfaces"] = nis
 	out["selfLink"] = selfLink("projects", inst.ProjectID, "zones", inst.Zone, "instances", inst.InstanceID)
 	out["creationTimestamp"] = inst.CreatedAt
+	applyInstanceDiskFields(inst.ProjectID, inst.Zone, inst.InstanceID, out)
 	return out
 }
 

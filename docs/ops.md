@@ -104,7 +104,7 @@ Default `docker/compose.yaml` publishes loopback and starts restricted DinD with
 
 | Overlay | When |
 |---------|------|
-| `docker/compose.engine.yaml` | Compatibility shim (engine already in base). Older docs may still pass `-f compose.engine.yaml`. |
+| `docker/compose.engine.yaml` | Thin compatibility shim (API env + depends_on; engine already in base). Prefer plain `compose.yaml`. |
 | `docker/compose.engine-privileged.yaml` | Nested `docker info` / create fails on restricted DinD (Desktop/WSL edge cases). Privileged DinD is a host workaround, not the secure default. Keep publish on `127.0.0.1:4588` |
 | `docker/compose.lab-host-gateway.yaml` | Sets `NOCTAXRIS_GCP_INJECT_HOST_GATEWAY=1`. Cloud Run one-shot uses `NetworkMode: none` (limited benefit). Optional `NOCTAXRIS_GCP_PUBLISH_ADDR=0.0.0.0` for Desktop host-gateway reachability (lab-only). |
 | `docker/smoke-nested.sh` | Operator/CI nested proof (engine healthy, Memorystore nested host, Cloud Run nested invoke) |

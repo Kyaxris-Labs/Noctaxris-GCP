@@ -264,6 +264,13 @@ func (s *Service) handleEdge(w http.ResponseWriter, r *http.Request) {
 
 func lbSvcResolveBackend(st *store.Store, target string) (string, error) {
 	target = strings.TrimSpace(target)
+	if strings.Contains(target, "/targetHttpsProxies/") {
+		proxy, ok, err := st.GetLBTargetHTTPSProxy(target)
+		if err != nil || !ok {
+			return "", fmt.Errorf("target https proxy not found")
+		}
+		return lbSvcResolveBackend(st, proxy.URLMap)
+	}
 	if strings.Contains(target, "/urlMaps/") {
 		m, ok, err := st.GetLBURLMap(target)
 		if err != nil || !ok {

@@ -9,6 +9,8 @@
 #   NOCTAXRIS_GCP_NESTED=1  — keep nested/DinD SDK rows enabled (tests soft-skip
 #                             without compose.engine.yaml; default suites stay
 #                             mock-invoke friendly when unset)
+#   TF_GCP_PARITY=1         — after default Terraform, run opt-in parity stacks
+#   NOCTAXRIS_GCP_ADVANCED=1 — same parity Terraform loop as TF_GCP_PARITY=1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -53,5 +55,30 @@ echo "==> SDK (Python)"
 
 echo "==> Terraform (default stacks)"
 bash tests/terraform/run.sh
+
+if [[ "${TF_GCP_PARITY:-}" == "1" || "${NOCTAXRIS_GCP_ADVANCED:-}" == "1" ]]; then
+  echo "==> Terraform (parity stacks) [TF_GCP_PARITY=${TF_GCP_PARITY:-0} ADVANCED=${NOCTAXRIS_GCP_ADVANCED:-0}]"
+  # Keep in sync with tests/terraform/run.sh default STACKS; skip if already in default (avoids double-run after earn).
+  DEFAULT_TF_STACKS=(lab-storage lab-run lab-dns lab-compute lab-armor lab-kms lab-bigquery lab-iam lab-sql lab-redis)
+  PARITY_STACKS=(lab-compute-instance lab-lb-armor lab-kafka)
+  for stack in "${PARITY_STACKS[@]}"; do
+    skip=
+    for d in "${DEFAULT_TF_STACKS[@]}"; do
+      if [[ "$stack" == "$d" ]]; then
+        skip=1
+        break
+      fi
+    done
+    if [[ -n "$skip" ]]; then
+      echo "    skip ${stack} (already in default STACKS)"
+      continue
+    fi
+    if [[ -d "tests/terraform/stacks/${stack}" ]]; then
+      STACK="$stack" bash tests/terraform/run.sh
+    else
+      echo "    skip ${stack} (directory not present yet)"
+    fi
+  done
+fi
 
 echo "All suites finished."

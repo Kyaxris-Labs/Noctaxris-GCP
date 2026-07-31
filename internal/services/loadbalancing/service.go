@@ -27,7 +27,15 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /compute/v1/projects/{project}/"+scope+"/backendServices", s.wrap(principalFrom, s.listBackendServices))
 	mux.HandleFunc("POST /compute/v1/projects/{project}/"+scope+"/backendServices", s.wrap(principalFrom, s.insertBackendService))
 	mux.HandleFunc("GET /compute/v1/projects/{project}/"+scope+"/backendServices/{backendService}", s.wrap(principalFrom, s.getBackendService))
+	mux.HandleFunc("PATCH /compute/v1/projects/{project}/"+scope+"/backendServices/{backendService}", s.wrap(principalFrom, s.patchBackendService))
+	mux.HandleFunc("POST /compute/v1/projects/{project}/"+scope+"/backendServices/{backendService}/setSecurityPolicy", s.wrap(principalFrom, s.setBackendServiceSecurityPolicy))
 	mux.HandleFunc("DELETE /compute/v1/projects/{project}/"+scope+"/backendServices/{backendService}", s.wrap(principalFrom, s.deleteBackendService))
+
+	mux.HandleFunc("GET /compute/v1/projects/{project}/"+scope+"/targetHttpsProxies", s.wrap(principalFrom, s.listTargetHTTPSProxies))
+	mux.HandleFunc("POST /compute/v1/projects/{project}/"+scope+"/targetHttpsProxies", s.wrap(principalFrom, s.insertTargetHTTPSProxy))
+	mux.HandleFunc("GET /compute/v1/projects/{project}/"+scope+"/targetHttpsProxies/{targetHttpsProxy}", s.wrap(principalFrom, s.getTargetHTTPSProxy))
+	mux.HandleFunc("PATCH /compute/v1/projects/{project}/"+scope+"/targetHttpsProxies/{targetHttpsProxy}", s.wrap(principalFrom, s.patchTargetHTTPSProxy))
+	mux.HandleFunc("DELETE /compute/v1/projects/{project}/"+scope+"/targetHttpsProxies/{targetHttpsProxy}", s.wrap(principalFrom, s.deleteTargetHTTPSProxy))
 
 	mux.HandleFunc("GET /compute/v1/projects/{project}/"+scope+"/urlMaps", s.wrap(principalFrom, s.listURLMaps))
 	mux.HandleFunc("POST /compute/v1/projects/{project}/"+scope+"/urlMaps", s.wrap(principalFrom, s.insertURLMap))
@@ -83,6 +91,38 @@ func writeAuthzErr(w http.ResponseWriter, err error) {
 	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 }
 
+func selfLink(parts ...string) string {
+	return "https://www.googleapis.com/compute/v1/" + strings.Join(parts, "/")
+}
+
+func resourceNameFromSelfLink(raw string) string {
+	raw = strings.TrimSpace(raw)
+	const prefix = "https://www.googleapis.com/compute/v1/"
+	if strings.HasPrefix(raw, prefix) {
+		return strings.TrimPrefix(raw, prefix)
+	}
+	return raw
+}
+
+func doneOperation(project, opType, targetLink string) map[string]any {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	id := store.NewGCEResourceID()
+	name := "operation-" + id
+	return map[string]any{
+		"kind":          "compute#operation",
+		"id":            id,
+		"name":          name,
+		"operationType": opType,
+		"targetLink":    targetLink,
+		"status":        "DONE",
+		"progress":      100,
+		"insertTime":    now,
+		"startTime":     now,
+		"endTime":       now,
+		"selfLink":      selfLink("projects", project, "global", "operations", name),
+	}
+}
+
 func (s *Service) insertBackendService(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	if err := s.require(p, "compute.backendServices.create", project); err != nil {
@@ -106,10 +146,12 @@ func (s *Service) insertBackendService(w http.ResponseWriter, r *http.Request, p
 		raw, _ := json.Marshal(b)
 		backendsJSON = string(raw)
 	}
+	securityPolicy, _ := body["securityPolicy"].(string)
+	securityPolicy = resourceNameFromSelfLink(securityPolicy)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	created, err := s.Store.CreateLBBackendService(store.LBBackendService{
 		Name: name, ProjectID: project, Region: "global", ServiceID: serviceID,
-		Description: desc, Protocol: protocol, BackendsJSON: backendsJSON, CreatedAt: now,
+		Description: desc, Protocol: protocol, BackendsJSON: backendsJSON, SecurityPolicy: securityPolicy, CreatedAt: now,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -119,12 +161,80 @@ func (s *Service) insertBackendService(w http.ResponseWriter, r *http.Request, p
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "backend service already exists")
 		return
 	}
-	bs, ok, err := s.Store.GetLBBackendService(name)
-	if err != nil || !ok {
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created backend service missing")
+	writeJSON(w, http.StatusOK, doneOperation(project, "insert", selfLink("projects", project, "global", "backendServices", serviceID)))
+}
+
+func (s *Service) patchBackendService(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	serviceID := r.PathValue("backendService")
+	if err := s.require(p, "compute.backendServices.update", project); err != nil {
+		writeAuthzErr(w, err)
 		return
 	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	name := fmt.Sprintf("projects/%s/global/backendServices/%s", project, serviceID)
+	bs, ok, err := s.Store.GetLBBackendService(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "backend service not found")
+		return
+	}
+	securityPolicy := bs.SecurityPolicy
+	if v, ok := body["securityPolicy"].(string); ok {
+		securityPolicy = resourceNameFromSelfLink(v)
+	}
+	updated, err := s.Store.UpdateLBBackendServiceSecurityPolicy(name, securityPolicy)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !updated {
+		gcperrors.NotFound(w, "backend service not found")
+		return
+	}
+	bs.SecurityPolicy = securityPolicy
 	writeJSON(w, http.StatusOK, toBackendServiceJSON(bs))
+}
+
+func (s *Service) setBackendServiceSecurityPolicy(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	serviceID := r.PathValue("backendService")
+	if err := s.require(p, "compute.backendServices.update", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	securityPolicy, _ := body["securityPolicy"].(string)
+	securityPolicy = resourceNameFromSelfLink(securityPolicy)
+	name := fmt.Sprintf("projects/%s/global/backendServices/%s", project, serviceID)
+	if _, ok, err := s.Store.GetLBBackendService(name); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.NotFound(w, "backend service not found")
+		return
+	}
+	updated, err := s.Store.UpdateLBBackendServiceSecurityPolicy(name, securityPolicy)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !updated {
+		gcperrors.NotFound(w, "backend service not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, doneOperation(project, "compute.backendServices.setSecurityPolicy", selfLink("projects", project, "global", "backendServices", serviceID)))
 }
 
 func (s *Service) getBackendService(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -182,7 +292,154 @@ func (s *Service) deleteBackendService(w http.ResponseWriter, r *http.Request, p
 		gcperrors.NotFound(w, "backend service not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{})
+	writeJSON(w, http.StatusOK, doneOperation(project, "delete", selfLink("projects", project, "global", "backendServices", serviceID)))
+}
+
+func (s *Service) insertTargetHTTPSProxy(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "compute.targetHttpsProxies.create", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	proxyID, _ := body["name"].(string)
+	if proxyID == "" {
+		proxyID = "https-proxy-" + store.NewLBResourceID()
+	}
+	name := fmt.Sprintf("projects/%s/global/targetHttpsProxies/%s", project, proxyID)
+	desc, _ := body["description"].(string)
+	urlMap, _ := body["urlMap"].(string)
+	securityPolicy, _ := body["securityPolicy"].(string)
+	sslJSON := "[]"
+	if certs, ok := body["sslCertificates"]; ok {
+		raw, _ := json.Marshal(certs)
+		sslJSON = string(raw)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	created, err := s.Store.CreateLBTargetHTTPSProxy(store.LBTargetHTTPSProxy{
+		Name: name, ProjectID: project, Region: "global", ProxyID: proxyID,
+		Description: desc, URLMap: urlMap, SecurityPolicy: securityPolicy, SSLCertificatesJSON: sslJSON, CreatedAt: now,
+	})
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !created {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "target https proxy already exists")
+		return
+	}
+	writeJSON(w, http.StatusOK, doneOperation(project, "insert", selfLink("projects", project, "global", "targetHttpsProxies", proxyID)))
+}
+
+func (s *Service) getTargetHTTPSProxy(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	proxyID := r.PathValue("targetHttpsProxy")
+	if err := s.require(p, "compute.targetHttpsProxies.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := fmt.Sprintf("projects/%s/global/targetHttpsProxies/%s", project, proxyID)
+	proxy, ok, err := s.Store.GetLBTargetHTTPSProxy(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "target https proxy not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, toTargetHTTPSProxyJSON(proxy))
+}
+
+func (s *Service) listTargetHTTPSProxies(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "compute.targetHttpsProxies.list", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	rows, err := s.Store.ListLBTargetHTTPSProxies(project, "global")
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	items := make([]any, 0, len(rows))
+	for _, proxy := range rows {
+		items = append(items, toTargetHTTPSProxyJSON(proxy))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"kind": "compute#targetHttpsProxyList", "items": items})
+}
+
+func (s *Service) patchTargetHTTPSProxy(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	proxyID := r.PathValue("targetHttpsProxy")
+	if err := s.require(p, "compute.targetHttpsProxies.update", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	name := fmt.Sprintf("projects/%s/global/targetHttpsProxies/%s", project, proxyID)
+	proxy, ok, err := s.Store.GetLBTargetHTTPSProxy(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "target https proxy not found")
+		return
+	}
+	desc := proxy.Description
+	urlMap := proxy.URLMap
+	securityPolicy := proxy.SecurityPolicy
+	if v, ok := body["description"].(string); ok {
+		desc = v
+	}
+	if v, ok := body["urlMap"].(string); ok {
+		urlMap = v
+	}
+	if v, ok := body["securityPolicy"].(string); ok {
+		securityPolicy = v
+	}
+	updated, err := s.Store.UpdateLBTargetHTTPSProxy(name, desc, urlMap, securityPolicy)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !updated {
+		gcperrors.NotFound(w, "target https proxy not found")
+		return
+	}
+	proxy.Description = desc
+	proxy.URLMap = urlMap
+	proxy.SecurityPolicy = securityPolicy
+	writeJSON(w, http.StatusOK, toTargetHTTPSProxyJSON(proxy))
+}
+
+func (s *Service) deleteTargetHTTPSProxy(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	proxyID := r.PathValue("targetHttpsProxy")
+	if err := s.require(p, "compute.targetHttpsProxies.delete", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := fmt.Sprintf("projects/%s/global/targetHttpsProxies/%s", project, proxyID)
+	ok, err := s.Store.DeleteLBTargetHTTPSProxy(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "target https proxy not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, doneOperation(project, "delete", selfLink("projects", project, "global", "targetHttpsProxies", proxyID)))
 }
 
 func (s *Service) insertURLMap(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -415,9 +672,19 @@ func (s *Service) handleLBInvoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) resolveBackendService(target string) (string, error) {
-	target = strings.TrimSpace(target)
+	target = resourceNameFromSelfLink(target)
 	if target == "" {
 		return "", fmt.Errorf("empty target")
+	}
+	if strings.Contains(target, "/targetHttpsProxies/") {
+		proxy, ok, err := s.Store.GetLBTargetHTTPSProxy(target)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("target https proxy not found")
+		}
+		return s.resolveBackendService(proxy.URLMap)
 	}
 	if strings.Contains(target, "/urlMaps/") {
 		m, ok, err := s.Store.GetLBURLMap(target)
@@ -439,7 +706,7 @@ func toBackendServiceJSON(bs store.LBBackendService) map[string]any {
 	out := map[string]any{
 		"kind":     "compute#backendService",
 		"name":     bs.ServiceID,
-		"selfLink": bs.Name,
+		"selfLink": selfLink("projects", bs.ProjectID, "global", "backendServices", bs.ServiceID),
 		"protocol": bs.Protocol,
 	}
 	if bs.Description != "" {
@@ -449,6 +716,33 @@ func toBackendServiceJSON(bs store.LBBackendService) map[string]any {
 	_ = json.Unmarshal([]byte(bs.BackendsJSON), &backends)
 	if len(backends) > 0 {
 		out["backends"] = backends
+	}
+	if bs.SecurityPolicy != "" {
+		pol := resourceNameFromSelfLink(bs.SecurityPolicy)
+		out["securityPolicy"] = "https://www.googleapis.com/compute/v1/" + strings.TrimPrefix(pol, "/")
+	}
+	return out
+}
+
+func toTargetHTTPSProxyJSON(p store.LBTargetHTTPSProxy) map[string]any {
+	out := map[string]any{
+		"kind":     "compute#targetHttpsProxy",
+		"name":     p.ProxyID,
+		"selfLink": p.Name,
+	}
+	if p.Description != "" {
+		out["description"] = p.Description
+	}
+	if p.URLMap != "" {
+		out["urlMap"] = p.URLMap
+	}
+	if p.SecurityPolicy != "" {
+		out["securityPolicy"] = p.SecurityPolicy
+	}
+	var sslCerts []any
+	_ = json.Unmarshal([]byte(p.SSLCertificatesJSON), &sslCerts)
+	if len(sslCerts) > 0 {
+		out["sslCertificates"] = sslCerts
 	}
 	return out
 }

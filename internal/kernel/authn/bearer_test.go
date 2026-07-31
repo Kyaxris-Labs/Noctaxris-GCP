@@ -108,4 +108,13 @@ func TestIsPublicPath(t *testing.T) {
 	if !authn.IsPublicPath("/cdn/dist/../dist/obj") {
 		t.Fatal("cleaned cdn edge path should stay public")
 	}
+	if !authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/.well-known/openid-configuration") {
+		t.Fatal("oidc-lab discovery should be public")
+	}
+	if !authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/.well-known/jwks.json") {
+		t.Fatal("oidc-lab JWKS should be public")
+	}
+	if authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/token") {
+		t.Fatal("oidc-lab must not expose mint paths as public")
+	}
 }

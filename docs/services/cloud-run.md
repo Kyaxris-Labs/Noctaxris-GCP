@@ -99,5 +99,5 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/services/demo:invoke" \
   -d '{}'
-# Nested path: compose.engine.yaml + service without labResponseBody; see docs/configuration.md
+# Nested path: default compose.yaml engine + service without labResponseBody; see docs/configuration.md
 ```

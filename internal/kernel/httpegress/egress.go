@@ -26,6 +26,9 @@ const EnvHTTPAllowlist = "NOCTAXRIS_GCP_HTTP_ALLOWLIST"
 // LabHTTPCatcherPath is the in-process catcher used by unit tests and local hooks.
 const LabHTTPCatcherPath = "/_noctaxris-gcp/http-catcher"
 
+// LabOIDCLabWellKnownPrefix is the public OIDC discovery/JWKS mount for STS verify self-fetch.
+const LabOIDCLabWellKnownPrefix = "/_noctaxris-gcp/oidc-lab/.well-known/"
+
 // LabListenPort is the default API port used for lab-local delivery checks.
 const LabListenPort = "4588"
 
@@ -42,7 +45,7 @@ func Validate(endpoint string) error {
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("%w: protocol must be http or https", ErrNotAllowed)
 	}
-	if IsLabCatcher(u, scheme) || IsLabLocal(u, scheme) {
+	if IsLabCatcher(u, scheme) || IsLabLocal(u, scheme) || IsLabOIDC(u, scheme) {
 		return nil
 	}
 	if !egressEnabled() || !allowlisted(endpoint) {
@@ -64,6 +67,14 @@ func IsLabCatcher(u *url.URL, scheme string) bool {
 	}
 	path := u.Path
 	return path == LabHTTPCatcherPath || strings.HasPrefix(path, LabHTTPCatcherPath+"/")
+}
+
+// IsLabOIDC reports loopback oidc-lab discovery/JWKS (STS verify self-fetch on any lab listener port).
+func IsLabOIDC(u *url.URL, scheme string) bool {
+	if !isLoopbackHost(u.Hostname()) {
+		return false
+	}
+	return strings.HasPrefix(u.Path, LabOIDCLabWellKnownPrefix)
 }
 
 // IsLabLocal reports loopback delivery to the lab API port (self-invoke theatre).
@@ -183,7 +194,7 @@ func PinnedDialContext(ctx context.Context, network, addr string) (net.Conn, err
 	if err != nil {
 		return nil, fmt.Errorf("http egress: dial addr: %w", err)
 	}
-	if isLoopbackHost(host) && port == LabListenPort {
+	if isLoopbackHost(host) {
 		var d net.Dialer
 		return d.DialContext(ctx, network, net.JoinHostPort(host, port))
 	}

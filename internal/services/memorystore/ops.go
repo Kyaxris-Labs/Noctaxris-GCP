@@ -22,6 +22,9 @@ func (s *Service) getOperation(w http.ResponseWriter, r *http.Request, p authn.P
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	opID, _ := splitAction(r.PathValue("operation"))
+	if restlab.DispatchLocationOperationGetHooks(w, r, p, project, location, opID) {
+		return
+	}
 	// Prefer redis.operations.get; instances.get is an accepted lab fallback.
 	if err := s.require(p, "redis.operations.get", project); err != nil {
 		if err2 := s.require(p, "redis.instances.get", project); err2 != nil {

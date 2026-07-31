@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -17,6 +18,8 @@ CREATE TABLE IF NOT EXISTS kafka_clusters (
   bootstrap_servers TEXT NOT NULL DEFAULT '',
   container_id TEXT NOT NULL DEFAULT '',
   labels_json TEXT NOT NULL DEFAULT '{}',
+  capacity_config_json TEXT NOT NULL DEFAULT '{}',
+  gcp_config_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   UNIQUE (project_id, location, cluster_id)
 );
@@ -56,6 +59,17 @@ func (s *Store) migrateManagedKafka() error {
 	if _, err := s.db.Exec(kafkaSchema); err != nil {
 		return fmt.Errorf("apply managed kafka schema: %w", err)
 	}
+	alters := []string{
+		`ALTER TABLE kafka_clusters ADD COLUMN capacity_config_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE kafka_clusters ADD COLUMN gcp_config_json TEXT NOT NULL DEFAULT '{}'`,
+	}
+	for _, stmt := range alters {
+		if _, err := s.db.Exec(stmt); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return fmt.Errorf("migrate kafka cluster columns: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -70,6 +84,8 @@ type KafkaCluster struct {
 	BootstrapServers  string
 	ContainerID       string
 	LabelsJSON        string
+	CapacityConfigJSON string
+	GCPConfigJSON     string
 	CreatedAt         string
 }
 
@@ -87,6 +103,12 @@ func (s *Store) CreateKafkaCluster(c KafkaCluster) (bool, error) {
 	if c.LabelsJSON == "" {
 		c.LabelsJSON = "{}"
 	}
+	if c.CapacityConfigJSON == "" {
+		c.CapacityConfigJSON = "{}"
+	}
+	if c.GCPConfigJSON == "" {
+		c.GCPConfigJSON = "{}"
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if c.CreatedAt == "" {
 		c.CreatedAt = now
@@ -94,10 +116,10 @@ func (s *Store) CreateKafkaCluster(c KafkaCluster) (bool, error) {
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO kafka_clusters
 		 (name, project_id, location, cluster_id, display_name, state, bootstrap_servers,
-		  container_id, labels_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  container_id, labels_json, capacity_config_json, gcp_config_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.Name, c.ProjectID, c.Location, c.ClusterID, c.DisplayName, c.State, c.BootstrapServers,
-		c.ContainerID, c.LabelsJSON, c.CreatedAt,
+		c.ContainerID, c.LabelsJSON, c.CapacityConfigJSON, c.GCPConfigJSON, c.CreatedAt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("create kafka cluster: %w", err)
@@ -114,11 +136,11 @@ func (s *Store) GetKafkaCluster(name string) (KafkaCluster, bool, error) {
 	var c KafkaCluster
 	err := s.db.QueryRow(
 		`SELECT name, project_id, location, cluster_id, display_name, state, bootstrap_servers,
-		        container_id, labels_json, created_at
+		        container_id, labels_json, capacity_config_json, gcp_config_json, created_at
 		 FROM kafka_clusters WHERE name = ?`, name,
 	).Scan(
 		&c.Name, &c.ProjectID, &c.Location, &c.ClusterID, &c.DisplayName, &c.State,
-		&c.BootstrapServers, &c.ContainerID, &c.LabelsJSON, &c.CreatedAt,
+		&c.BootstrapServers, &c.ContainerID, &c.LabelsJSON, &c.CapacityConfigJSON, &c.GCPConfigJSON, &c.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return KafkaCluster{}, false, nil
@@ -133,7 +155,7 @@ func (s *Store) GetKafkaCluster(name string) (KafkaCluster, bool, error) {
 func (s *Store) ListKafkaClusters(projectID, location string) ([]KafkaCluster, error) {
 	rows, err := s.db.Query(
 		`SELECT name, project_id, location, cluster_id, display_name, state, bootstrap_servers,
-		        container_id, labels_json, created_at
+		        container_id, labels_json, capacity_config_json, gcp_config_json, created_at
 		 FROM kafka_clusters WHERE project_id = ? AND location = ? ORDER BY name`,
 		projectID, location,
 	)
@@ -146,7 +168,7 @@ func (s *Store) ListKafkaClusters(projectID, location string) ([]KafkaCluster, e
 		var c KafkaCluster
 		if err := rows.Scan(
 			&c.Name, &c.ProjectID, &c.Location, &c.ClusterID, &c.DisplayName, &c.State,
-			&c.BootstrapServers, &c.ContainerID, &c.LabelsJSON, &c.CreatedAt,
+			&c.BootstrapServers, &c.ContainerID, &c.LabelsJSON, &c.CapacityConfigJSON, &c.GCPConfigJSON, &c.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

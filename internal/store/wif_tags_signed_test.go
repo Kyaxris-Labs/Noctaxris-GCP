@@ -23,7 +23,7 @@ func TestWIFPoolAndProviderCRUD(t *testing.T) {
 	if err != nil || !ok || got.PoolID != "lab-pool" {
 		t.Fatalf("get pool ok=%v err=%v %#v", ok, err, got)
 	}
-	prov, err := st.CreateWIFProvider(p.Name, "oidc-1", "OIDC", "", "https://example.com", `{"google.subject":"assertion.sub"}`, false)
+	prov, err := st.CreateWIFProvider(p.Name, "oidc-1", "OIDC", "", "https://example.com", `{"google.subject":"assertion.sub"}`, "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}

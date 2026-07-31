@@ -48,6 +48,41 @@ func TestKafkaClusterStoreCRUD(t *testing.T) {
 	}
 }
 
+func TestKafkaClusterCapacityGcpConfigStoreEcho(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	capacity := `{"vcpuCount":3,"memoryBytes":3221225472}`
+	gcp := `{"accessConfig":{"networkConfigs":[{"subnet":"projects/p/regions/us-central1/subnetworks/default"}]}}`
+	ok, err := st.CreateKafkaCluster(store.KafkaCluster{
+		Name:               "projects/p/locations/us-central1/clusters/c1",
+		ProjectID:          "p",
+		Location:           "us-central1",
+		ClusterID:          "c1",
+		CapacityConfigJSON: capacity,
+		GCPConfigJSON:      gcp,
+		CreatedAt:          "2026-01-01T00:00:00Z",
+	})
+	if err != nil || !ok {
+		t.Fatalf("create ok=%v err=%v", ok, err)
+	}
+	c, found, err := st.GetKafkaCluster("projects/p/locations/us-central1/clusters/c1")
+	if err != nil || !found {
+		t.Fatalf("get found=%v err=%v", found, err)
+	}
+	if c.CapacityConfigJSON != capacity || c.GCPConfigJSON != gcp {
+		t.Fatalf("stored capacity=%q gcp=%q", c.CapacityConfigJSON, c.GCPConfigJSON)
+	}
+}
+
 func TestKafkaTopicAndACLStoreCRUD(t *testing.T) {
 	dir := t.TempDir()
 	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))

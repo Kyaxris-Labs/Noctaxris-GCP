@@ -352,3 +352,222 @@ func TestComputeImagesListGetFamily(t *testing.T) {
 	}
 }
 
+func TestInstanceDisksAndBootDiskEcho(t *testing.T) {
+	mux, _, project := mountCompute(t)
+	zone := "us-central1-a"
+	base := "/compute/v1/projects/" + project + "/zones/" + zone + "/instances"
+	image := "projects/debian-cloud/global/images/family/debian-12"
+	body := `{
+		"name":"disk-vm",
+		"machineType":"zones/us-central1-a/machineTypes/e2-micro",
+		"disks":[{
+			"boot":true,
+			"autoDelete":true,
+			"initializeParams":{"image":"` + image + `","size":20}
+		}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, base, bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("insert status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base+"/disk-vm", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var inst map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &inst)
+	disks, ok := inst["disks"].([]any)
+	if !ok || len(disks) != 1 {
+		t.Fatalf("disks=%#v", inst["disks"])
+	}
+	d0, _ := disks[0].(map[string]any)
+	if d0["boot"] != true {
+		t.Fatalf("boot flag=%#v", d0)
+	}
+	ip, _ := d0["initializeParams"].(map[string]any)
+	if ip == nil {
+		t.Fatalf("initializeParams missing: %#v", d0)
+	}
+	if ip["image"] != image {
+		t.Fatalf("image echo=%#v", ip["image"])
+	}
+	if ip["sourceImage"] != image {
+		t.Fatalf("sourceImage=%#v", ip["sourceImage"])
+	}
+	if ip["size"] != float64(20) {
+		t.Fatalf("size echo=%#v", ip["size"])
+	}
+}
+
+func TestInstanceBootDiskFieldEcho(t *testing.T) {
+	mux, _, project := mountCompute(t)
+	zone := "us-central1-a"
+	base := "/compute/v1/projects/" + project + "/zones/" + zone + "/instances"
+	image := "projects/debian-cloud/global/images/debian-12-bookworm-v20240701"
+	body := `{
+		"name":"bootdisk-vm",
+		"bootDisk":{
+			"autoDelete":true,
+			"initializeParams":{"sourceImage":"` + image + `","diskSizeGb":"15"}
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPost, base, bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("insert status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base+"/bootdisk-vm", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var inst map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &inst)
+	disks, _ := inst["disks"].([]any)
+	if len(disks) != 1 {
+		t.Fatalf("expected canonical disks, got %#v", inst["disks"])
+	}
+	bootDisk, _ := inst["bootDisk"].(map[string]any)
+	if bootDisk == nil {
+		t.Fatalf("bootDisk missing: %#v", inst)
+	}
+	ip, _ := bootDisk["initializeParams"].(map[string]any)
+	if ip["sourceImage"] != image || ip["diskSizeGb"] != "15" {
+		t.Fatalf("bootDisk initializeParams=%#v", ip)
+	}
+}
+
+func TestInstanceStableNumericID(t *testing.T) {
+	mux, _, project := mountCompute(t)
+	zone := "us-central1-a"
+	base := "/compute/v1/projects/" + project + "/zones/" + zone + "/instances"
+	body := `{"name":"stable-id-vm"}`
+	req := httptest.NewRequest(http.MethodPost, base, bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("insert status=%d", rec.Code)
+	}
+
+	var id1 string
+	for i := 0; i < 2; i++ {
+		req = httptest.NewRequest(http.MethodGet, base+"/stable-id-vm", nil)
+		rec = httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		var inst map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &inst)
+		id, _ := inst["id"].(string)
+		if id == "" {
+			t.Fatalf("missing id: %#v", inst)
+		}
+		if i == 0 {
+			id1 = id
+			continue
+		}
+		if id != id1 {
+			t.Fatalf("id changed between reads: %q vs %q", id1, id)
+		}
+	}
+}
+
+func TestZoneOperationGETDone(t *testing.T) {
+	mux, _, project := mountCompute(t)
+	zone := "us-central1-a"
+	base := "/compute/v1/projects/" + project + "/zones/" + zone + "/instances"
+	req := httptest.NewRequest(http.MethodPost, base, bytes.NewReader([]byte(`{"name":"op-vm"}`)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("insert status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var op map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &op)
+	opName, _ := op["name"].(string)
+	if opName == "" {
+		t.Fatalf("insert op missing name: %#v", op)
+	}
+
+	opURL := "/compute/v1/projects/" + project + "/zones/" + zone + "/operations/" + opName
+	req = httptest.NewRequest(http.MethodGet, opURL, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("operation get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &op)
+	if op["status"] != "DONE" {
+		t.Fatalf("operation status=%#v", op["status"])
+	}
+	if op["name"] != opName {
+		t.Fatalf("operation name=%#v want %q", op["name"], opName)
+	}
+	if op["kind"] != "compute#operation" || op["operationType"] == nil || op["id"] == nil {
+		t.Fatalf("poll shape missing doneOperation fields: %#v", op)
+	}
+}
+
+func TestRegionAndGlobalOperationGETDone(t *testing.T) {
+	mux, _, project := mountCompute(t)
+
+	netReq := httptest.NewRequest(http.MethodPost, "/compute/v1/projects/"+project+"/global/networks",
+		bytes.NewReader([]byte(`{"name":"op-vpc","autoCreateSubnetworks":false}`)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, netReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("network insert status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var netOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &netOp)
+	netOpName, _ := netOp["name"].(string)
+	if netOpName == "" {
+		t.Fatalf("network op=%#v", netOp)
+	}
+	gURL := "/compute/v1/projects/" + project + "/global/operations/" + netOpName
+	req := httptest.NewRequest(http.MethodGet, gURL, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("global op get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var gOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &gOp)
+	if gOp["status"] != "DONE" || gOp["name"] != netOpName {
+		t.Fatalf("global poll=%#v", gOp)
+	}
+
+	region := "us-central1"
+	subReq := httptest.NewRequest(http.MethodPost, "/compute/v1/projects/"+project+"/regions/"+region+"/subnetworks",
+		bytes.NewReader([]byte(`{"name":"op-subnet","network":"global/networks/op-vpc","ipCidrRange":"10.9.0.0/24"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, subReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("subnet insert status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var subOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &subOp)
+	subOpName, _ := subOp["name"].(string)
+	if subOpName == "" {
+		t.Fatalf("subnet op=%#v", subOp)
+	}
+	rURL := "/compute/v1/projects/" + project + "/regions/" + region + "/operations/" + subOpName
+	req = httptest.NewRequest(http.MethodGet, rURL, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("region op get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var rOp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &rOp)
+	if rOp["status"] != "DONE" || rOp["name"] != subOpName {
+		t.Fatalf("region poll=%#v", rOp)
+	}
+}
+

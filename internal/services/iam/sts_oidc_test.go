@@ -34,7 +34,7 @@ func TestSTSTheatreAcceptsAnySubjectToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := h.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", "https://example.com", "", false)
+	prov, err := h.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", "https://example.com", "", "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestSTSVerifyRejectsBadSubjectToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := h.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", "https://example.com", "", false)
+	prov, err := h.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", "https://example.com", "", "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestSTSVerifyAcceptsSignedJWTViaLabJWKS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "", false)
+	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "", "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}

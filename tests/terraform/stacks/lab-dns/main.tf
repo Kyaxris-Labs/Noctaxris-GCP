@@ -3,8 +3,7 @@
 #
 # Cloud DNS: hashicorp/google dns_custom_endpoint
 # (default BaseUrl https://dns.googleapis.com/dns/v1/).
-# Managed zone create/get/delete only. google_dns_record_set uses Changes.create,
-# which this lab does not implement — do not add record-set resources here.
+# Managed zone plus google_dns_record_set (Changes.create/get).
 terraform {
   required_version = ">= 1.5.0"
   required_providers {
@@ -49,9 +48,15 @@ resource "google_dns_managed_zone" "lab" {
   description = "Noctaxris-GCP Terraform lab managed zone"
   visibility  = "public"
 
-  # Lab delete cascades stored rrsets (including seeded NS/SOA). force_destroy
-  # would call Changes.create, which the lab does not expose.
   force_destroy = false
+}
+
+resource "google_dns_record_set" "lab_a" {
+  name         = "www.${var.name_prefix}.noctaxris-gcp.lab."
+  managed_zone = google_dns_managed_zone.lab.name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["10.0.0.1"]
 }
 
 output "zone_name" {
@@ -64,4 +69,8 @@ output "dns_name" {
 
 output "name_servers" {
   value = google_dns_managed_zone.lab.name_servers
+}
+
+output "record_fqdn" {
+  value = google_dns_record_set.lab_a.name
 }

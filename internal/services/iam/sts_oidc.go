@@ -10,7 +10,9 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -70,11 +72,34 @@ func (h *Handler) fetchOIDCJWKS(issuerURI string) ([]byte, error) {
 		var disc struct {
 			JWKSURI string `json:"jwks_uri"`
 		}
-		if json.Unmarshal(body, &disc) == nil && strings.TrimSpace(disc.JWKSURI) != "" {
-			return h.fetchSTSURL(strings.TrimSpace(disc.JWKSURI))
+		if json.Unmarshal(body, &disc) == nil {
+			jwksURI := strings.TrimSpace(disc.JWKSURI)
+			if jwksURI != "" && jwksURIMatchesIssuerOrigin(issuer, jwksURI) {
+				return h.fetchSTSURL(jwksURI)
+			}
 		}
 	}
 	return h.fetchSTSURL(jwksDirect)
+}
+
+func jwksURIMatchesIssuerOrigin(issuer, jwksURI string) bool {
+	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
+	iu, err := url.Parse(issuer)
+	if err != nil || iu.Scheme == "" || iu.Host == "" {
+		return false
+	}
+	ju, err := url.Parse(strings.TrimSpace(jwksURI))
+	if err != nil || ju.Scheme == "" || ju.Host == "" {
+		return false
+	}
+	if !strings.EqualFold(iu.Scheme, ju.Scheme) || !strings.EqualFold(iu.Host, ju.Host) {
+		return false
+	}
+	// Only follow discovery jwks_uri when it is exactly issuer/.well-known/jwks.json
+	// (same-host arbitrary paths on the lab listener must not be used as JWKS).
+	wantPath := path.Clean(iu.Path + "/.well-known/jwks.json")
+	gotPath := path.Clean(ju.Path)
+	return wantPath == gotPath
 }
 
 // verifyOIDCSubjectToken verifies RS256 JWT signature + iss/aud/exp basics.
@@ -101,7 +126,7 @@ func (h *Handler) verifyOIDCSubjectToken(subjectToken string, prov store.Workloa
 	if gotIss == "" || !strings.EqualFold(gotIss, wantIss) {
 		return "", fmt.Errorf("sts oidc: iss mismatch")
 	}
-	if !audienceOK(claims, prov.Name) {
+	if !audienceOK(claims, prov) {
 		return "", fmt.Errorf("sts oidc: aud mismatch")
 	}
 	sub := claimString(claims, "sub")
@@ -111,10 +136,16 @@ func (h *Handler) verifyOIDCSubjectToken(subjectToken string, prov store.Workloa
 	return labSubjectFromToken(sub), nil
 }
 
-func audienceOK(claims map[string]any, providerName string) bool {
+func audienceOK(claims map[string]any, prov store.WorkloadIdentityPoolProvider) bool {
 	allowed := map[string]struct{}{
-		providerName:                         {},
-		"//iam.googleapis.com/" + providerName: {},
+		prov.Name:                            {},
+		"//iam.googleapis.com/" + prov.Name: {},
+	}
+	for _, a := range prov.AllowedAudiences {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			allowed[a] = struct{}{}
+		}
 	}
 	auds := claimAudienceList(claims)
 	if len(auds) == 0 {

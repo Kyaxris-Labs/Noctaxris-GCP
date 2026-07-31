@@ -7,7 +7,7 @@
 # provider's OperationWait short-circuits without Operations GET (not mounted).
 #
 # Skipped here (honest gaps):
-# - google_compute_instance: ResolveImage needs Images API (not in lab)
+# - google_compute_instance: opt-in stack lab-compute-instance (boot disk + zone Operations GET)
 # - google_bigtable_*: provider uses gRPC InstanceAdminClient; lab is REST-only
 terraform {
   required_version = ">= 1.5.0"

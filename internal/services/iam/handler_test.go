@@ -82,7 +82,7 @@ func TestSTSTokenExchangeHappyAndFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := h.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", "https://example.com", "", false)
+	prov, err := h.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", "https://example.com", "", "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +305,179 @@ func TestCustomRolesCRUD(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("deleted custom role must stop granting")
+	}
+}
+
+func TestCustomRoleUndelete(t *testing.T) {
+	h := openIAM(t)
+	const project = "noctaxris-gcp-local"
+	h.setWho("root@"+project+".iam.gserviceaccount.com", true)
+
+	createBody := []byte(`{
+		"roleId":"roleUndelete",
+		"role":{"title":"T","includedPermissions":["storage.buckets.list"]}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles", bytes.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/projects/"+project+"/roles/roleUndelete", nil)
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, delReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/roles/roleUndelete", nil)
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, getReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get deleted status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["deleted"] != true {
+		t.Fatalf("get on soft-deleted role must return deleted:true, got %#v", got)
+	}
+
+	dupReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles", bytes.NewReader(createBody))
+	dupReq.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, dupReq)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("recreate while deleted expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	undReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles/roleUndelete:undelete", bytes.NewReader([]byte("{}")))
+	undReq.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, undReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("undelete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var restored map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored["deleted"] != false {
+		t.Fatalf("undelete response: %#v", restored)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/roles", nil)
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, listReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var list map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	roles, _ := list["roles"].([]any)
+	if len(roles) != 1 {
+		t.Fatalf("list after undelete: %#v", list)
+	}
+}
+
+func TestCustomRoleUndeleteAuthzDenied(t *testing.T) {
+	h := openIAM(t)
+	const project = "noctaxris-gcp-local"
+	h.setWho("root@"+project+".iam.gserviceaccount.com", true)
+	createBody := []byte(`{"roleId":"noUndelete","role":{"title":"T","includedPermissions":["storage.buckets.list"]}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles", bytes.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/projects/"+project+"/roles/noUndelete", nil)
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, delReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d", rec.Code)
+	}
+
+	viewer := seedServiceAccount(t, h.store, project, "role-undelete-viewer")
+	if err := h.store.PutIAMPolicyJSON("projects/"+project, authz.Policy{
+		Etag: "v1",
+		Bindings: []authz.Binding{{
+			Role:    "roles/viewer",
+			Members: []string{"serviceAccount:" + viewer},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.setWho(viewer, false)
+	undReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles/noUndelete:undelete", nil)
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, undReq)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer undelete expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCustomRoleUndeleteAuthzAllowed(t *testing.T) {
+	h := openIAM(t)
+	const project = "noctaxris-gcp-local"
+	h.setWho("root@"+project+".iam.gserviceaccount.com", true)
+	createBody := []byte(`{"roleId":"ownerUndelete","role":{"title":"T","includedPermissions":["storage.buckets.list"]}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles", bytes.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/projects/"+project+"/roles/ownerUndelete", nil)
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, delReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d", rec.Code)
+	}
+
+	owner := seedServiceAccount(t, h.store, project, "role-undelete-owner")
+	if err := h.store.PutIAMPolicyJSON("projects/"+project, authz.Policy{
+		Etag: "o1",
+		Bindings: []authz.Binding{{
+			Role:    "roles/owner",
+			Members: []string{"serviceAccount:" + owner},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.setWho(owner, false)
+	undReq := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles/ownerUndelete:undelete", bytes.NewReader([]byte("{}")))
+	undReq.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, undReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner undelete expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var restored map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored["deleted"] != false {
+		t.Fatalf("undelete response: %#v", restored)
+	}
+
+	// Undelete on an active role is FailedPrecondition, not NotFound.
+	again := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/roles/ownerUndelete:undelete", bytes.NewReader([]byte("{}")))
+	again.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, again)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("undelete active expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "FAILED_PRECONDITION") && !strings.Contains(rec.Body.String(), "not deleted") {
+		t.Fatalf("expected FAILED_PRECONDITION body=%s", rec.Body.String())
 	}
 }
 

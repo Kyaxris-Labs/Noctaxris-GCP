@@ -79,5 +79,9 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 gcloud config set api_endpoint_overrides/dns http://127.0.0.1:4588/
 STACK=lab-dns bash tests/terraform/run.sh
 # dns_custom_endpoint = "http://127.0.0.1:4588/dns/v1/"
-# google_dns_record_set can use Changes.create; not yet in lab-dns stack
+# lab-dns includes google_dns_record_set (Changes.create); soft-skips without endpoint/token/ready.
+```
+
+```bash
+go test ./tests/sdk/go/ -run TestDNSChangesRrsetSmoke -count=1
 ```

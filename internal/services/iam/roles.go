@@ -18,6 +18,7 @@ func (h *Handler) MountRoles(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/projects/{project}/roles/{role}", h.getRole)
 	mux.HandleFunc("PATCH /v1/projects/{project}/roles/{role}", h.patchRole)
 	mux.HandleFunc("DELETE /v1/projects/{project}/roles/{role}", h.deleteRole)
+	mux.HandleFunc("POST /v1/projects/{project}/roles/{role}", h.rolePost)
 }
 
 func (h *Handler) createRole(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +89,12 @@ func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getRole(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("project")
-	roleID := r.PathValue("role")
+	roleSeg := r.PathValue("role")
+	roleID, action := splitColonAction(roleSeg)
+	if action != "" {
+		gcperrors.InvalidArgument(w, "use POST for role colon methods")
+		return
+	}
 	resource := "projects/" + projectID
 	if _, ok := h.require(w, r, "iam.roles.get", resource); !ok {
 		return
@@ -103,6 +109,7 @@ func (h *Handler) getRole(w http.ResponseWriter, r *http.Request) {
 		gcperrors.NotFound(w, "Role does not exist.")
 		return
 	}
+	// Soft-deleted roles return 200 with deleted:true (GCP parity); they are omitted from list unless showDeleted=true.
 	writeJSON(w, http.StatusOK, roleJSON(role))
 }
 
@@ -175,6 +182,51 @@ func (h *Handler) deleteRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, roleJSON(deleted))
+}
+
+func (h *Handler) rolePost(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("project")
+	roleID, action := splitColonAction(r.PathValue("role"))
+	if roleID == "" || action == "" {
+		gcperrors.InvalidArgument(w, "expected roles/{role}:undelete")
+		return
+	}
+	resource := "projects/" + projectID
+	if action == "undelete" {
+		h.undeleteRole(w, r, projectID, resource, roleID)
+		return
+	}
+	gcperrors.InvalidArgument(w, "unknown method on role")
+}
+
+func (h *Handler) undeleteRole(w http.ResponseWriter, r *http.Request, projectID, projectResource, roleID string) {
+	if _, ok := h.require(w, r, "iam.roles.undelete", projectResource); !ok {
+		return
+	}
+	name := "projects/" + projectID + "/roles/" + roleID
+	role, ok, err := h.Store.GetCustomRole(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Role does not exist.")
+		return
+	}
+	if !role.Deleted {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "Role is not deleted.")
+		return
+	}
+	restored, ok, err := h.Store.UndeleteCustomRole(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Role does not exist.")
+		return
+	}
+	writeJSON(w, http.StatusOK, roleJSON(restored))
 }
 
 func roleJSON(r store.CustomRole) map[string]any {

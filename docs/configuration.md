@@ -20,9 +20,9 @@ All settings use the `NOCTAXRIS_GCP_*` prefix.
 | `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` | unset / false | Set to `1` or `true` so Cloud Run nested `:invoke` returns an error when the engine dial/run fails instead of soft-failing to mock with `engine.mode: mock` in the body. Default unset keeps soft-fail (unit tests without DinD stay green). |
 | `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED` | unset / false | Set to `1` or `true` so Cloud SQL, Managed Kafka, and Memorystore Redis create returns `FAILED_PRECONDITION` when the nested engine is enabled but dial/start fails (resource is rolled back). Default unset keeps soft-fail to theatre host/READY/ACTIVE (unit tests without DinD stay green). Distinct from `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED`. |
 | `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` | empty | Comma-separated exact image refs, or registry prefixes ending in `/` (digest `@sha256:` required for registry hosts). Bare substring prefixes without a trailing `/` are rejected. |
-| `NOCTAXRIS_GCP_HTTP_EGRESS` | empty (off) | Set to `1` to honor `NOCTAXRIS_GCP_HTTP_ALLOWLIST` for Pub/Sub push, Eventarc HTTP, Cloud Tasks, Scheduler, and STS OIDC JWKS/discovery fetches beyond lab-local URLs. Unset/off: only `http://127.0.0.1:4588/_noctaxris-gcp/http-catcher...` and other loopback `:4588` lab-local URLs (allowlist ignored). |
+| `NOCTAXRIS_GCP_HTTP_EGRESS` | empty (off) | Set to `1` to honor `NOCTAXRIS_GCP_HTTP_ALLOWLIST` for Pub/Sub push, Eventarc HTTP, Cloud Tasks, Scheduler, and STS OIDC JWKS/discovery fetches beyond lab-local URLs. Unset/off: only `http://127.0.0.1:4588/_noctaxris-gcp/http-catcher...`, loopback `:4588` `/_noctaxris-gcp/oidc-lab/.well-known/...`, and other loopback `:4588` lab-local URLs (allowlist ignored). |
 | `NOCTAXRIS_GCP_HTTP_ALLOWLIST` | empty | Comma-separated exact HTTP(S) URLs allowed when egress is on. Listed URLs still reject private, loopback, link-local, and metadata hosts; delivery does not follow redirects. Ignored when egress is off. For STS verify, allowlist both the OIDC discovery URL and `jwks_uri` (exact match). |
-| `NOCTAXRIS_GCP_STS_VERIFY` | empty (off) | Set to `1` or `true` to fail-closed verify WIF STS `subject_token` as RS256 JWT when the provider has `issuerUri` (JWKS/discovery via `httpegress`). Default off keeps any non-empty token theatre so unit tests and smoke stay green. Empty `issuerUri` stays theatre even when verify is on. |
+| `NOCTAXRIS_GCP_STS_VERIFY` | empty (off) | Set to `1` or `true` to fail-closed verify WIF STS `subject_token` as RS256 JWT when the provider has `issuerUri` (JWKS/discovery via `httpegress`). Default off keeps any non-empty token theatre so unit tests and smoke stay green. Empty `issuerUri` stays theatre even when verify is on. Built-in issuer `http://127.0.0.1:4588/_noctaxris-gcp/oidc-lab` (discovery + JWKS on the lab listener) needs no egress allowlist on loopback. |
 | `NOCTAXRIS_GCP_AUDIT_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/auditLogs:inject` (still requires Bearer root). Default off returns `PERMISSION_DENIED`. See [services/cloud-audit-logs.md](services/cloud-audit-logs.md). |
 | `NOCTAXRIS_GCP_SCC_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/securitycenter:injectFindings`. Default off returns PermissionDenied. |
 | `NOCTAXRIS_GCP_VPCSC_ENFORCE` | empty (off) | Set to `1` or `true` to deny cross-perimeter GCS upload/copy and Pub/Sub publish when a service perimeter restricts those APIs (dry-run `spec` included). Default off keeps Access Context Manager CRUD theatre only. See [services/access-context-manager.md](services/access-context-manager.md). |
@@ -63,8 +63,8 @@ containers fail on your host:
 docker compose -f compose.yaml -f compose.engine-privileged.yaml --env-file .env up --build
 ```
 
-`compose.engine.yaml` remains as a compatibility overlay (engine already in base).
-See [security-defaults.md](security-defaults.md).
+`compose.engine.yaml` is a thin compatibility overlay (API env + depends_on only;
+engine already in base). Prefer plain `compose.yaml`. See [security-defaults.md](security-defaults.md).
 
 Copy `docker/.env.example` to `docker/.env` and replace the example root pair
 before starting. Startup refuses that pair on the non-loopback container bind.
@@ -133,20 +133,28 @@ provider "google" {
 |-------|-----------|-----------|
 | `tests/terraform/stacks/lab-storage` | GCS bucket, Secret Manager secret, Pub/Sub topic | `storage` / `pubsub` / `secret_manager` |
 | `tests/terraform/stacks/lab-run` | `google_cloud_run_v2_service` (metadata theatre; no containers) | `cloud_run_v2` |
-| `tests/terraform/stacks/lab-dns` | `google_dns_managed_zone` | `dns` (`…/dns/v1/`) |
+| `tests/terraform/stacks/lab-dns` | `google_dns_managed_zone`, `google_dns_record_set` | `dns` (`…/dns/v1/`) |
 | `tests/terraform/stacks/lab-compute` | `google_compute_network` (no VMs) | `compute` (`…/compute/v1/`) |
 | `tests/terraform/stacks/lab-armor` | `google_compute_security_policy` (Cloud Armor; `SRC_IPS_V1` rules) | `compute` (`…/compute/v1/`); attribution label off |
+| `tests/terraform/stacks/lab-kms` | KMS key ring + crypto key | `kms` |
+| `tests/terraform/stacks/lab-bigquery` | BigQuery dataset + table | `big_query` (`…/bigquery/v2/`) |
+| `tests/terraform/stacks/lab-iam` | Service account | `iam` (listener root) |
+| `tests/terraform/stacks/lab-sql` | Cloud SQL Postgres | `sql` (`…/sql/v1beta4/`) |
+| `tests/terraform/stacks/lab-redis` | Memorystore Redis | `redis` |
+| `tests/terraform/stacks/lab-kafka` | Managed Kafka cluster (parity; not default `STACKS`) | `managed_kafka` (`…/v1/`) |
+| `tests/terraform/stacks/lab-compute-instance` | VPC + VM + boot disk (parity) | `compute` |
+| `tests/terraform/stacks/lab-lb-armor` | Armor policy + backend `security_policy` (parity) | `compute` |
 
 Cloud Armor is Compute-shaped (`securityPolicies` under `compute_custom_endpoint`).
-Lab `byteMatchSet` + `:validate` preview allow/deny only; no backend service attach
-or edge enforcement. Filestore Terraform must use
+Lab `byteMatchSet` + `:validate` preview allow/deny; backend attach is metadata via
+`securityPolicy` / `setSecurityPolicy` (parity stack `lab-lb-armor`). Filestore Terraform must use
 `filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/"` (not bare `:4588/`
 and not Spanner `/v1/.../instances` or Memorystore location-scoped paths). Vertex AI
 has no Terraform stack; call REST `:predict` / `:generateContent` with
 `api_endpoint_overrides/aiplatform`.
 
-Not stacked: DNS record sets (`Changes.create` theatre exists; `lab-dns` is
-zone-only), Compute instances (Images API / `ResolveImage`), Bigtable (provider
+Default `run.sh` stacks omit `lab-kafka`, `lab-compute-instance`, and `lab-lb-armor`
+(use `STACK=` or `TF_GCP_PARITY=1`). Not stacked: Bigtable (provider
 gRPC admin client vs lab REST `/v2/` + Instance Admin gRPC lite), Filestore (lab
 `/file/v1/` path prefix vs provider BaseUrl `…/v1/`). Certificate Manager create
 returns completed Operation theatre. See `tests/terraform/README.md`.

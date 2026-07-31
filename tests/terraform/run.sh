@@ -4,7 +4,7 @@
 # or /_noctaxris-gcp/ready fails.
 #
 # Default: all stacks under stacks/. Override with STACK=lab-storage or
-# STACKS="lab-storage lab-run lab-dns lab-compute lab-armor".
+# STACKS="lab-storage lab-run lab-dns lab-compute lab-armor" (parity: lab-kafka, lab-compute-instance via STACK= or TF_GCP_PARITY=1).
 set -euo pipefail
 
 TF_DIR="$(cd "$(dirname "$0")" && pwd)"

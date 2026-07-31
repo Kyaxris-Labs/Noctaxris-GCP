@@ -87,33 +87,34 @@ Checked on `projects/{project}`:
 - `compute.subnetworks.create|get|list|delete|update`
 - `compute.firewalls.create|get|list|delete|update`
 - `compute.images.get|list`
+- `compute.zoneOperations.get` (fallback `compute.instances.get`); `compute.regionOperations.get` (fallback `compute.subnetworks.get`); `compute.globalOperations.get` (fallback `compute.networks.get`)
 
 Seeded Service Usage: `compute.googleapis.com`.
 
 ## Emulator limits
 
 - Metadata only; never starts a VM or attaches a real NIC
-- No disks, instance groups (HTTP(S) Load Balancing lite is a separate lab service when registered)
+- Boot/attached disk metadata echo on instance get (`disks[]`, `bootDisk` / `initializeParams`); no real block devices or guest OS
 - Images are a fixed canned set (no import/create/delete)
-- Insert/delete/stop/start/reset return completed Operations (no poll queue)
+- Insert/delete/stop/start/reset return completed Operations; zone/region/global Operations.get return `status: DONE` theatre (no async queue)
 - Firewall `:validate` evaluates one rule only (no priority chain across rules)
 - No guest metadata server (`metadata.google.internal`) yet
 
 ## Deferred depth
 
-- Attached disks, snapshots, custom image import, MIGs, backend services
-- Operations get/list and async progress
+- Snapshots, custom image import, MIGs, backend services
+- Async operation progress / list Operations
 - Private Google Access / Cloud NAT / routes CRUD depth
 - Instance metadata server path theatre
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/compute/ ./internal/store/ ./internal/server/ -run 'GCE|Compute|InstanceMetadata|Firewall|Image' -count=1
+go test ./internal/services/compute/ ./internal/store/ ./internal/server/ -run 'GCE|Compute|InstanceMetadata|Firewall|Image|Disk|ZoneOperation|Region' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/zones/us-central1-a/instances" \
-  -d '{"name":"lab-vm","machineType":"zones/us-central1-a/machineTypes/e2-micro","metadata":{"role":"lab"}}'
+  -d '{"name":"lab-vm","machineType":"zones/us-central1-a/machineTypes/e2-micro","metadata":{"role":"lab"},"bootDisk":{"initializeParams":{"image":"debian-cloud/debian-12"}}}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/global/images/family/debian-12"
 curl -s -H "Authorization: Bearer $TOKEN" \
@@ -128,5 +129,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST \
 gcloud config set api_endpoint_overrides/compute http://127.0.0.1:4588/
 STACK=lab-compute bash tests/terraform/run.sh
 # compute_custom_endpoint = "http://127.0.0.1:4588/compute/v1/"
-# Images ResolveImage gap closed; google_compute_instance still needs disks/boot
+# Default lab-compute is VPC-only. VM + boot disk (parity; not in default STACKS):
+STACK=lab-compute-instance bash tests/terraform/run.sh
+# or: TF_GCP_PARITY=1 bash tests/run-all.sh
 ```

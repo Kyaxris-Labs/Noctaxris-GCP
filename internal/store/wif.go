@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -32,10 +33,11 @@ type WorkloadIdentityPoolProvider struct {
 	Description  string
 	Disabled     bool
 	State        string
-	AttributeMap string // JSON theatre
-	IssuerURI    string
-	CreatedAt    string
-	UpdatedAt    string
+	AttributeMap      string // JSON theatre
+	IssuerURI         string
+	AllowedAudiences  []string
+	CreatedAt         string
+	UpdatedAt         string
 }
 
 const wifSchema = `
@@ -63,6 +65,7 @@ CREATE TABLE IF NOT EXISTS wif_providers (
   state TEXT NOT NULL DEFAULT 'ACTIVE',
   attribute_map_json TEXT NOT NULL DEFAULT '{}',
   issuer_uri TEXT NOT NULL DEFAULT '',
+  allowed_audiences_json TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (pool_name, provider_id)
@@ -182,7 +185,7 @@ func (s *Store) DeleteWIFPool(name string) (WorkloadIdentityPool, bool, error) {
 }
 
 // CreateWIFProvider inserts a provider under a pool.
-func (s *Store) CreateWIFProvider(poolName, providerID, displayName, description, issuerURI, attributeMapJSON string, disabled bool) (WorkloadIdentityPoolProvider, error) {
+func (s *Store) CreateWIFProvider(poolName, providerID, displayName, description, issuerURI, attributeMapJSON, allowedAudiencesJSON string, disabled bool) (WorkloadIdentityPoolProvider, error) {
 	poolName = strings.TrimSpace(poolName)
 	providerID = strings.TrimSpace(providerID)
 	if poolName == "" || providerID == "" {
@@ -201,13 +204,17 @@ func (s *Store) CreateWIFProvider(poolName, providerID, displayName, description
 	if attributeMapJSON == "" {
 		attributeMapJSON = "{}"
 	}
+	audJSON, err := normalizeAllowedAudiencesJSON(allowedAudiencesJSON)
+	if err != nil {
+		return WorkloadIdentityPoolProvider{}, fmt.Errorf("invalid allowedAudiences")
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	name := poolName + "/providers/" + providerID
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO wif_providers
-		 (name, pool_name, provider_id, display_name, description, disabled, state, attribute_map_json, issuer_uri, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?)`,
-		name, poolName, providerID, displayName, description, boolToInt(disabled), attributeMapJSON, issuerURI, now, now,
+		 (name, pool_name, provider_id, display_name, description, disabled, state, attribute_map_json, issuer_uri, allowed_audiences_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?)`,
+		name, poolName, providerID, displayName, description, boolToInt(disabled), attributeMapJSON, issuerURI, audJSON, now, now,
 	)
 	if err != nil {
 		return WorkloadIdentityPoolProvider{}, err
@@ -219,10 +226,15 @@ func (s *Store) CreateWIFProvider(poolName, providerID, displayName, description
 	if n == 0 {
 		return WorkloadIdentityPoolProvider{}, ErrAlreadyExists
 	}
+	audiences, err := parseAllowedAudiencesJSON(audJSON)
+	if err != nil {
+		return WorkloadIdentityPoolProvider{}, err
+	}
 	return WorkloadIdentityPoolProvider{
 		Name: name, PoolName: poolName, ProviderID: providerID,
 		DisplayName: displayName, Description: description, Disabled: disabled,
 		State: "ACTIVE", AttributeMap: attributeMapJSON, IssuerURI: issuerURI,
+		AllowedAudiences: audiences,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
@@ -231,12 +243,13 @@ func (s *Store) CreateWIFProvider(poolName, providerID, displayName, description
 func (s *Store) GetWIFProvider(name string) (WorkloadIdentityPoolProvider, bool, error) {
 	var p WorkloadIdentityPoolProvider
 	var disabled int
+	var audJSON string
 	err := s.db.QueryRow(
 		`SELECT name, pool_name, provider_id, display_name, description, disabled, state,
-		 COALESCE(attribute_map_json, '{}'), COALESCE(issuer_uri, ''), created_at, updated_at
+		 COALESCE(attribute_map_json, '{}'), COALESCE(issuer_uri, ''), COALESCE(allowed_audiences_json, '[]'), created_at, updated_at
 		 FROM wif_providers WHERE name = ?`, name,
 	).Scan(&p.Name, &p.PoolName, &p.ProviderID, &p.DisplayName, &p.Description,
-		&disabled, &p.State, &p.AttributeMap, &p.IssuerURI, &p.CreatedAt, &p.UpdatedAt)
+		&disabled, &p.State, &p.AttributeMap, &p.IssuerURI, &audJSON, &p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return WorkloadIdentityPoolProvider{}, false, nil
 	}
@@ -244,13 +257,17 @@ func (s *Store) GetWIFProvider(name string) (WorkloadIdentityPoolProvider, bool,
 		return WorkloadIdentityPoolProvider{}, false, err
 	}
 	p.Disabled = disabled != 0
+	p.AllowedAudiences, err = parseAllowedAudiencesJSON(audJSON)
+	if err != nil {
+		return WorkloadIdentityPoolProvider{}, false, err
+	}
 	return p, true, nil
 }
 
 // ListWIFProviders lists providers under a pool.
 func (s *Store) ListWIFProviders(poolName string, showDeleted bool) ([]WorkloadIdentityPoolProvider, error) {
 	q := `SELECT name, pool_name, provider_id, display_name, description, disabled, state,
-	      COALESCE(attribute_map_json, '{}'), COALESCE(issuer_uri, ''), created_at, updated_at
+	      COALESCE(attribute_map_json, '{}'), COALESCE(issuer_uri, ''), COALESCE(allowed_audiences_json, '[]'), created_at, updated_at
 	      FROM wif_providers WHERE pool_name = ?`
 	if !showDeleted {
 		q += ` AND state = 'ACTIVE'`
@@ -265,11 +282,16 @@ func (s *Store) ListWIFProviders(poolName string, showDeleted bool) ([]WorkloadI
 	for rows.Next() {
 		var p WorkloadIdentityPoolProvider
 		var disabled int
+		var audJSON string
 		if err := rows.Scan(&p.Name, &p.PoolName, &p.ProviderID, &p.DisplayName, &p.Description,
-			&disabled, &p.State, &p.AttributeMap, &p.IssuerURI, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&disabled, &p.State, &p.AttributeMap, &p.IssuerURI, &audJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		p.Disabled = disabled != 0
+		p.AllowedAudiences, err = parseAllowedAudiencesJSON(audJSON)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -293,6 +315,125 @@ func (s *Store) DeleteWIFProvider(name string) (WorkloadIdentityPoolProvider, bo
 		return WorkloadIdentityPoolProvider{}, false, nil
 	}
 	return s.GetWIFProvider(name)
+}
+
+// UpdateWIFProvider patches provider fields selected by the update* flags.
+func (s *Store) UpdateWIFProvider(
+	name, displayName, description, issuerURI, attributeMapJSON, allowedAudiencesJSON string, disabled bool,
+	updateDisplay, updateDescription, updateIssuer, updateAttr, updateAudiences, updateDisabled bool,
+) (WorkloadIdentityPoolProvider, bool, error) {
+	p, ok, err := s.GetWIFProvider(name)
+	if err != nil || !ok || p.State != "ACTIVE" {
+		return WorkloadIdentityPoolProvider{}, false, err
+	}
+	if updateDisplay {
+		p.DisplayName = displayName
+	}
+	if updateDescription {
+		p.Description = description
+	}
+	if updateIssuer {
+		p.IssuerURI = issuerURI
+	}
+	if updateAttr {
+		if attributeMapJSON == "" {
+			attributeMapJSON = "{}"
+		}
+		p.AttributeMap = attributeMapJSON
+	}
+	if updateAudiences {
+		audJSON, err := normalizeAllowedAudiencesJSON(allowedAudiencesJSON)
+		if err != nil {
+			return WorkloadIdentityPoolProvider{}, false, fmt.Errorf("invalid allowedAudiences")
+		}
+		p.AllowedAudiences, err = parseAllowedAudiencesJSON(audJSON)
+		if err != nil {
+			return WorkloadIdentityPoolProvider{}, false, err
+		}
+	}
+	if updateDisabled {
+		p.Disabled = disabled
+	}
+	audJSON, err := normalizeAllowedAudiencesFromList(p.AllowedAudiences)
+	if err != nil {
+		return WorkloadIdentityPoolProvider{}, false, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.Exec(
+		`UPDATE wif_providers SET display_name = ?, description = ?, disabled = ?, attribute_map_json = ?,
+		 issuer_uri = ?, allowed_audiences_json = ?, updated_at = ?
+		 WHERE name = ? AND state = 'ACTIVE'`,
+		p.DisplayName, p.Description, boolToInt(p.Disabled), p.AttributeMap, p.IssuerURI, audJSON, now, name,
+	)
+	if err != nil {
+		return WorkloadIdentityPoolProvider{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return WorkloadIdentityPoolProvider{}, false, err
+	}
+	if n == 0 {
+		return WorkloadIdentityPoolProvider{}, false, nil
+	}
+	return s.GetWIFProvider(name)
+}
+
+func normalizeAllowedAudiencesJSON(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "[]", nil
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		return "", err
+	}
+	return normalizeAllowedAudiencesFromList(list)
+}
+
+func normalizeAllowedAudiencesFromList(list []string) (string, error) {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(list))
+	for _, a := range list {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		out = append(out, a)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func parseAllowedAudiencesJSON(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []string{}, nil
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(list))
+	for _, a := range list {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 func validWIFID(id string) bool {

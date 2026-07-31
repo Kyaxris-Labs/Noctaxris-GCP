@@ -100,7 +100,7 @@ func (h *Handler) stsToken(w http.ResponseWriter, r *http.Request) {
 	if stsOIDCShouldVerify(prov.IssuerURI) {
 		verifiedSub, verr := h.verifyOIDCSubjectToken(subjectToken, prov)
 		if verr != nil {
-			gcperrors.WriteREST(w, http.StatusUnauthorized, gcperrors.StatusUnauthenticated, "invalid subject_token: "+verr.Error())
+			gcperrors.WriteREST(w, http.StatusUnauthorized, gcperrors.StatusUnauthenticated, "invalid subject_token")
 			return
 		}
 		subject = verifiedSub

@@ -22,6 +22,7 @@ func (h *Handler) MountWIF(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/workloadIdentityPools/{pool}/providers", h.listWIFProviders)
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/workloadIdentityPools/{pool}/providers", h.createWIFProvider)
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/workloadIdentityPools/{pool}/providers/{provider}", h.getWIFProvider)
+	mux.HandleFunc("PATCH /v1/projects/{project}/locations/{location}/workloadIdentityPools/{pool}/providers/{provider}", h.patchWIFProvider)
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/workloadIdentityPools/{pool}/providers/{provider}", h.deleteWIFProvider)
 }
 
@@ -151,7 +152,8 @@ func (h *Handler) createWIFProvider(w http.ResponseWriter, r *http.Request) {
 		Disabled         bool              `json:"disabled"`
 		AttributeMapping map[string]string `json:"attributeMapping"`
 		Oidc             *struct {
-			IssuerUri string `json:"issuerUri"`
+			IssuerUri        string   `json:"issuerUri"`
+			AllowedAudiences []string `json:"allowedAudiences"`
 		} `json:"oidc"`
 	}
 	if len(body) > 0 {
@@ -170,11 +172,20 @@ func (h *Handler) createWIFProvider(w http.ResponseWriter, r *http.Request) {
 		attrJSON = string(raw)
 	}
 	issuer := ""
+	allowedAudJSON := "[]"
 	if req.Oidc != nil {
 		issuer = req.Oidc.IssuerUri
+		if req.Oidc.AllowedAudiences != nil {
+			raw, err := json.Marshal(req.Oidc.AllowedAudiences)
+			if err != nil {
+				gcperrors.InvalidArgument(w, "invalid allowedAudiences")
+				return
+			}
+			allowedAudJSON = string(raw)
+		}
 	}
 	poolName := "projects/" + projectID + "/locations/" + location + "/workloadIdentityPools/" + poolID
-	p, err := h.Store.CreateWIFProvider(poolName, providerID, req.DisplayName, req.Description, issuer, attrJSON, req.Disabled)
+	p, err := h.Store.CreateWIFProvider(poolName, providerID, req.DisplayName, req.Description, issuer, attrJSON, allowedAudJSON, req.Disabled)
 	if errors.Is(err, store.ErrAlreadyExists) {
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "workload identity pool provider already exists")
 		return
@@ -189,6 +200,105 @@ func (h *Handler) createWIFProvider(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, wifProviderJSON(p))
+}
+
+func (h *Handler) patchWIFProvider(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("project")
+	location := r.PathValue("location")
+	poolID, _ := splitColonAction(r.PathValue("pool"))
+	providerID, _ := splitColonAction(r.PathValue("provider"))
+	if _, ok := h.require(w, r, "iam.workloadIdentityPoolProviders.update", "projects/"+projectID); !ok {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		DisplayName      string            `json:"displayName"`
+		Description      string            `json:"description"`
+		Disabled         bool              `json:"disabled"`
+		AttributeMapping map[string]string `json:"attributeMapping"`
+		Oidc             *struct {
+			IssuerUri        string   `json:"issuerUri"`
+			AllowedAudiences []string `json:"allowedAudiences"`
+		} `json:"oidc"`
+		UpdateMask string `json:"updateMask"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	mask := req.UpdateMask
+	if mask == "" {
+		mask = r.URL.Query().Get("updateMask")
+	}
+	updateDisplay := mask == "" || fieldMaskIncludes(mask, "displayName")
+	updateDescription := mask == "" || fieldMaskIncludes(mask, "description")
+	updateDisabled := mask == "" || fieldMaskIncludes(mask, "disabled")
+	updateAttr := mask == "" || fieldMaskIncludes(mask, "attributeMapping")
+	updateIssuer := mask == "" || fieldMaskIncludes(mask, "oidc.issuerUri")
+	updateAudiences := false
+	if mask == "" {
+		// Empty mask: only update audiences when the body explicitly includes the field.
+		updateAudiences = req.Oidc != nil && req.Oidc.AllowedAudiences != nil
+	} else if fieldMaskIncludes(mask, "oidc.allowedAudiences") {
+		if req.Oidc == nil || req.Oidc.AllowedAudiences == nil {
+			gcperrors.InvalidArgument(w, "oidc.allowedAudiences is required when updateMask includes oidc.allowedAudiences (use [] to clear)")
+			return
+		}
+		updateAudiences = true
+	}
+	if mask != "" && !updateDisplay && !updateDescription && !updateDisabled && !updateAttr && !updateIssuer && !updateAudiences {
+		gcperrors.InvalidArgument(w, "updateMask must include displayName, description, disabled, attributeMapping, oidc.issuerUri, and/or oidc.allowedAudiences")
+		return
+	}
+	attrJSON := ""
+	if updateAttr {
+		attrJSON = "{}"
+		if len(req.AttributeMapping) > 0 {
+			raw, err := json.Marshal(req.AttributeMapping)
+			if err != nil {
+				gcperrors.InvalidArgument(w, "invalid attributeMapping")
+				return
+			}
+			attrJSON = string(raw)
+		}
+	}
+	issuer := ""
+	if req.Oidc != nil {
+		issuer = req.Oidc.IssuerUri
+	}
+	allowedAudJSON := "[]"
+	if updateAudiences {
+		if req.Oidc != nil && req.Oidc.AllowedAudiences != nil {
+			raw, err := json.Marshal(req.Oidc.AllowedAudiences)
+			if err != nil {
+				gcperrors.InvalidArgument(w, "invalid allowedAudiences")
+				return
+			}
+			allowedAudJSON = string(raw)
+		}
+	}
+	name := "projects/" + projectID + "/locations/" + location + "/workloadIdentityPools/" + poolID + "/providers/" + providerID
+	p, ok, err := h.Store.UpdateWIFProvider(
+		name, req.DisplayName, req.Description, issuer, attrJSON, allowedAudJSON, req.Disabled,
+		updateDisplay, updateDescription, updateIssuer, updateAttr, updateAudiences, updateDisabled,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "invalid allowedAudiences") {
+			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Workload identity pool provider does not exist.")
 		return
 	}
 	writeJSON(w, http.StatusOK, wifProviderJSON(p))
@@ -283,8 +393,15 @@ func wifProviderJSON(p store.WorkloadIdentityPoolProvider) map[string]any {
 		attrs = map[string]string{}
 	}
 	out["attributeMapping"] = attrs
+	oidc := map[string]any{}
 	if p.IssuerURI != "" {
-		out["oidc"] = map[string]any{"issuerUri": p.IssuerURI}
+		oidc["issuerUri"] = p.IssuerURI
+	}
+	if len(p.AllowedAudiences) > 0 {
+		oidc["allowedAudiences"] = append([]string(nil), p.AllowedAudiences...)
+	}
+	if len(oidc) > 0 {
+		out["oidc"] = oidc
 	}
 	return out
 }

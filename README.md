@@ -105,8 +105,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>IAM</td>
-      <td>Service accounts/keys; WIF pool/provider CRUD; STS <code>POST /v1/token</code>; TokenCreator <code>generateAccessToken</code>; project custom roles CRUD; allow-policy Evaluate + <code>testIamPermissions</code>; optional Org Policy deny on key create.</td>
-      <td>Real OIDC IdP verify; org custom roles; PKCS#1 signBlob.</td>
+      <td>Service accounts/keys; WIF pool/provider CRUD + PATCH <code>oidc.allowedAudiences</code>; STS <code>POST /v1/token</code> (theatre default; opt-in RS256 verify + lab <code>oidc-lab</code> issuer); TokenCreator <code>generateAccessToken</code>; project custom roles CRUD + <code>:undelete</code>; allow-policy Evaluate + <code>testIamPermissions</code>; optional Org Policy deny on key create.</td>
+      <td>Third-party OIDC issuers outside lab <code>oidc-lab</code> + egress-gated JWKS; org custom roles; PKCS#1 signBlob.</td>
     </tr>
     <tr>
       <td>Service Usage</td>
@@ -172,8 +172,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Managed Kafka</td>
-      <td>REST v1 location-scoped clusters; theatre bootstrap; optional nested Redpanda via DinD.</td>
-      <td>Host publish of Kafka ports; full capacity/VPC provider parity.</td>
+      <td>REST v1 location-scoped clusters; create/delete done Operations + Operations.get; <code>capacityConfig</code>/<code>gcpConfig</code> echo; theatre bootstrap; optional nested Redpanda via DinD.</td>
+      <td>Host publish of Kafka ports; multi-broker / Connect / Schema Registry.</td>
     </tr>
     <tr>
       <td>Filestore</td>
@@ -209,7 +209,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     <tr>
       <td rowspan="7" align="center" valign="middle">Compute</td>
       <td>Compute Engine</td>
-      <td>Instances (metadata), VPC/firewall CRUD, Images list/get/family stubs, firewall <code>:validate</code>.</td>
+      <td>Instances (metadata + bootDisk/disks echo); VPC/firewall CRUD; Images list/get/family stubs; zone/region/global Operations.get DONE; firewall <code>:validate</code>.</td>
       <td>Real VMs/NICs/disks; MIGs; full GCLB stack beyond lab metadata/dataplane.</td>
     </tr>
     <tr>
@@ -262,7 +262,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud Armor</td>
-      <td>securityPolicies CRUD + ByteMatchSet <code>:validate</code>.</td>
+      <td>securityPolicies CRUD + ByteMatchSet <code>:validate</code>; backend <code>securityPolicy</code> attach (<code>setSecurityPolicy</code>).</td>
       <td>Edge enforce; Adaptive Protection; rate-limit engines.</td>
     </tr>
     <tr>
@@ -277,8 +277,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>HTTP(S) load balancing</td>
-      <td>Global LB metadata; lab <code>/lb/{project}/{rule}/...</code> GCS dataplane on <code>:4588</code>.</td>
-      <td>Health checks; SSL; multi-region proxies.</td>
+      <td>Global LB metadata; backend <code>securityPolicy</code> + <code>targetHttpsProxies</code>; lab <code>/lb/{project}/{rule}/...</code> GCS dataplane on <code>:4588</code>.</td>
+      <td>Health checks; SSL terminate; multi-region proxies; Certificate Manager wire-up.</td>
     </tr>
     <tr>
       <td>Cloud CDN</td>

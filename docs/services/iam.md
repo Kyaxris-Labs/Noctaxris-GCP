@@ -35,12 +35,14 @@ per-service-account IAM policies are stored on the SA resource name.
 | Create WIF provider | `POST` | `.../workloadIdentityPools/{pool}/providers?workloadIdentityPoolProviderId=` |
 | List WIF providers | `GET` | `.../workloadIdentityPools/{pool}/providers` |
 | Get WIF provider | `GET` | `.../workloadIdentityPools/{pool}/providers/{provider}` |
+| Patch WIF provider | `PATCH` | `.../workloadIdentityPools/{pool}/providers/{provider}` |
 | Delete WIF provider | `DELETE` | `.../workloadIdentityPools/{pool}/providers/{provider}` |
 | Create custom role | `POST` | `/v1/projects/{project}/roles` |
 | List custom roles | `GET` | `/v1/projects/{project}/roles` |
 | Get custom role | `GET` | `/v1/projects/{project}/roles/{roleId}` |
 | Patch custom role | `PATCH` | `/v1/projects/{project}/roles/{roleId}` |
 | Delete custom role | `DELETE` | `/v1/projects/{project}/roles/{roleId}` |
+| Undelete custom role | `POST` | `/v1/projects/{project}/roles/{roleId}:undelete` |
 | STS token exchange (lab) | `POST` | `/v1/token` |
 
 Permissions: `iam.serviceAccounts.*`, `iam.serviceAccountKeys.*`,
@@ -63,7 +65,10 @@ Role resource names are `projects/{project}/roles/{roleId}` and may be bound in
 CRM/IAM policies. Authz evaluates only the listed `includedPermissions` (no
 `{svc}.*` catch-all for unknown predefined roles such as `roles/xyz.admin`).
 Delete is soft-delete (`deleted: true`); list omits deleted rows unless
-`showDeleted=true`. Soft-deleted roles stop granting immediately.
+`showDeleted=true`. Get on a soft-deleted role returns HTTP 200 with
+`deleted: true` (not 404). Soft-deleted roles stop granting immediately.
+`:undelete` restores the role; creating the same `roleId` fails until undelete
+(`iam.roles.undelete` on the project).
 
 Creating a key seals the credentials JSON at rest, returns `privateKeyData`
 (base64) once, and registers a hashed access token so
@@ -106,7 +111,12 @@ still bypasses.
 ### Workload Identity Federation + STS
 
 Pool/provider CRUD stores display name, description, disabled flag, OIDC
-`issuerUri`, and `attributeMapping` JSON. Soft-delete sets `state=DELETED`.
+`issuerUri`, `allowedAudiences`, and `attributeMapping` JSON. Provider PATCH
+supports `updateMask` for `displayName`, `description`, `disabled`,
+`attributeMapping`, `oidc.issuerUri`, and `oidc.allowedAudiences` (mask without
+a body field is `InvalidArgument`; empty `allowedAudiences` in the body clears
+stored extras when the mask includes `oidc.allowedAudiences`). Soft-delete sets
+`state=DELETED`.
 
 `POST /v1/token` is a public STS endpoint (no Bearer required; the
 `subject_token` authenticates the external identity). Required fields:
@@ -134,8 +144,13 @@ verifies:
    allowlist entries for discovery and `jwks_uri`). No open SSRF to arbitrary
    issuer hosts.
 2. Verify RS256 signature against JWKS; check `iss` (matches `issuerUri`),
-   `aud` (provider resource name or `//iam.googleapis.com/{provider}`), `exp`
+   `aud` (provider resource name, `//iam.googleapis.com/{provider}`, and any
+   stored `oidc.allowedAudiences`; JWT `aud` may be a string or array), `exp`
    (required; must be future), optional `nbf`, and non-empty `sub`.
+   Discovery `jwks_uri` is followed only when it equals
+   `{issuerUri}/.well-known/jwks.json` (scheme, host, and path). Other
+   same-origin paths are ignored; the lab then fetches that canonical JWKS URL.
+   Failed verify returns generic `invalid subject_token` (not raw verifier errors).
 
 On success the lab returns `access_token`, `token_type=Bearer`, `expires_in=3600`,
 and registers the token as principal `wif:{providerId}:{subject}` where
@@ -146,6 +161,16 @@ Bind that principal on CRM/IAM policies using the literal member string
 `wif:{providerId}:{subject}` (the evaluator does not rewrite it to
 `serviceAccount:`).
 
+**Lab OIDC issuer (`oidc-lab`):** The API listener exposes discovery and JWKS at
+`/_noctaxris-gcp/oidc-lab/.well-known/openid-configuration` and
+`/_noctaxris-gcp/oidc-lab/.well-known/jwks.json` (public; no Bearer). Issuer
+is `http://{host}/_noctaxris-gcp/oidc-lab` from the request host (Compose uses
+the container bind). There is no token-mint route; sign RS256 JWTs with the stable lab JWKS key
+(see `go test ./internal/server/ -run OIDC` for a working pattern). Point a WIF
+provider `issuerUri` at that issuer (loopback `:4588` or your publish address)
+and set `NOCTAXRIS_GCP_STS_VERIFY=1` for end-to-end exchange without an
+external IdP.
+
 List keys accepts `pageSize` (default 100, max 100) and `pageToken` (integer
 offset); responses may include `nextPageToken`.
 
@@ -155,8 +180,9 @@ Create service account fails with `FAILED_PRECONDITION` when
 ## Emulator limits
 
 - STS OIDC verify is opt-in (`NOCTAXRIS_GCP_STS_VERIFY=1`); default theatre accepts any non-empty `subject_token`.
-- Verify fetches JWKS/discovery only via `httpegress` (lab-local `:4588` or egress + exact allowlist); no arbitrary issuer SSRF.
-- Verify accepts RS256 only; `aud` must match the provider resource name (with or without `//iam.googleapis.com/` prefix). Provider `allowedAudiences` CRUD is not stored yet.
+- Verify fetches JWKS/discovery only via `httpegress` (lab-local `:4588` or egress + exact allowlist); no arbitrary issuer SSRF. Discovery `jwks_uri` is honored only at `{issuerUri}/.well-known/jwks.json`.
+- Verify accepts RS256 only; `aud` must match the provider resource name (with or without `//iam.googleapis.com/` prefix) plus stored `oidc.allowedAudiences`.
+- `oidc-lab` is discovery/JWKS only (no mint); anyone who can reach the JWKS can sign lab JWTs when verify uses that issuer; external issuers still need egress + exact allowlist when not on loopback oidc-lab.
 - `generateAccessToken` mints a lab Bearer token for the target SA; scopes are recorded but not enforced against Google APIs.
 - `signBlob` is SHA-256 theatre, not PKCS#1 / RSA signing.
 - `signJwt` is unsigned lab JWT theatre (`alg=none`), not RSA/ES256.
@@ -168,8 +194,7 @@ Create service account fails with `FAILED_PRECONDITION` when
 
 ## Deferred depth
 
-- WIF provider `allowedAudiences` persistence and multi-audience config beyond provider resource name
-- Organization-level custom roles CRUD; undelete for soft-deleted custom roles
+- Organization-level custom roles CRUD
 - gRPC IAM Admin service registration
 
 ## Verification / CLI smoke
@@ -186,9 +211,14 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"displayName":"Lab Pool"}' \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/workloadIdentityPools?workloadIdentityPoolId=lab-pool"
+curl -s "http://127.0.0.1:4588/_noctaxris-gcp/oidc-lab/.well-known/openid-configuration"
+curl -s "http://127.0.0.1:4588/_noctaxris-gcp/oidc-lab/.well-known/jwks.json"
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"displayName":"OIDC","oidc":{"issuerUri":"https://example.com"}}' \
+  -d '{"displayName":"OIDC","oidc":{"issuerUri":"http://127.0.0.1:4588/_noctaxris-gcp/oidc-lab","allowedAudiences":["https://custom-aud"]}}' \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/workloadIdentityPools/lab-pool/providers?workloadIdentityPoolProviderId=oidc"
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"oidc":{"allowedAudiences":["https://new-aud"]},"updateMask":"oidc.allowedAudiences"}' \
+  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/global/workloadIdentityPools/lab-pool/providers/oidc"
 curl -s -H "Content-Type: application/x-www-form-urlencoded" \
   --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
   --data-urlencode "audience=//iam.googleapis.com/projects/noctaxris-gcp-local/locations/global/workloadIdentityPools/lab-pool/providers/oidc" \
@@ -197,6 +227,15 @@ curl -s -H "Content-Type: application/x-www-form-urlencoded" \
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"],"lifetime":"600s"}' \
   "http://127.0.0.1:4588/v1/projects/-/serviceAccounts/lab-runner@noctaxris-gcp-local.iam.gserviceaccount.com:generateAccessToken"
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{}' \
+  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/roles/bucketLister:undelete"
+# STS verify (NOCTAXRIS_GCP_STS_VERIFY=1): sign a JWT with oidc-lab JWKS (see internal/server tests) and exchange:
+# curl -s -H "Content-Type: application/x-www-form-urlencoded" \
+#   --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+#   --data-urlencode "audience=//iam.googleapis.com/projects/noctaxris-gcp-local/locations/global/workloadIdentityPools/lab-pool/providers/oidc" \
+#   --data-urlencode "subject_token=<RS256 JWT>" \
+#   "http://127.0.0.1:4588/v1/token"
 ```
 
 ## SDK note
