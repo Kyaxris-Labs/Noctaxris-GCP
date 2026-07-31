@@ -83,6 +83,26 @@ func TestSecurityPoliciesCRUDAndByteMatchValidate(t *testing.T) {
 		t.Fatalf("expected default + deny rule: %#v", pol)
 	}
 
+	req = httptest.NewRequest(http.MethodPost, base+"/lab-armor/setLabels", bytes.NewReader([]byte(
+		`{"labels":{"env":"lab"},"labelFingerprint":"abc"}`,
+	)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setLabels status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, base+"/lab-armor", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get after setLabels status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &pol)
+	labels, _ := pol["labels"].(map[string]any)
+	if labels["env"] != "lab" {
+		t.Fatalf("expected labels.env=lab got %#v", pol["labels"])
+	}
+
 	req = httptest.NewRequest(http.MethodPost, base+"/lab-armor:validate",
 		bytes.NewReader([]byte(`{"uriPath":"/admin/users","srcIp":"203.0.113.10"}`)))
 	rec = httptest.NewRecorder()

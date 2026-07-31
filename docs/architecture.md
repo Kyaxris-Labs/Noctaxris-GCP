@@ -68,8 +68,8 @@ flowchart TB
   CMP --> INV
   INV -->|mock default| CMP
   INV -.->|NOCTAXRIS_GCP_DOCKER_HOST set| ENGINE
-  CDATA -.->|opt-in DinD| ENGINE
-  EDGE -.->|opt-in DinD| ENGINE
+  CDATA -.->|TLS DinD| ENGINE
+  EDGE -.->|TLS DinD| ENGINE
   ENGINE --> LABNET
   LABNET --> SQL
   LABNET --> REDIS

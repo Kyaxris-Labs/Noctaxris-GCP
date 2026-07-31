@@ -1,7 +1,7 @@
 # Digests pinned for supply-chain integrity (refresh when intentionally upgrading bases).
 FROM golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS build
 WORKDIR /src
-ARG VERSION=1.0.0
+ARG VERSION=1.0.1
 ARG GIT_SHA=unknown
 COPY go.mod go.sum ./
 RUN go mod download
@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 go build \
 RUN mkdir -p /var/lib/noctaxris-gcp && chown 65532:65532 /var/lib/noctaxris-gcp
 
 FROM gcr.io/distroless/static-debian12:nonroot
-ARG VERSION=1.0.0
+ARG VERSION=1.0.1
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.title="Noctaxris-GCP" \
   org.opencontainers.image.description="GCP-shaped local security lab emulator" \

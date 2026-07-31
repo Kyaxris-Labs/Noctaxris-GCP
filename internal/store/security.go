@@ -243,6 +243,29 @@ func (s *Store) UpdateCloudArmorSecurityPolicyRules(name, rulesJSON, description
 	return s.GetCloudArmorSecurityPolicy(name)
 }
 
+// UpdateCloudArmorSecurityPolicyBody replaces body_json (labels / extras).
+func (s *Store) UpdateCloudArmorSecurityPolicyBody(name, bodyJSON string) (CloudArmorSecurityPolicy, bool, error) {
+	if bodyJSON == "" {
+		bodyJSON = "{}"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.Exec(
+		`UPDATE cloud_armor_security_policies SET body_json = ?, updated_at = ? WHERE name = ?`,
+		bodyJSON, now, name,
+	)
+	if err != nil {
+		return CloudArmorSecurityPolicy{}, false, fmt.Errorf("update cloud armor body: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return CloudArmorSecurityPolicy{}, false, fmt.Errorf("update cloud armor body rows: %w", err)
+	}
+	if n == 0 {
+		return CloudArmorSecurityPolicy{}, false, nil
+	}
+	return s.GetCloudArmorSecurityPolicy(name)
+}
+
 // DeleteCloudArmorSecurityPolicy removes a policy.
 func (s *Store) DeleteCloudArmorSecurityPolicy(name string) (bool, error) {
 	res, err := s.db.Exec(`DELETE FROM cloud_armor_security_policies WHERE name = ?`, name)

@@ -2,11 +2,30 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-31
+
+Default Compose turns nested DinD on; Terraform and SDK suites widen accordingly.
+
 ### Added
+
+| Area | Change |
+|------|--------|
+| Compose | Nested DinD (`noctaxris-gcp-engine`) in default `compose.yaml` with fail-closed nested create/invoke envs; `compose.lab-host-gateway.yaml`; `docker/smoke-nested.sh` |
+| CI | PR `ci.yml` gains compose-static, scoped race, smoke-core (engine on), path-filtered SDK/TF integration, weekly/dispatch nested smoke |
+| Terraform | Default stacks `lab-kms`, `lab-bigquery`, `lab-iam`, `lab-sql`, `lab-redis` (Managed Kafka remains honest skip) |
+| SDK tests | Multi-file Go/Node/Python smokes with Node/Python gap fill vs Go |
+| Memorystore | Delete returns done Operation (Terraform destroy waiters) |
+| GKE | Nested k3s one-shot on create budgets ~2s (soft-fail theatre on pull timeout) |
+| Cloud Armor | `setLabels` DONE Operation so Terraform provider apply completes |
+| Terraform | `big_query_custom_endpoint` name; `lab-iam` pins google `~> 5.45` + listener-root IAM endpoint |
 
 ### Changed
 
-### Fixed
+| Area | Change |
+|------|--------|
+| Nested defaults | Compose operators get fail-closed nested SQL/Kafka/Redis/Run; bare binary / unit tests still soft-fail when `DOCKER_HOST` empty |
+| Docs | ops/configuration/security-defaults/services index + README Defaults describe default-on DinD |
+| Node SDK | `engines.node` minimum `>=24` |
 
 ## [1.0.0] - 2026-07-30
 

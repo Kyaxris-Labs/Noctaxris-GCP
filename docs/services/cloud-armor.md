@@ -60,9 +60,13 @@ Seeded Service Usage: `compute.googleapis.com` (Armor is the Compute API).
 
 ## Deferred depth
 
-- `patch` / `patchRule` / `getRule` / `setLabels` / `aggregatedList`
+- `patch` / `patchRule` / `getRule` / `aggregatedList`
 - Regional security policies
 - `listPreconfiguredExpressionSets` catalogue
+
+`setLabels` returns a DONE compute operation and persists labels on the policy
+JSON (hashicorp/google still POSTs setLabels after create even with
+`add_terraform_attribution_label = false`).
 
 ## Verification / CLI smoke
 

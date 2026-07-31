@@ -12,8 +12,9 @@ func TestComposePublishesLocalhost4588(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(b)
-	if !strings.Contains(content, `"127.0.0.1:4588:4588"`) {
-		t.Fatal("compose must publish 127.0.0.1:4588:4588")
+	if !strings.Contains(content, `NOCTAXRIS_GCP_PUBLISH_ADDR:-127.0.0.1}:4588:4588`) &&
+		!strings.Contains(content, `"127.0.0.1:4588:4588"`) {
+		t.Fatal("compose must default host publish to 127.0.0.1:4588")
 	}
 	if strings.Contains(content, `"0.0.0.0:4588:4588"`) || strings.Contains(content, `- "4588:4588"`) {
 		t.Fatal("compose must not hardcode non-loopback host publish for 4588")
@@ -21,7 +22,12 @@ func TestComposePublishesLocalhost4588(t *testing.T) {
 }
 
 func TestComposeFileHasNoDockerSock(t *testing.T) {
-	for _, name := range []string{"compose.yaml", "compose.engine.yaml", "compose.engine-privileged.yaml"} {
+	for _, name := range []string{
+		"compose.yaml",
+		"compose.engine.yaml",
+		"compose.engine-privileged.yaml",
+		"compose.lab-host-gateway.yaml",
+	} {
 		b, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
@@ -36,44 +42,54 @@ func TestComposeFileHasNoDockerSock(t *testing.T) {
 	}
 }
 
-func TestComposeEngineOverlayOptIn(t *testing.T) {
+func TestComposeEngineDefaultOn(t *testing.T) {
 	base, err := os.ReadFile("compose.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(base), "NOCTAXRIS_GCP_DOCKER_HOST") {
-		t.Fatal("default compose.yaml must leave DOCKER_HOST unset (engine opt-in only)")
-	}
-	if strings.Contains(string(base), "noctaxris-gcp-engine") {
-		t.Fatal("default compose.yaml must not define noctaxris-gcp-engine")
-	}
-
-	overlay, err := os.ReadFile("compose.engine.yaml")
-	if err != nil {
-		t.Fatal("compose.engine.yaml must exist:", err)
-	}
-	content := string(overlay)
+	content := string(base)
 	if !strings.Contains(content, "NOCTAXRIS_GCP_DOCKER_HOST") {
-		t.Fatal("engine overlay must set NOCTAXRIS_GCP_DOCKER_HOST")
+		t.Fatal("default compose.yaml must set NOCTAXRIS_GCP_DOCKER_HOST")
 	}
 	if !strings.Contains(content, "tcp://noctaxris-gcp-engine:2376") {
-		t.Fatal("engine overlay must point at noctaxris-gcp-engine:2376")
+		t.Fatal("default compose.yaml must point at noctaxris-gcp-engine:2376")
+	}
+	if !strings.Contains(content, "noctaxris-gcp-engine") {
+		t.Fatal("default compose.yaml must define noctaxris-gcp-engine")
 	}
 	if !strings.Contains(content, "NOCTAXRIS_GCP_DOCKER_CERT_PATH") {
-		t.Fatal("engine overlay must set NOCTAXRIS_GCP_DOCKER_CERT_PATH")
+		t.Fatal("default compose.yaml must set NOCTAXRIS_GCP_DOCKER_CERT_PATH")
 	}
 	if !strings.Contains(content, "privileged: false") {
-		t.Fatal("engine overlay must use restricted DinD (privileged: false)")
+		t.Fatal("default engine must use restricted DinD (privileged: false)")
+	}
+	if !strings.Contains(content, `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED: "1"`) {
+		t.Fatal("default compose must set NESTED_ENGINE_FAIL_CLOSED=1")
+	}
+	if !strings.Contains(content, `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED: "1"`) {
+		t.Fatal("default compose must set NESTED_INVOKE_FAIL_CLOSED=1")
 	}
 	if strings.Contains(content, "2376:2376") || strings.Contains(content, `"2376:`) {
 		t.Fatal("engine API must not be published to the host")
 	}
 	if strings.Contains(content, "6379:") || strings.Contains(content, "3306:") ||
 		strings.Contains(content, "5432:") || strings.Contains(content, "9092:") {
-		t.Fatal("engine overlay must not host-publish Redis/SQL/Kafka ports")
+		t.Fatal("compose must not host-publish Redis/SQL/Kafka ports")
 	}
 	if !strings.Contains(content, "noctaxris-gcp-lab") {
-		t.Fatal("engine overlay comment should document shared noctaxris-gcp-lab bridge")
+		t.Fatal("compose comment should document shared noctaxris-gcp-lab bridge")
+	}
+
+	overlay, err := os.ReadFile("compose.engine.yaml")
+	if err != nil {
+		t.Fatal("compose.engine.yaml must exist for compatibility:", err)
+	}
+	oc := string(overlay)
+	if !strings.Contains(oc, "NOCTAXRIS_GCP_DOCKER_HOST") {
+		t.Fatal("compat engine overlay must still set NOCTAXRIS_GCP_DOCKER_HOST")
+	}
+	if !strings.Contains(oc, "noctaxris-gcp-lab") {
+		t.Fatal("compat engine overlay comment should document noctaxris-gcp-lab")
 	}
 
 	priv, err := os.ReadFile("compose.engine-privileged.yaml")
@@ -82,6 +98,14 @@ func TestComposeEngineOverlayOptIn(t *testing.T) {
 	}
 	if !strings.Contains(string(priv), "privileged: true") {
 		t.Fatal("privileged overlay must set privileged: true")
+	}
+
+	hg, err := os.ReadFile("compose.lab-host-gateway.yaml")
+	if err != nil {
+		t.Fatal("compose.lab-host-gateway.yaml must exist:", err)
+	}
+	if !strings.Contains(string(hg), "NOCTAXRIS_GCP_INJECT_HOST_GATEWAY") {
+		t.Fatal("host-gateway overlay must set NOCTAXRIS_GCP_INJECT_HOST_GATEWAY")
 	}
 }
 

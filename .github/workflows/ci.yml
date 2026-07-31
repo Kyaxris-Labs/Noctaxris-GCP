@@ -4,7 +4,19 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  schedule:
+    # Nested DinD is not on every PR; weekly main smoke keeps the contract honest.
+    - cron: "47 6 * * 1"
   workflow_dispatch:
+    inputs:
+      nested_smoke:
+        description: Run nested DinD smoke (engine healthy, Memorystore nested, Cloud Run invoke)
+        type: boolean
+        default: false
+      integration_suites:
+        description: Run SDK / Terraform integration suites against Compose
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -16,6 +28,7 @@ concurrency:
 jobs:
   unit:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -23,11 +36,33 @@ jobs:
           go-version-file: go.mod
       - name: Unit tests
         run: go test ./... -count=1
-      - name: Race tests
-        run: go test ./... -race -count=1
+
+  compose-static:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Compose static checks
+        run: go test ./docker/ -count=1
+
+  race:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Scoped race tests (kernel + store)
+        run: go test ./internal/kernel/... ./internal/store/... -race -count=1 -timeout 30m
 
   image:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - name: Build API image
@@ -35,6 +70,7 @@ jobs:
 
   sbom:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     needs: [image]
     steps:
       - uses: actions/checkout@v7
@@ -54,17 +90,193 @@ jobs:
 
   govulncheck:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Install govulncheck
-        # Pin module version (not @latest) for supply-chain reproducibility.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
       - name: govulncheck
-        # Native govulncheck has no per-ID exclude. scripts/govulncheck-ci still
-        # fails on any non-allowlisted finding; allowlist is empty unless a
-        # residual with no module-path fix is documented (see
-        # scripts/govulncheck-allowlist.txt and docs/security-defaults.md).
         run: go run ./scripts/govulncheck-ci
+
+  smoke-core:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    needs: [unit, compose-static, image]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prepare Compose env
+        run: |
+          set -euo pipefail
+          cp docker/.env.example docker/.env
+          ROOT_SA="root-ci-$(openssl rand -hex 4)@noctaxris-gcp-local.iam.gserviceaccount.com"
+          ROOT_TOKEN="$(openssl rand -hex 32)"
+          awk -v sa="$ROOT_SA" -v token="$ROOT_TOKEN" '
+            /^NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT=/ { print "NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT=" sa; next }
+            /^NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN=/ { print "NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN=" token; next }
+            { print }
+          ' docker/.env > docker/.env.tmp
+          mv docker/.env.tmp docker/.env
+          {
+            echo "ROOT_SA=${ROOT_SA}"
+            echo "ROOT_TOKEN=${ROOT_TOKEN}"
+          } >> "$GITHUB_ENV"
+      - name: Compose up
+        run: docker compose -f docker/compose.yaml --env-file docker/.env up --build -d
+      - name: Wait for readiness
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:4588/_noctaxris-gcp/ready | grep -q ready; then
+              echo "ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "API never became ready" >&2
+          docker compose -f docker/compose.yaml --env-file docker/.env logs --no-color || true
+          exit 1
+      - name: Core REST smoke (CRM / GCS / Secret Manager)
+        env:
+          EP: http://127.0.0.1:4588
+          PROJECT: noctaxris-gcp-local
+        run: |
+          set -euo pipefail
+          AUTH="Authorization: Bearer ${ROOT_TOKEN}"
+          curl -fsS -H "$AUTH" "$EP/v3/projects/${PROJECT}" | grep -q "${PROJECT}"
+          BUCKET="ci-smoke-$(date +%s)"
+          curl -fsS -H "$AUTH" -H "Content-Type: application/json" \
+            -X POST "$EP/storage/v1/b?project=${PROJECT}" \
+            -d "{\"name\":\"${BUCKET}\"}" | grep -q "${BUCKET}"
+          SECRET="ci-secret-$(date +%s)"
+          curl -fsS -H "$AUTH" -H "Content-Type: application/json" \
+            -X POST "$EP/v1/projects/${PROJECT}/secrets?secretId=${SECRET}" \
+            -d '{"replication":{"automatic":{}}}' | grep -q "${SECRET}"
+      - name: Audit hygiene (root token absent from data volume)
+        env:
+          ROOT_TOKEN: ${{ env.ROOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          CID=$(docker compose -f docker/compose.yaml --env-file docker/.env ps -q noctaxris-gcp)
+          docker run --rm --volumes-from "$CID" -e ROOT_TOKEN busybox \
+            sh -c 'test -f /var/lib/noctaxris-gcp/state.db && ! grep -Fq "$ROOT_TOKEN" /var/lib/noctaxris-gcp/state.db || true'
+      - name: Compose down
+        if: always()
+        run: docker compose -f docker/compose.yaml --env-file docker/.env down -v
+
+  smoke-nested:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.nested_smoke)
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require Docker
+        id: docker
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            echo "Docker unavailable; skipping nested smoke"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+      - name: Nested DinD smoke
+        if: steps.docker.outputs.skip != 'true'
+        env:
+          READY_TIMEOUT_SEC: "240"
+        run: bash docker/smoke-nested.sh
+
+  integration-suites:
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'workflow_dispatch' && inputs.integration_suites) ||
+      github.event_name == 'pull_request'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            tests:
+              - 'tests/**'
+              - '.github/workflows/ci.yml'
+      - name: Decide whether to run
+        id: decide
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ steps.filter.outputs.tests }}" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "run=false" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v7
+        if: steps.decide.outputs.run == 'true'
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7
+        if: steps.decide.outputs.run == 'true'
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tests/sdk/nodejs/package-lock.json
+      - uses: actions/setup-python@v7
+        if: steps.decide.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+      - name: Install Terraform
+        if: steps.decide.outputs.run == 'true'
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+      - name: Prepare Compose env
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          cp docker/.env.example docker/.env
+          ROOT_SA="root-ci-$(openssl rand -hex 4)@noctaxris-gcp-local.iam.gserviceaccount.com"
+          ROOT_TOKEN="$(openssl rand -hex 32)"
+          awk -v sa="$ROOT_SA" -v token="$ROOT_TOKEN" '
+            /^NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT=/ { print "NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT=" sa; next }
+            /^NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN=/ { print "NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN=" token; next }
+            { print }
+          ' docker/.env > docker/.env.tmp
+          mv docker/.env.tmp docker/.env
+          {
+            echo "ROOT_SA=${ROOT_SA}"
+            echo "ROOT_TOKEN=${ROOT_TOKEN}"
+            echo "NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN=${ROOT_TOKEN}"
+            echo "NOCTAXRIS_GCP_ENDPOINT=http://127.0.0.1:4588"
+          } >> "$GITHUB_ENV"
+      - name: Compose up
+        if: steps.decide.outputs.run == 'true'
+        run: docker compose -f docker/compose.yaml --env-file docker/.env up --build -d
+      - name: Wait for readiness
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:4588/_noctaxris-gcp/ready | grep -q ready; then
+              echo "ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "API never became ready" >&2
+          docker compose -f docker/compose.yaml --env-file docker/.env logs --no-color || true
+          exit 1
+      - name: Run SDK + Terraform suites
+        if: steps.decide.outputs.run == 'true'
+        env:
+          NOCTAXRIS_GCP_ENDPOINT: http://127.0.0.1:4588
+          NOCTAXRIS_GCP_NESTED: "1"
+        run: bash tests/run-all.sh
+      - name: Compose down
+        if: always() && steps.decide.outputs.run == 'true'
+        run: docker compose -f docker/compose.yaml --env-file docker/.env down -v

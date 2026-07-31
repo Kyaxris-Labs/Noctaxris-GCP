@@ -132,6 +132,13 @@ func TestMemorystoreRedisInstancesCRUD(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	var deleteOp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &deleteOp); err != nil {
+		t.Fatal(err)
+	}
+	if deleteOp["done"] != true {
+		t.Fatalf("delete expected done Operation: %#v", deleteOp)
+	}
 }
 
 func TestMemorystoreNestedEngineFailClosed(t *testing.T) {

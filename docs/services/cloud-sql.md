@@ -3,7 +3,7 @@
 Lab Cloud SQL Admin REST for instances, users, and databases (PostgreSQL and
 MySQL engines). Default Compose leaves `NOCTAXRIS_GCP_DOCKER_HOST` empty:
 instances return `state=RUNNABLE` with theatre `host`, `port`, and
-`ipAddresses`. Opt-in DinD (`compose.engine.yaml`) can start pinned
+`ipAddresses`. Default Compose DinD can start pinned
 `postgres:16-alpine` or `mysql:8.0` containers on the internal
 `noctaxris-gcp-lab` network (no host DB port publish).
 
@@ -73,7 +73,7 @@ Seeded Service Usage: `sqladmin.googleapis.com`.
 
 ## Nested opt-in
 
-1. Start emulator with `docker compose -f compose.yaml -f compose.engine.yaml up`
+1. Start emulator with `docker compose -f compose.yaml --env-file .env up --build`
 2. Create instance; when nested start succeeds, `host` is the Docker container name on `noctaxris-gcp-lab` and `port` is `5432` or `3306`
 3. Connect from other containers on the same engine network only (not published on the host); use password `noctaxris-gcp-lab`
 4. Create users/databases via Admin REST; nested `CREATE` runs when the instance has a `container_id`

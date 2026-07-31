@@ -38,29 +38,32 @@ CRUD lite attaches under that parent). See [services/resourcemanager.md](service
 - `NOCTAXRIS_GCP_ALLOW_NONLOOPBACK_LISTEN=1`
 - `NOCTAXRIS_GCP_DATA_ROOT=/var/lib/noctaxris-gcp`
 - `NOCTAXRIS_GCP_MASTER_KEY_FILE=/var/lib/noctaxris-gcp-secrets/master.key`
-- Host publish `127.0.0.1:4588:4588`
-- Volumes: data + secrets
+- Host publish `${NOCTAXRIS_GCP_PUBLISH_ADDR:-127.0.0.1}:4588:4588`
+- Volumes: data + secrets + engine certs
 - `read_only: true` and `tmpfs: /tmp`
 - No `docker.sock`
-- No nested engine (leave `NOCTAXRIS_GCP_DOCKER_HOST` unset)
+- Nested engine on by default (`NOCTAXRIS_GCP_DOCKER_HOST=tcp://noctaxris-gcp-engine:2376`)
+- Compose fail-closed: `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED=1`, `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED=1`
 
-### Opt-in nested engine
+### Nested engine
 
 From `docker/`:
 
 ```bash
-docker compose -f compose.yaml -f compose.engine.yaml --env-file .env up --build
+docker compose -f compose.yaml --env-file .env up --build
 ```
 
-`compose.engine.yaml` starts restricted DinD (`noctaxris-gcp-engine`, `privileged: false`)
+Default Compose starts restricted DinD (`noctaxris-gcp-engine`, `privileged: false`)
 and sets `NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH`. The engine
-API stays on the Compose network (no host publish of 2375/2376). If nested
+API stays on the Compose network (no host publish of 2375/2376). Bare binary /
+unit tests leave `NOCTAXRIS_GCP_DOCKER_HOST` empty (mock/theatre). If nested
 containers fail on your host:
 
 ```bash
-docker compose -f compose.yaml -f compose.engine.yaml -f compose.engine-privileged.yaml --env-file .env up --build
+docker compose -f compose.yaml -f compose.engine-privileged.yaml --env-file .env up --build
 ```
 
+`compose.engine.yaml` remains as a compatibility overlay (engine already in base).
 See [security-defaults.md](security-defaults.md).
 
 Copy `docker/.env.example` to `docker/.env` and replace the example root pair

@@ -39,7 +39,7 @@ Go module: [`github.com/Kyaxris-Labs/Noctaxris-GCP`](https://github.com/Kyaxris-
 | Lab fidelity | Google IAM allow policies, service accounts, and Bearer auth on a single port |
 | Secure defaults | Loopback publish only. No host `docker.sock`. Master key outside the data root |
 | REST + gRPC | Cleartext HTTP/2 (h2c) multiplexes both on `:4588` |
-| Nested compute | DinD via Compose `noctaxris-gcp-engine` over TLS is opt-in (`compose.engine.yaml`). Default API stays mock-invoke |
+| Nested compute | DinD via Compose `noctaxris-gcp-engine` over TLS is **on by default**. Bare binary / unit tests leave `NOCTAXRIS_GCP_DOCKER_HOST` empty (mock/theatre) |
 
 ## Quick start
 
@@ -66,7 +66,7 @@ curl -H "Authorization: Bearer $ROOT_TOKEN" \
   http://127.0.0.1:4588/v3/projects/noctaxris-gcp-local
 ```
 
-Nested Cloud Run invoke needs Compose with `noctaxris-gcp-engine`. Copy `docker/.env.example` to `docker/.env`, replace both root values with unique lab credentials, then `docker compose -f docker/compose.yaml --env-file docker/.env up --build`. Default host publish is `127.0.0.1:4588` only. Opt-in nested DinD: add `-f docker/compose.engine.yaml` (see [ops.md](docs/ops.md#compose-overlays-lab-opt-in)). Per-service smoke: [docs/services/](docs/services/index.md).
+Nested Cloud Run invoke uses the default Compose engine. Copy `docker/.env.example` to `docker/.env`, replace both root values with unique lab credentials, then `docker compose -f docker/compose.yaml --env-file docker/.env up --build`. Default host publish is `127.0.0.1:4588` only. Privileged workaround: `-f docker/compose.engine-privileged.yaml` (see [ops.md](docs/ops.md#compose-overlays-lab-opt-in)). Per-service smoke: [docs/services/](docs/services/index.md). Nested proof: `bash docker/smoke-nested.sh`.
 
 ## Services
 
@@ -214,7 +214,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud Run</td>
-      <td>Admin API v2 services/jobs, traffic, IAM, <code>:invoke</code> status/delay; opt-in nested DinD.</td>
+      <td>Admin API v2 services/jobs, traffic, IAM, <code>:invoke</code> status/delay; nested DinD on by default in Compose.</td>
       <td>Default nested containers; traffic percent enforce beyond metadata.</td>
     </tr>
     <tr>
@@ -326,8 +326,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
 | Setting | Value |
 |---------|--------|
 | Listen | `127.0.0.1:4588` only |
-| Docker | No host `docker.sock` (opt-in nested `noctaxris-gcp-engine` for Cloud Run, SQL, Kafka, Redis, GKE) |
-| Nested compute | Off by default (`NOCTAXRIS_GCP_DOCKER_HOST` empty). Live nested engines need `compose.engine.yaml` |
+| Docker | No host `docker.sock` (default nested `noctaxris-gcp-engine` for Cloud Run, SQL, Kafka, Redis, GKE) |
+| Nested compute | On by default in Compose (`NOCTAXRIS_GCP_DOCKER_HOST` → engine). Bare binary leaves host empty (mock/theatre) |
 | Data ports | Compose publishes only `127.0.0.1:4588` |
 | API replicas | **One process per data root.** Multi-replica against the same SQLite volume is unsupported and can corrupt state |
 | Credentials | Root SA email + Bearer token via env injection |
@@ -337,13 +337,13 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
 
 ## Architecture
 
-Loopback API only. Nested DinD over TLS is opt-in. No host `docker.sock`.
+Loopback API only. Nested DinD over TLS is on by default in Compose. No host `docker.sock`.
 
 ```mermaid
 flowchart LR
   Client["gcloud / GCP SDK"] --> Port["127.0.0.1:4588"]
   Port --> API["noctaxris-gcp API"]
-  API -.->|"opt-in TLS"| Engine["noctaxris-gcp-engine DinD"]
+  API -.->|"TLS DinD"| Engine["noctaxris-gcp-engine DinD"]
   Engine --> Nested["Cloud Run nested invoke"]
 ```
 
@@ -356,7 +356,7 @@ Full graph and request path: [docs/architecture.md](docs/architecture.md).
 | [docs/index.md](docs/index.md) | Architecture, configuration, ops, security posture |
 | [docs/services/](docs/services/index.md) | Per-service APIs, authz notes, CLI smoke |
 | [docs/ops.md](docs/ops.md) | Backup, restore, upgrade, graceful shutdown, CI matrix |
-| [docs/release.md](docs/release.md) | Cutting a release (`v1.0.0`, Hub `latest` / semver) |
+| [docs/release.md](docs/release.md) | Cutting a release (`v1.0.1`, Hub `latest` / semver) |
 | [tests/README.md](tests/README.md) | SDK and Terraform suites (Compose required for live runs) |
 
 ## Contributors

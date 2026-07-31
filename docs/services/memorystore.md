@@ -2,7 +2,7 @@
 
 Lab Memorystore Redis Admin REST for instances. Default Compose leaves
 `NOCTAXRIS_GCP_DOCKER_HOST` empty: `host` / `port` are theatre metadata for
-control-plane-only clients. With the opt-in DinD engine (`compose.engine.yaml`),
+control-plane-only clients. With default Compose DinD (or any configured Docker host),
 create attempts a nested `redis:7-alpine` container on the shared
 `noctaxris-gcp-lab` bridge (same network as nested Cloud SQL and Managed Kafka);
 the API `host` is the container DNS name `noctaxris-gcp-redis-<instanceId>`
@@ -11,8 +11,8 @@ the API `host` is the container DNS name `noctaxris-gcp-redis-<instanceId>`
 ## Status
 
 **hybrid lab** — location-scoped instance CRUD; nested Redis when DinD is
-configured; metadata theatre otherwise. Create returns a completed Operation
-(`done: true` + `response`).
+configured; metadata theatre otherwise. Create and delete return a completed
+Operation (`done: true`; create also includes `response`).
 
 ## Wire protocol
 
@@ -35,6 +35,9 @@ Create returns a completed Operation:
 {"name":"projects/.../locations/.../operations/create-{id}","done":true,"response":{"@type":"type.googleapis.com/google.cloud.redis.v1.Instance","name":"...","state":"READY",...}}
 ```
 
+Delete returns a completed Operation (`done: true`) so Terraform destroy waiters
+can finish; the instance is removed from store.
+
 `GET` of the instance by resource name still returns the instance.
 `GET .../operations/{operation}` returns `{name, done: true}` immediately.
 The operations path is shared with Certificate Manager on the lab ServeMux
@@ -55,7 +58,7 @@ Seeded Service Usage: `redis.googleapis.com`.
 - With DinD: Redis listens only on `noctaxris-gcp-lab` (shared with SQL/Kafka; no host publish); nested ensure soft-fails back to theatre `host` when the engine is unreachable unless `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED=1`/`true` (create returns `FAILED_PRECONDITION` and the instance row is rolled back)
 - Create accepts `authEnabled` / optional `authString`; when `authEnabled` is true and `authString` is empty, a UUID AUTH string is generated. Create/get JSON echoes `authEnabled` and (when enabled) `authString` (lab convenience; GCP uses `getAuthString`)
 - Nested Redis with AUTH: `REDIS_PASSWORD` env plus `redis-server --requirepass` on `redis:7-alpine`
-- Create returns a completed LRO (`done: true`); Operations.get is immediate done theatre (no async worker)
+- Create and delete return a completed LRO (`done: true`); Operations.get is immediate done theatre (no async worker)
 - No import/export, failover, maintenance, or `instances.getAuthString` path yet
 
 ## Deferred depth
@@ -79,7 +82,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/us-central1/instances/lab-redis"
 ```
 
-With `compose.engine.yaml`, confirm `host` is `noctaxris-gcp-redis-lab-redis` and
+With default Compose, confirm `host` is `noctaxris-gcp-redis-lab-redis` and
 reach Redis from another container on `noctaxris-gcp-lab` (not from the host
 unless you add a custom publish overlay). With AUTH enabled, clients must
 `AUTH` with the instance `authString` (or `REDISCLI_AUTH`).

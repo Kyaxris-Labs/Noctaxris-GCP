@@ -8,31 +8,27 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 |---------|---------|-------|
 | Listen | `127.0.0.1:4588` | Non-loopback without TLS requires `NOCTAXRIS_GCP_ALLOW_NONLOOPBACK_LISTEN=1` |
 | Compose publish | `127.0.0.1:4588` | Container bind is `0.0.0.0:4588` with the opt-in above |
-| Host Docker socket | never mounted | Nested DinD is opt-in only via `docker/compose.engine.yaml` |
+| Host Docker socket | never mounted | Nested DinD is on in default Compose (`noctaxris-gcp-engine`); never mount host `docker.sock` |
 
-## Nested engine (opt-in)
+## Nested engine
 
-- Empty `NOCTAXRIS_GCP_DOCKER_HOST` disables nested compute. Unit tests and default
-  Compose stay green without Docker / DinD.
+- Empty `NOCTAXRIS_GCP_DOCKER_HOST` disables nested compute. Unit tests and bare
+  `docker run` / local binaries stay green without Docker / DinD.
+- Default Compose starts `noctaxris-gcp-engine` and sets Docker host + TLS certs
+  plus `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED=1` and
+  `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED=1`.
 - Never mount host `/var/run/docker.sock` on the API service. Runtime rejects
   `unix://`, `npipe://`, and any host string containing `docker.sock`.
-- Opt-in overlay `docker/compose.engine.yaml` starts `noctaxris-gcp-engine`
-  (digest-pinned `docker:27-dind`) as restricted DinD (`privileged: false` +
-  caps / devices / `cgroup: host` / writable `/sys/fs/cgroup`) and sets
-  `NOCTAXRIS_GCP_DOCKER_HOST=tcp://noctaxris-gcp-engine:2376` plus
-  `NOCTAXRIS_GCP_DOCKER_CERT_PATH=/certs/client`. The engine API is not published
-  to the host.
+- Engine is digest-pinned `docker:27-dind` as restricted DinD (`privileged: false` +
+  caps / devices / `cgroup: host` / writable `/sys/fs/cgroup`). The engine API is
+  not published to the host. Compatibility overlay `compose.engine.yaml` still works.
 - Non-default engine URLs require `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST`. TLS
   client PEMs are required whenever Docker host is set.
 - Image pulls fail closed: pinned lab bases (`alpine:3.20`, …) only, unless
   extended with `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` (exact refs, or prefixes
   ending in `/` with digest required for registry hosts).
-- Nested invoke soft-fail responses expose engine mode (`mock` / `nested`) but
-  not raw dial/run error strings to clients. Set `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED=1`
-  (or `true`) to return an error on dial/run/disabled instead of soft-failing to mock.
-- Nested SQL/Kafka/Redis create soft-fails to theatre by default when DinD start fails.
-  Set `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED=1` (or `true`) so create returns
-  `FAILED_PRECONDITION` (resource rolled back) instead.
+- With Compose fail-closed envs, nested dial/run/create failures return errors
+  (not soft theatre). Bare process without those envs still soft-fails to theatre/mock.
 - If nested containers fail on Desktop/WSL2, add `compose.engine-privileged.yaml`
   (`privileged: true`). Keep host publish on `127.0.0.1:4588`.
 

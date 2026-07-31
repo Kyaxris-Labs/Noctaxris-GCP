@@ -1,9 +1,13 @@
-# Opt-in nested DinD engine for Noctaxris-GCP.
-# Default compose.yaml does NOT start an engine and leaves
-# NOCTAXRIS_GCP_DOCKER_HOST unset (unit tests need no Docker).
+# Compatibility overlay: nested DinD is now in default compose.yaml.
+# Keeping this file so older docs/commands that use
+#   docker compose -f compose.yaml -f compose.engine.yaml ...
+# still merge cleanly (same engine wiring + fail-closed envs).
 #
-# Enable from docker/:
-#   docker compose -f compose.yaml -f compose.engine.yaml --env-file .env up --build
+# Prefer plain:
+#   docker compose -f compose.yaml --env-file .env up --build
+#
+# If nested containers fail to start on your host, also add:
+#   -f compose.engine-privileged.yaml
 #
 # Never mount host docker.sock. Engine TLS listens on the Compose network only
 # (no host publish of 2375/2376). Restricted DinD: privileged: false + caps.
@@ -11,16 +15,14 @@
 # Nested SQL / Kafka / Redis / GKE lab containers are created inside the engine
 # on the shared bridge noctaxris-gcp-lab (API-managed; not a Compose network).
 # Broker and DB ports are not published to the operator host.
-#
-# If nested containers fail to start on your host, also add:
-#   -f compose.engine-privileged.yaml
 
 services:
   noctaxris-gcp:
     environment:
-      # Nested DinD API on the Compose network only (TLS on 2376, never host docker.sock).
       NOCTAXRIS_GCP_DOCKER_HOST: "tcp://noctaxris-gcp-engine:2376"
       NOCTAXRIS_GCP_DOCKER_CERT_PATH: "/certs/client"
+      NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED: "1"
+      NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED: "1"
     volumes:
       - noctaxris-gcp-engine-certs:/certs:ro
     depends_on:
@@ -28,8 +30,6 @@ services:
         condition: service_healthy
   noctaxris-gcp-engine:
     image: docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
-    # Restricted DinD (no privileged: true). Explicit caps/devices plus
-    # host cgroup namespace so dockerd can write /sys/fs/cgroup (cgroup v2).
     privileged: false
     cgroup: host
     cap_add:
@@ -60,13 +60,14 @@ services:
     command: ["--ipv6=false", "--ip6tables=false"]
     environment:
       DOCKER_TLS_SAN: DNS:noctaxris-gcp-engine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - noctaxris-gcp-engine-certs:/certs
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     tmpfs:
       - /run
       - /tmp
-    # Engine API stays on the Compose network only; do not add host mappings for 2375/2376.
     healthcheck:
       test: ["CMD", "docker", "info"]
       interval: 5s

@@ -148,6 +148,11 @@ func (s *Service) createCluster(w http.ResponseWriter, r *http.Request, p authn.
 	writeJSON(w, http.StatusOK, toClusterJSON(out))
 }
 
+// nestedK3sBudget caps the create-path one-shot so cluster create stays within
+// typical SDK/client timeouts. Image pull of rancher/k3s is large; timeout soft-fails
+// to theatre metadata (same as engine errors).
+const nestedK3sBudget = 2 * time.Second
+
 func tryNestedK3s(ctx context.Context) map[string]any {
 	host := strings.TrimSpace(os.Getenv(compute.EnvDockerHost))
 	if host == "" {
@@ -161,9 +166,15 @@ func tryNestedK3s(ctx context.Context) map[string]any {
 		return map[string]any{"mode": "mock", "detail": "engine unavailable"}
 	}
 	defer cli.Close()
-	out, err := cli.RunLabOneShot(ctx, K3sLabImage)
+	shotCtx, cancel := context.WithTimeout(ctx, nestedK3sBudget)
+	defer cancel()
+	out, err := cli.RunLabOneShot(shotCtx, K3sLabImage)
 	if err != nil {
-		return map[string]any{"mode": "mock", "detail": "k3s one-shot failed"}
+		detail := "k3s one-shot failed"
+		if shotCtx.Err() != nil {
+			detail = "k3s one-shot timed out"
+		}
+		return map[string]any{"mode": "mock", "detail": detail}
 	}
 	return map[string]any{
 		"mode":     "nested-one-shot",

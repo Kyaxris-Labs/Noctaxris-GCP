@@ -248,7 +248,8 @@ func (s *Service) deleteInstance(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.NotFound(w, "Instance not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{})
+	// Done Operation so Terraform redis waiters complete on destroy (same shape as create).
+	writeDoneOperation(w, project, location, "delete-"+id, nil)
 }
 
 func toInstanceJSON(inst store.MemorystoreRedisInstance) map[string]any {

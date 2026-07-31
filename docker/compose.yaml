@@ -12,7 +12,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
-      - "127.0.0.1:4588:4588"
+      # Default loopback publish. Nested→host labs may set NOCTAXRIS_GCP_PUBLISH_ADDR=0.0.0.0
+      # with compose.lab-host-gateway.yaml (lab-only; prefer TLS if exposing beyond loopback).
+      - "${NOCTAXRIS_GCP_PUBLISH_ADDR:-127.0.0.1}:4588:4588"
     environment:
       NOCTAXRIS_GCP_LISTEN: "0.0.0.0:4588"
       # Required for the container bind above. Default host publish is 127.0.0.1:4588.
@@ -23,9 +25,19 @@ services:
       NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT: "${NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT}"
       NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN: "${NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN}"
       NOCTAXRIS_GCP_PROJECT: "${NOCTAXRIS_GCP_PROJECT:-noctaxris-gcp-local}"
+      # Nested DinD API on the Compose network only (TLS on 2376, never host docker.sock).
+      NOCTAXRIS_GCP_DOCKER_HOST: "tcp://noctaxris-gcp-engine:2376"
+      NOCTAXRIS_GCP_DOCKER_CERT_PATH: "/certs/client"
+      # Compose operators: fail closed on nested engine/invoke failure (unit tests leave these unset).
+      NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED: "1"
+      NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED: "1"
+      # Nested ExtraHosts host.docker.internal. Code default is off; set 1 or use
+      # compose.lab-host-gateway.yaml for nested→API labs (Cloud Run one-shot uses NetworkMode none).
+      NOCTAXRIS_GCP_INJECT_HOST_GATEWAY: "${NOCTAXRIS_GCP_INJECT_HOST_GATEWAY:-0}"
     volumes:
       - noctaxris-gcp-data:/var/lib/noctaxris-gcp
       - noctaxris-gcp-secrets:/var/lib/noctaxris-gcp-secrets
+      - noctaxris-gcp-engine-certs:/certs:ro
     # DO NOT add docker.sock
     read_only: true
     tmpfs:
@@ -33,13 +45,70 @@ services:
     depends_on:
       noctaxris-gcp-init:
         condition: service_completed_successfully
+      noctaxris-gcp-engine:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/noctaxris-gcp", "healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 12
       start_period: 20s
+  noctaxris-gcp-engine:
+    image: docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
+    # Default: restricted DinD (no privileged: true). Explicit caps/devices plus
+    # host cgroup namespace so dockerd can write /sys/fs/cgroup (cgroup v2).
+    # If docker info or nested create fails on Desktop/WSL2, opt in:
+    #   docker compose -f compose.yaml -f compose.engine-privileged.yaml --env-file .env up --build
+    privileged: false
+    cgroup: host
+    cap_add:
+      - AUDIT_WRITE
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - KILL
+      - MKNOD
+      - NET_ADMIN
+      - NET_BIND_SERVICE
+      - NET_RAW
+      - SETFCAP
+      - SETGID
+      - SETPCAP
+      - SETUID
+      - SYS_ADMIN
+      - SYS_CHROOT
+      - SYS_PTRACE
+      - SYS_RESOURCE
+    security_opt:
+      - apparmor:unconfined
+      - seccomp:unconfined
+      - systempaths=unconfined
+    devices:
+      - /dev/fuse
+    command: ["--ipv6=false", "--ip6tables=false"]
+    environment:
+      DOCKER_TLS_SAN: DNS:noctaxris-gcp-engine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - noctaxris-gcp-engine-certs:/certs
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /tmp
+    # Engine API stays on the Compose network only; do not add host mappings for 2375/2376.
+    # Nested SQL / Kafka / Redis / GKE lab containers are created inside the engine
+    # on the shared bridge noctaxris-gcp-lab (API-managed; not a Compose network).
+    # Broker and DB ports are not published to the operator host.
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 15s
 
 volumes:
   noctaxris-gcp-data:
   noctaxris-gcp-secrets:
+  noctaxris-gcp-engine-certs:

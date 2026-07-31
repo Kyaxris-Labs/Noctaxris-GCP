@@ -34,6 +34,7 @@ Seeded Service Usage: `container.googleapis.com`.
 
 - Image: `rancher/k3s:v1.28.8-k3s1` (pinned in image allowlist)
 - One-shot only (`NetworkMode: none`); no published apiserver port on the host
+- Create budgets ~2s for the one-shot (large image pulls soft-fail); cluster row still `RUNNING`
 - Failure soft-fails to theatre metadata (`noctaxrisNestedEngine` on the cluster JSON)
 
 ## Deferred depth

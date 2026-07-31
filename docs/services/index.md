@@ -62,10 +62,10 @@ Per-service deferred depth lives on each page. Shared gaps:
 - Bearer required on API paths (health/ready/version are public; Identity Toolkit
   `/identitytoolkit.googleapis.com/v1/accounts*` client methods are also public)
 - Root principal bypasses IAM evaluation (lab operator)
-- No host `docker.sock`; nested DinD opt-in only (see Nested DinD below)
+- No host `docker.sock`; nested DinD on by default in Compose (see Nested DinD below)
 - Compute Engine stores instance/VPC/firewall metadata only (no VMs or NICs); Images are a fixed canned set; firewall `:validate` is single-rule lite
 - Bigtable Admin is control-plane theatre (no row mutate/read)
-- Memorystore Redis is theatre host/port by default; optional nested Redis when DinD is configured (no host publish)
+- Memorystore Redis uses nested Redis when Compose engine is healthy (fail-closed under Compose); bare binary without Docker host stays theatre
 - Filestore is control-plane theatre under `/file/v1/` (no NFS; path prefix avoids Spanner/Memorystore clash)
 - Vertex AI returns canned predict/generateContent for allowlisted model ids only
 - Dataflow jobs advance state theatre only (no workers or pipeline execution)
@@ -79,23 +79,24 @@ Per-service deferred depth lives on each page. Shared gaps:
 
 ## Nested DinD
 
-Default Compose and `docker run` leave `NOCTAXRIS_GCP_DOCKER_HOST` empty: Cloud Run
-`:invoke`, Cloud SQL, Managed Kafka, Memorystore Redis, and GKE stay theatre/mock
-(no nested containers), and unit tests need no Docker. Opt-in nested engine:
+Default Compose starts `noctaxris-gcp-engine` and sets `NOCTAXRIS_GCP_DOCKER_HOST` with
+fail-closed nested create/invoke. Bare binary / unit tests leave the host empty
+(theatre/mock; no Docker required):
 
 ```bash
 cd docker
-docker compose -f compose.yaml -f compose.engine.yaml --env-file .env up --build
+docker compose -f compose.yaml --env-file .env up --build
 ```
 
-`compose.engine.yaml` starts restricted DinD (`noctaxris-gcp-engine`, `privileged: false`)
+Default Compose starts restricted DinD (`noctaxris-gcp-engine`, `privileged: false`)
 on the Compose network only (no host publish of 2375/2376) and sets
-`NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH`. Nested SQL,
-Managed Kafka, and Memorystore Redis share the engine-internal
-`noctaxris-gcp-lab` bridge (API-created; no host publish of broker/DB ports).
-Cloud Run one-shot invoke stays off that bridge (`NetworkMode: none`). Host
-`docker.sock`, `unix://`, and `npipe://` are rejected. If nested containers fail
-on Desktop/WSL2, add `-f compose.engine-privileged.yaml`. Details:
+`NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH` plus fail-closed
+nested envs. Nested SQL, Managed Kafka, and Memorystore Redis share the
+engine-internal `noctaxris-gcp-lab` bridge (API-created; no host publish of
+broker/DB ports). Cloud Run one-shot invoke stays off that bridge
+(`NetworkMode: none`). Host `docker.sock`, `unix://`, and `npipe://` are rejected.
+If nested containers fail on Desktop/WSL2, add `-f compose.engine-privileged.yaml`.
+Nested proof: `bash docker/smoke-nested.sh`. Details:
 [configuration.md](../configuration.md), [security-defaults.md](../security-defaults.md),
 [architecture.md](../architecture.md), [cloud-run.md](cloud-run.md).
 

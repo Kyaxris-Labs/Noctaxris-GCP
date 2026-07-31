@@ -38,7 +38,7 @@ elif [[ -n "${STACKS:-}" ]]; then
   # shellcheck disable=SC2206
   STACKS=($STACKS)
 else
-  STACKS=(lab-storage lab-run lab-dns lab-compute lab-armor)
+  STACKS=(lab-storage lab-run lab-dns lab-compute lab-armor lab-kms lab-bigquery lab-iam lab-sql lab-redis)
 fi
 
 PROJECT="${NOCTAXRIS_GCP_PROJECT:-noctaxris-gcp-local}"

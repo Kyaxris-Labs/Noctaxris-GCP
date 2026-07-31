@@ -35,6 +35,7 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /compute/v1/projects/{project}/global/securityPolicies/{securityPolicy}", s.wrap(principalFrom, s.policyPOSTColon))
 	mux.HandleFunc("POST /compute/v1/projects/{project}/global/securityPolicies/{securityPolicy}/addRule", s.wrap(principalFrom, s.addRule))
 	mux.HandleFunc("POST /compute/v1/projects/{project}/global/securityPolicies/{securityPolicy}/removeRule", s.wrap(principalFrom, s.removeRule))
+	mux.HandleFunc("POST /compute/v1/projects/{project}/global/securityPolicies/{securityPolicy}/setLabels", s.wrap(principalFrom, s.setLabels))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -367,6 +368,52 @@ func (s *Service) removeRule(w http.ResponseWriter, r *http.Request, p authn.Pri
 		return
 	}
 	writeJSON(w, http.StatusOK, doneOperation(project, "removeRule", selfLink("projects", project, "global", "securityPolicies", id)))
+}
+
+func (s *Service) setLabels(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	id, _ := splitColonAction(r.PathValue("securityPolicy"))
+	if err := s.require(p, "compute.securityPolicies.update", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := store.CloudArmorPolicyResourceName(project, id)
+	pol, ok, err := s.Store.GetCloudArmorSecurityPolicy(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "SecurityPolicy not found")
+		return
+	}
+	body, err := decodeBody(r)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "invalid JSON body")
+		return
+	}
+	extras := map[string]any{}
+	_ = json.Unmarshal([]byte(pol.BodyJSON), &extras)
+	if extras == nil {
+		extras = map[string]any{}
+	}
+	if labels, ok := body["labels"]; ok {
+		extras["labels"] = labels
+	}
+	if fp, ok := body["labelFingerprint"]; ok {
+		extras["labelFingerprint"] = fp
+	}
+	raw, _ := json.Marshal(extras)
+	_, ok, err = s.Store.UpdateCloudArmorSecurityPolicyBody(name, string(raw))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "SecurityPolicy not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, doneOperation(project, "setLabels", selfLink("projects", project, "global", "securityPolicies", id)))
 }
 
 func (s *Service) validatePolicy(w http.ResponseWriter, r *http.Request, p authn.Principal, project, id string) {

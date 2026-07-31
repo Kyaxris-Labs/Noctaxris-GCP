@@ -39,9 +39,9 @@ Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`,
 
 | Suite | Tools |
 |-------|--------|
-| SDK (Go) | Go 1.22+ (module under `tests/sdk/go`) |
-| SDK (Node.js) | Node.js 24+; `npm install` under `tests/sdk/nodejs` |
-| SDK (Python) | Python 3.10+; `pip install -r requirements.txt` under `tests/sdk/python` |
+| SDK (Go) | Go 1.22+; feature `*_test.go` + `helpers_test.go` under `tests/sdk/go` |
+| SDK (Node.js) | Node.js 24+; `*.test.mjs` + `helpers.mjs` under `tests/sdk/nodejs` (`npm test`) |
+| SDK (Python) | Python 3.10+; `test_*.py` + `conftest.py` under `tests/sdk/python` |
 | Terraform | Terraform CLI 1.5+, Google provider resolved on `init` |
 
 ## Soft-skip vs hard-fail
@@ -51,9 +51,9 @@ Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`,
 | `NOCTAXRIS_GCP_ENDPOINT` unset inside an SDK/TF test | Soft-skip that test |
 | API not ready when running `tests/run-all.sh` | Hard-fail (exit 1) |
 | Root token unset when running `tests/run-all.sh` | Hard-fail (exit 1) |
-| Nested Cloud Run / DinD rows without `compose.engine.yaml` | Soft-skip inside SDK tests |
+| Nested Cloud Run / DinD rows without healthy engine | Soft-skip inside SDK tests |
 
-Set `NOCTAXRIS_GCP_NESTED=1` to keep nested-oriented SDK rows enabled (still soft-skip without a healthy engine). Default suites stay mock-invoke friendly when unset.
+Set `NOCTAXRIS_GCP_NESTED=1` to keep nested-oriented SDK rows enabled (still soft-skip without a healthy engine). Default Compose starts the nested engine; bare binary without `NOCTAXRIS_GCP_DOCKER_HOST` stays mock/theatre.
 
 ## Run all suites
 
@@ -69,14 +69,14 @@ NOCTAXRIS_GCP_NESTED=1 bash tests/run-all.sh
 Or run each suite:
 
 ```bash
-# SDK round-trips (CRM, GCS, Pub/Sub, IAM, secrets, …; soft-skip rows when API down)
+# SDK round-trips (multi-file feature suites; soft-skip rows when API down)
 cd tests/sdk/go && go test ./... -count=1 -timeout 10m
 
 cd tests/sdk/nodejs && npm install && npm test
 
 cd tests/sdk/python && pip install -r requirements.txt && pytest
 
-# Terraform apply + destroy (default set: storage, run, dns, compute, armor)
+# Terraform apply + destroy (default set includes storage, run, dns, compute, armor, kms, bigquery, iam, sql, redis)
 bash tests/terraform/run.sh
 
 # One stack

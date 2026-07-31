@@ -1,9 +1,9 @@
 # Opt-in full-privileged nested engine for hosts where restricted DinD cannot
 # start nested containers (some Docker Desktop / WSL2 kernels).
-# Prefer compose.engine.yaml alone; add this overlay only when nested smoke fails.
+# Prefer default compose.yaml alone; add this overlay only when nested smoke fails.
 #
 # Usage (from docker/):
-#   docker compose -f compose.yaml -f compose.engine.yaml -f compose.engine-privileged.yaml --env-file .env up --build
+#   docker compose -f compose.yaml -f compose.engine-privileged.yaml --env-file .env up --build
 #
 # Keep host publish on 127.0.0.1:4588. Never add host docker.sock on the API.
 services:
