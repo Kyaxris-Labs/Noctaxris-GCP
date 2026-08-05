@@ -82,7 +82,7 @@ GitHub Actions (`.github/workflows/ci.yml`):
 | unit | Every push and PR (`go test ./...`; also `-race`) |
 | image | `docker build -f docker/Dockerfile .` |
 | sbom | After image: Syft SPDX SBOM artifact |
-| govulncheck | `go run ./scripts/govulncheck-ci` (allowlist only for documented residuals with no module-path fix) |
+| govulncheck | `go run ./scripts/govulncheck-ci` (allowlist empty by default after moby client migration; see [security-defaults.md](security-defaults.md)) |
 
 Release / Hub publish (separate workflows):
 

@@ -53,7 +53,7 @@ Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`,
 | Root token unset when running `tests/run-all.sh` | Hard-fail (exit 1) |
 | Nested Cloud Run / DinD rows without healthy engine | Soft-skip inside SDK tests |
 
-Set `NOCTAXRIS_GCP_NESTED=1` to keep nested-oriented SDK rows enabled (still soft-skip without a healthy engine). Default Compose starts the nested engine; bare binary without `NOCTAXRIS_GCP_DOCKER_HOST` stays mock/theatre.
+Set `NOCTAXRIS_GCP_NESTED=1` to keep nested-oriented SDK rows enabled (still soft-skip without a healthy engine). Nested compute talks to DinD via `github.com/moby/moby/client` + `github.com/moby/moby/api` (not `github.com/docker/docker`); soft-skip behavior is unchanged. Default Compose starts the nested engine; bare binary without `NOCTAXRIS_GCP_DOCKER_HOST` stays mock/theatre.
 
 ## Run all suites
 

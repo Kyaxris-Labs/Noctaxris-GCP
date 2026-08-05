@@ -22,6 +22,7 @@
 
 | Area | Change |
 |------|--------|
+| Nested compute | Engine client migrates from `github.com/docker/docker` to `github.com/moby/moby/client` + `github.com/moby/moby/api`; `scripts/govulncheck-allowlist.txt` empty of Fixed-N/A Engine IDs |
 | Docs | IAM, configuration, security defaults, README service rows, and per-service pages (DNS/Kafka/Compute/Armor/LB/Pub/Sub) + services index / terraform README align with WIF audiences, oidc-lab, role undelete, Kafka LRO, DNS `record_set`, Compute disks/ops, Armor backend attach, and Pub/Sub OIDC SDK smokes |
 | Terraform / HANDOFF | `lab-kafka` + `lab-compute-instance` + `lab-lb-armor` parity loop + HANDOFF note; SQL/Redis TF gap rows retired; `TF_GCP_PARITY=1` / `NOCTAXRIS_GCP_ADVANCED=1` parity loop in `run-all.sh` |
 | Integration | HANDOFF release-gates note (`ci-required` vs `integration-suites` / manual `run-all.sh`); parity/default TF wording aligned with loopback apply+destroy |

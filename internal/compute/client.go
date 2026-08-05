@@ -9,12 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 )
 
 // Client talks to a nested Docker engine (never the host docker.sock by default).
@@ -44,7 +42,7 @@ func Dial(dockerHost, tlsCertPath string) (*Client, error) {
 			filepath.Join(p, "key.pem"),
 		),
 	}
-	cli, err := client.NewClientWithOpts(opts...)
+	cli, err := client.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("compute: docker client: %w", err)
 	}
@@ -69,7 +67,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	if !c.Enabled() {
 		return fmt.Errorf("compute: engine disabled (NOCTAXRIS_GCP_DOCKER_HOST empty)")
 	}
-	if _, err := c.cli.Ping(ctx); err != nil {
+	if _, err := c.cli.Ping(ctx, client.PingOptions{}); err != nil {
 		return fmt.Errorf("compute: ping engine: %w", err)
 	}
 	return nil
@@ -103,43 +101,47 @@ func (c *Client) RunLabOneShot(ctx context.Context, imageRef string) (OneShotRes
 	}
 
 	name := "noctaxris-gcp-run-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-	create, err := c.cli.ContainerCreate(ctx, &container.Config{
-		Image: ref,
-		Cmd:   []string{"echo", "noctaxris-gcp-nested-ok"},
-		Tty:   false,
-	}, &container.HostConfig{
-		AutoRemove:  false,
-		NetworkMode: "none",
-	}, nil, nil, name)
+	create, err := c.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: ref,
+			Cmd:   []string{"echo", "noctaxris-gcp-nested-ok"},
+			Tty:   false,
+		},
+		HostConfig: &container.HostConfig{
+			AutoRemove:  false,
+			NetworkMode: "none",
+		},
+		Name: name,
+	})
 	if err != nil {
 		return OneShotResult{}, fmt.Errorf("compute: container create: %w", err)
 	}
 	id := create.ID
 	defer func() {
-		_ = c.cli.ContainerRemove(context.Background(), id, container.RemoveOptions{Force: true})
+		_, _ = c.cli.ContainerRemove(context.Background(), id, client.ContainerRemoveOptions{Force: true})
 	}()
 
-	if err := c.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := c.cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
 		return OneShotResult{}, fmt.Errorf("compute: container start: %w", err)
 	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	statusCh, errCh := c.cli.ContainerWait(waitCtx, id, container.WaitConditionNotRunning)
+	wait := c.cli.ContainerWait(waitCtx, id, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 	var exitCode int64
 	select {
-	case err := <-errCh:
+	case err := <-wait.Error:
 		if err != nil {
 			return OneShotResult{}, fmt.Errorf("compute: container wait: %w", err)
 		}
-	case st := <-statusCh:
+	case st := <-wait.Result:
 		if st.Error != nil {
 			return OneShotResult{}, fmt.Errorf("compute: container wait: %s", st.Error.Message)
 		}
 		exitCode = st.StatusCode
 	}
 
-	logs, err := c.cli.ContainerLogs(ctx, id, container.LogsOptions{ShowStdout: true, ShowStderr: true})
+	logs, err := c.cli.ContainerLogs(ctx, id, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true})
 	if err != nil {
 		return OneShotResult{}, fmt.Errorf("compute: container logs: %w", err)
 	}
@@ -190,24 +192,28 @@ func (c *Client) StartLabDaemon(ctx context.Context, imageRef, containerName str
 		return LabDaemonResult{}, err
 	}
 
-	create, err := c.cli.ContainerCreate(ctx, &container.Config{
-		Image: ref,
-		Env:   env,
-		ExposedPorts: nat.PortSet{
-			nat.Port(fmt.Sprintf("%d/tcp", port)): struct{}{},
+	create, err := c.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: ref,
+			Env:   env,
+			ExposedPorts: network.PortSet{
+				network.MustParsePort(fmt.Sprintf("%d/tcp", port)): struct{}{},
+			},
 		},
-	}, &container.HostConfig{
-		NetworkMode: container.NetworkMode(LabDaemonNetwork),
-		RestartPolicy: container.RestartPolicy{
-			Name: "unless-stopped",
+		HostConfig: &container.HostConfig{
+			NetworkMode: container.NetworkMode(LabDaemonNetwork),
+			RestartPolicy: container.RestartPolicy{
+				Name: container.RestartPolicyUnlessStopped,
+			},
 		},
-	}, nil, nil, name)
+		Name: name,
+	})
 	if err != nil {
 		return LabDaemonResult{}, fmt.Errorf("compute: daemon create: %w", err)
 	}
 	id := create.ID
-	if err := c.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
-		_ = c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
+	if _, err := c.cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
+		_, _ = c.cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 		return LabDaemonResult{}, fmt.Errorf("compute: daemon start: %w", err)
 	}
 	return LabDaemonResult{
@@ -222,7 +228,8 @@ func (c *Client) RemoveLabDaemon(ctx context.Context, containerID string) error 
 	if !c.Enabled() || strings.TrimSpace(containerID) == "" {
 		return nil
 	}
-	return c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	_, err := c.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
+	return err
 }
 
 // ExecLabDaemon runs a command inside a nested lab daemon container (SQL users/databases, etc.).
@@ -234,7 +241,7 @@ func (c *Client) ExecLabDaemon(ctx context.Context, containerID string, cmd []st
 	if ref == "" || len(cmd) == 0 {
 		return fmt.Errorf("compute: lab daemon exec requires container and command")
 	}
-	execID, err := c.cli.ContainerExecCreate(ctx, ref, container.ExecOptions{
+	execID, err := c.cli.ExecCreate(ctx, ref, client.ExecCreateOptions{
 		AttachStdout: true,
 		AttachStderr: true,
 		Cmd:          cmd,
@@ -242,13 +249,13 @@ func (c *Client) ExecLabDaemon(ctx context.Context, containerID string, cmd []st
 	if err != nil {
 		return fmt.Errorf("compute: lab daemon exec create: %w", err)
 	}
-	hijacked, err := c.cli.ContainerExecAttach(ctx, execID.ID, container.ExecAttachOptions{})
+	hijacked, err := c.cli.ExecAttach(ctx, execID.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return fmt.Errorf("compute: lab daemon exec attach: %w", err)
 	}
 	defer hijacked.Close()
 	_, _ = io.Copy(io.Discard, hijacked.Reader)
-	inspect, err := c.cli.ContainerExecInspect(ctx, execID.ID)
+	inspect, err := c.cli.ExecInspect(ctx, execID.ID, client.ExecInspectOptions{})
 	if err != nil {
 		return fmt.Errorf("compute: lab daemon exec inspect: %w", err)
 	}
@@ -278,11 +285,11 @@ func (c *Client) EnsureRedpanda(ctx context.Context, containerName string) (boot
 		return "", "", err
 	}
 
-	inspect, err := c.cli.ContainerInspect(ctx, name)
+	inspect, err := c.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 	if err == nil {
-		id := inspect.ID
-		if inspect.State != nil && !inspect.State.Running {
-			if err := c.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		id := inspect.Container.ID
+		if inspect.Container.State != nil && !inspect.Container.State.Running {
+			if _, err := c.cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
 				return "", "", fmt.Errorf("compute: redpanda start existing: %w", err)
 			}
 		}
@@ -292,28 +299,32 @@ func (c *Client) EnsureRedpanda(ctx context.Context, containerName string) (boot
 	if err := c.pullImage(ctx, ref); err != nil {
 		return "", "", err
 	}
-	create, err := c.cli.ContainerCreate(ctx, &container.Config{
-		Image: ref,
-		Cmd:   RedpandaStartCmd(name),
-		Tty:   false,
-		Labels: map[string]string{
-			"noctaxris-gcp.kind": "managedkafka",
+	create, err := c.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: ref,
+			Cmd:   RedpandaStartCmd(name),
+			Tty:   false,
+			Labels: map[string]string{
+				"noctaxris-gcp.kind": "managedkafka",
+			},
+			ExposedPorts: network.PortSet{
+				network.MustParsePort("9092/tcp"): struct{}{},
+			},
 		},
-		ExposedPorts: nat.PortSet{
-			"9092/tcp": struct{}{},
+		HostConfig: &container.HostConfig{
+			NetworkMode: container.NetworkMode(LabDaemonNetwork),
+			RestartPolicy: container.RestartPolicy{
+				Name: container.RestartPolicyUnlessStopped,
+			},
 		},
-	}, &container.HostConfig{
-		NetworkMode: container.NetworkMode(LabDaemonNetwork),
-		RestartPolicy: container.RestartPolicy{
-			Name: "unless-stopped",
-		},
-	}, nil, nil, name)
+		Name: name,
+	})
 	if err != nil {
 		return "", "", fmt.Errorf("compute: redpanda create: %w", err)
 	}
 	id := create.ID
-	if err := c.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
-		_ = c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
+	if _, err := c.cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
+		_, _ = c.cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 		return "", "", fmt.Errorf("compute: redpanda start: %w", err)
 	}
 	return name + ":9092", id, nil
@@ -329,8 +340,9 @@ func (c *Client) RemoveRedpanda(ctx context.Context, containerName string) error
 		return nil
 	}
 	timeout := 10
-	_ = c.cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &timeout})
-	return c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
+	_, _ = c.cli.ContainerStop(ctx, name, client.ContainerStopOptions{Timeout: &timeout})
+	_, err := c.cli.ContainerRemove(ctx, name, client.ContainerRemoveOptions{Force: true})
+	return err
 }
 
 // CreateRedpandaTopic best-effort creates a topic inside a nested Redpanda via rpk.
@@ -355,7 +367,7 @@ func (c *Client) CreateRedpandaTopic(ctx context.Context, containerRef, topic st
 		"-p", fmt.Sprintf("%d", partitions),
 		"-r", fmt.Sprintf("%d", replicationFactor),
 	}
-	execID, err := c.cli.ContainerExecCreate(ctx, ref, container.ExecOptions{
+	execID, err := c.cli.ExecCreate(ctx, ref, client.ExecCreateOptions{
 		AttachStdout: true,
 		AttachStderr: true,
 		Cmd:          cmd,
@@ -363,13 +375,13 @@ func (c *Client) CreateRedpandaTopic(ctx context.Context, containerRef, topic st
 	if err != nil {
 		return fmt.Errorf("compute: redpanda topic exec create: %w", err)
 	}
-	hijacked, err := c.cli.ContainerExecAttach(ctx, execID.ID, container.ExecAttachOptions{})
+	hijacked, err := c.cli.ExecAttach(ctx, execID.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return fmt.Errorf("compute: redpanda topic exec attach: %w", err)
 	}
 	defer hijacked.Close()
 	_, _ = io.Copy(io.Discard, hijacked.Reader)
-	inspect, err := c.cli.ContainerExecInspect(ctx, execID.ID)
+	inspect, err := c.cli.ExecInspect(ctx, execID.ID, client.ExecInspectOptions{})
 	if err != nil {
 		return fmt.Errorf("compute: redpanda topic exec inspect: %w", err)
 	}
@@ -396,11 +408,11 @@ func RedpandaContainerNameForCluster(clusterID string) string {
 }
 
 func (c *Client) ensureLabNetwork(ctx context.Context) error {
-	_, err := c.cli.NetworkInspect(ctx, LabDaemonNetwork, network.InspectOptions{})
+	_, err := c.cli.NetworkInspect(ctx, LabDaemonNetwork, client.NetworkInspectOptions{})
 	if err == nil {
 		return nil
 	}
-	_, err = c.cli.NetworkCreate(ctx, LabDaemonNetwork, network.CreateOptions{
+	_, err = c.cli.NetworkCreate(ctx, LabDaemonNetwork, client.NetworkCreateOptions{
 		Driver: "bridge",
 		Labels: map[string]string{"noctaxris-gcp": "lab"},
 	})
@@ -411,7 +423,7 @@ func (c *Client) ensureLabNetwork(ctx context.Context) error {
 }
 
 func (c *Client) pullImage(ctx context.Context, ref string) error {
-	rc, err := c.cli.ImagePull(ctx, ref, image.PullOptions{})
+	rc, err := c.cli.ImagePull(ctx, ref, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("compute: pull %s: %w", ref, err)
 	}

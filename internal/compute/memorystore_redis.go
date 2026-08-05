@@ -6,9 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/go-connections/nat"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 )
 
 // MemorystoreRedisImage is the pinned nested Memorystore for Redis lab engine.
@@ -124,11 +125,11 @@ func (c *Client) EnsureMemorystoreRedis(ctx context.Context, instanceID, authPas
 		return MemorystoreRedisResult{}, err
 	}
 
-	insp, err := c.cli.ContainerInspect(ctx, name)
+	insp, err := c.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 	if err == nil {
-		cid := insp.ID
-		if !insp.State.Running {
-			if err := c.cli.ContainerStart(ctx, cid, container.StartOptions{}); err != nil {
+		cid := insp.Container.ID
+		if insp.Container.State != nil && !insp.Container.State.Running {
+			if _, err := c.cli.ContainerStart(ctx, cid, client.ContainerStartOptions{}); err != nil {
 				return MemorystoreRedisResult{}, fmt.Errorf("compute: memorystore redis start: %w", err)
 			}
 		}
@@ -138,7 +139,7 @@ func (c *Client) EnsureMemorystoreRedis(ctx context.Context, instanceID, authPas
 			Port:        memorystoreRedisPort,
 		}, nil
 	}
-	if !errdefs.IsNotFound(err) {
+	if !cerrdefs.IsNotFound(err) {
 		return MemorystoreRedisResult{}, fmt.Errorf("compute: memorystore redis inspect: %w", err)
 	}
 
@@ -151,24 +152,28 @@ func (c *Client) EnsureMemorystoreRedis(ctx context.Context, instanceID, authPas
 		Labels: labels,
 		Env:    MemorystoreRedisAuthEnv(authPassword),
 		Cmd:    MemorystoreRedisAuthCmd(authPassword),
-		ExposedPorts: nat.PortSet{
-			nat.Port(fmt.Sprintf("%d/tcp", memorystoreRedisPort)): struct{}{},
+		ExposedPorts: network.PortSet{
+			network.MustParsePort(fmt.Sprintf("%d/tcp", memorystoreRedisPort)): struct{}{},
 		},
 	}
-	create, err := c.cli.ContainerCreate(ctx, cfg, &container.HostConfig{
-		AutoRemove:      false,
-		NetworkMode:     container.NetworkMode(MemorystoreRedisNetwork),
-		PublishAllPorts: false,
-		RestartPolicy: container.RestartPolicy{
-			Name: "unless-stopped",
+	create, err := c.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: cfg,
+		HostConfig: &container.HostConfig{
+			AutoRemove:      false,
+			NetworkMode:     container.NetworkMode(MemorystoreRedisNetwork),
+			PublishAllPorts: false,
+			RestartPolicy: container.RestartPolicy{
+				Name: container.RestartPolicyUnlessStopped,
+			},
 		},
-	}, nil, nil, name)
+		Name: name,
+	})
 	if err != nil {
 		return MemorystoreRedisResult{}, fmt.Errorf("compute: memorystore redis create: %w", err)
 	}
 	cid := create.ID
-	if err := c.cli.ContainerStart(ctx, cid, container.StartOptions{}); err != nil {
-		_ = c.cli.ContainerRemove(context.Background(), cid, container.RemoveOptions{Force: true})
+	if _, err := c.cli.ContainerStart(ctx, cid, client.ContainerStartOptions{}); err != nil {
+		_, _ = c.cli.ContainerRemove(context.Background(), cid, client.ContainerRemoveOptions{Force: true})
 		return MemorystoreRedisResult{}, fmt.Errorf("compute: memorystore redis start: %w", err)
 	}
 	return MemorystoreRedisResult{
@@ -187,8 +192,8 @@ func (c *Client) RemoveMemorystoreRedis(ctx context.Context, instanceID, contain
 	if target == "" {
 		target = MemorystoreRedisContainerName(instanceID)
 	}
-	err := c.cli.ContainerRemove(ctx, target, container.RemoveOptions{Force: true})
-	if err != nil && !errdefs.IsNotFound(err) {
+	_, err := c.cli.ContainerRemove(ctx, target, client.ContainerRemoveOptions{Force: true})
+	if err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("compute: memorystore redis remove: %w", err)
 	}
 	return nil
