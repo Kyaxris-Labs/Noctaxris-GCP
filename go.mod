@@ -1,6 +1,6 @@
 module github.com/Kyaxris-Labs/Noctaxris-GCP
 
-go 1.26.5
+go 1.26.6
 
 require (
 	cloud.google.com/go/bigtable v1.51.0

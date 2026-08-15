@@ -6,6 +6,12 @@
 
 - Unit coverage for `./internal/...` at lab bar (~70%); coverage profiles stay local-only (PR gates: unit + image + govulncheck)
 
+## 1.1.1
+
+Patch after 1.1.0: Go 1.26.6 for stdlib govulncheck findings. Docker Hub: `kyaxris/noctaxris-gcp` (`1.1.1`, `1.1`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Toolchain: Go 1.26.6 (clears GO-2026-5026, GO-2026-5942, GO-2026-5972, GO-2026-6089, GO-2026-6090, GO-2026-6091, GO-2026-6218)
+
 ## 1.1.0
 
 Minor after 1.0.1: IAM WIF audiences and oidc-lab, custom role undelete, Managed Kafka LRO, Compute/LB/Armor depth, opt-in Terraform stacks, and Engine client migration to Moby. Docker Hub: `kyaxris/noctaxris-gcp` (`1.1.0`, `1.1`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

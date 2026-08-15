@@ -1,6 +1,6 @@
 # Release checklist
 
-How to cut a public Noctaxris-GCP release (example: **1.1.0**). Docker Hub image: **`kyaxris/noctaxris-gcp`**.
+How to cut a public Noctaxris-GCP release (example: **1.1.1**). Docker Hub image: **`kyaxris/noctaxris-gcp`**.
 
 ## Secrets (GitHub Actions)
 
@@ -15,8 +15,8 @@ Forks skip publish with a log line. Missing secrets fail closed on schedule and 
 
 ## Before the tag
 
-1. Bump `VERSION` (plain text, e.g. `1.1.0`) and keep `internal/version/version.go` (and Dockerfile `ARG VERSION`) in sync.
-2. Move CHANGELOG notes under `## 1.1.0` (feature-oriented sections; no internal delivery labels).
+1. Bump `VERSION` (plain text, e.g. `1.1.1`) and keep `internal/version/version.go` (and Dockerfile `ARG VERSION`) in sync.
+2. Move CHANGELOG notes under `## 1.1.1` (feature-oriented sections; no internal delivery labels).
 3. Confirm PR CI is green (`unit`, `compose-static`, `race`, `image`, `sbom`, `govulncheck`, `smoke-core`). Release also runs required gates (`ci-required.yml`). Run `bash docker/smoke-nested.sh` when the release touches DinD / nested paths.
 4. Confirm docs still describe loopback defaults and default-on nested DinD (privileged and host-gateway overlays stay opt-in).
 
@@ -24,21 +24,21 @@ Forks skip publish with a log line. Missing secrets fail closed on schedule and 
 
 ```bash
 # On the commit you intend to ship (main tip after merge):
-git tag -a v1.1.0 -m "Release Noctaxris-GCP 1.1.0"
-git push origin v1.1.0
+git tag -a v1.1.1 -m "Release Noctaxris-GCP 1.1.1"
+git push origin v1.1.1
 ```
 
 Pushing tag `v*` runs [`.github/workflows/release.yml`](../.github/workflows/release.yml). That workflow first runs the required CI gates ([`.github/workflows/ci-required.yml`](../.github/workflows/ci-required.yml): unit, compose-static, govulncheck, race, image, smoke-core) against the tagged commit. Docker Hub push runs only when those gates succeed. Then it builds `docker/Dockerfile` and pushes:
 
 | Tag | Meaning |
 |-----|---------|
-| `kyaxris/noctaxris-gcp:1.1.0` | Exact semver |
+| `kyaxris/noctaxris-gcp:1.1.1` | Exact semver |
 | `kyaxris/noctaxris-gcp:1.1` | Major.minor |
 | `kyaxris/noctaxris-gcp:1` | Major |
 | `kyaxris/noctaxris-gcp:latest` | Latest tagged release |
 | `kyaxris/noctaxris-gcp:sha-<short>` | Git short SHA |
 
-Then create the GitHub Release for `v1.1.0` (UI or `gh release create v1.1.0 --notes-file ...`) using the CHANGELOG `1.1.0` section.
+Then create the GitHub Release for `v1.1.1` (UI or `gh release create v1.1.1 --notes-file ...`) using the CHANGELOG `1.1.1` section.
 
 Optional: Actions → **release** → Run workflow with an existing tag if you need to re-push Hub tags after fixing secrets.
 
@@ -49,10 +49,10 @@ Optional: Actions → **release** → Run workflow with an existing tag if you n
 ## Local image check
 
 ```bash
-docker build -f docker/Dockerfile --build-arg VERSION=1.1.0 -t kyaxris/noctaxris-gcp:local .
+docker build -f docker/Dockerfile --build-arg VERSION=1.1.1 -t kyaxris/noctaxris-gcp:local .
 # Run with unique roots (see README); then:
 curl -sS http://127.0.0.1:4588/_noctaxris-gcp/version
-# 1.1.0
+# 1.1.1
 ```
 
 ## Related

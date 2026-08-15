@@ -356,7 +356,7 @@ Full graph and request path: [docs/architecture.md](docs/architecture.md).
 | [docs/index.md](docs/index.md) | Architecture, configuration, ops, security posture |
 | [docs/services/](docs/services/index.md) | Per-service APIs, authz notes, CLI smoke |
 | [docs/ops.md](docs/ops.md) | Backup, restore, upgrade, graceful shutdown, CI matrix |
-| [docs/release.md](docs/release.md) | Cutting a release (`v1.1.0`, Hub `latest` / semver) |
+| [docs/release.md](docs/release.md) | Cutting a release (`v1.1.1`, Hub `latest` / semver) |
 | [tests/README.md](tests/README.md) | SDK and Terraform suites (Compose required for live runs) |
 
 ## Contributors
