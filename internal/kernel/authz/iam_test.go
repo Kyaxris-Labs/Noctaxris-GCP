@@ -480,3 +480,35 @@ func TestUnknownRoleNoLongerOverGrants(t *testing.T) {
 		t.Fatal("unknown role must not grant unrelated permissions")
 	}
 }
+
+func TestIamPermissionsAny(t *testing.T) {
+	resource := "projects/noctaxris-gcp-local"
+	email := "sa@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			resource: mustPolicy(t, "roles/viewer", "serviceAccount:"+email),
+		},
+	}
+	got, err := e.TestIamPermissionsAny(email, false, []string{resource, "projects/other"}, []string{
+		"storage.buckets.get", "storage.buckets.create",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundGet := false
+	for _, p := range got {
+		if p == "storage.buckets.get" {
+			foundGet = true
+		}
+		if p == "storage.buckets.create" {
+			t.Fatalf("viewer must not grant create: %v", got)
+		}
+	}
+	if !foundGet {
+		t.Fatalf("expected buckets.get in %v", got)
+	}
+	rootGot, err := e.TestIamPermissionsAny("root@x", true, []string{resource}, []string{"storage.buckets.create"})
+	if err != nil || len(rootGot) != 1 {
+		t.Fatalf("root any: %v err=%v", rootGot, err)
+	}
+}

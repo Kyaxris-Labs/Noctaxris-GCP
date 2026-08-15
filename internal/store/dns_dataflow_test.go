@@ -32,6 +32,10 @@ func TestDNSManagedZonesAndRrsetsStore(t *testing.T) {
 	if err != nil || !found || z.DNSName != "example.com." {
 		t.Fatalf("get zone: %#v found=%v err=%v", z, found, err)
 	}
+	z2, found, err := st.GetDNSManagedZoneByProjectID("p", "example-zone")
+	if err != nil || !found || z2.Name != zoneName {
+		t.Fatalf("get zone by project: %#v found=%v err=%v", z2, found, err)
+	}
 	list, err := st.ListDNSManagedZones("p")
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list zones: %v err=%v", list, err)
@@ -45,8 +49,16 @@ func TestDNSManagedZonesAndRrsetsStore(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("create rrset: ok=%v err=%v", ok, err)
 	}
+	if err := st.UpsertDNSRrset(store.DNSRrset{
+		ProjectID: "p", ZoneName: zoneName, ZoneID: "example-zone",
+		RrsetName: "www.example.com.", RrsetType: "A", TTL: 600,
+		RrdatasJSON: store.MarshalStringSlice([]string{"5.6.7.8"}),
+	}); err != nil {
+		t.Fatalf("upsert rrset: %v", err)
+	}
+	_ = store.UnmarshalStringSlice(store.MarshalStringSlice([]string{"a", "b"}))
 	rr, found, err := st.GetDNSRrset(zoneName, "www.example.com.", "A")
-	if err != nil || !found || rr.TTL != 300 {
+	if err != nil || !found || rr.TTL != 600 {
 		t.Fatalf("get rrset: %#v found=%v err=%v", rr, found, err)
 	}
 	rrsets, err := st.ListDNSRrsets(zoneName)

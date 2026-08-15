@@ -49,6 +49,19 @@ func TestBigtableInstancesAndTablesCRUD(t *testing.T) {
 		t.Fatalf("instance=%#v", inst)
 	}
 
+	req = httptest.NewRequest(http.MethodGet, base+"/lab", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get instance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, base, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list instances status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
 	tblBase := base + "/lab/tables"
 	req = httptest.NewRequest(http.MethodPost, tblBase, bytes.NewReader([]byte(
 		`{"tableId":"users","table":{"columnFamilies":{"cf1":{}}}}`,

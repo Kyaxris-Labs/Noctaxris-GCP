@@ -48,6 +48,14 @@ func TestBigtableAndMemorystoreStoreCRUD(t *testing.T) {
 	if err != nil || len(tables) != 1 {
 		t.Fatalf("list tables: %#v err=%v", tables, err)
 	}
+	tbl, ok, err := st.GetBigtableTable("projects/p/instances/bt/tables/t1")
+	if err != nil || !ok || tbl.TableID != "t1" {
+		t.Fatalf("get table: %#v ok=%v err=%v", tbl, ok, err)
+	}
+	insts, err := st.ListBigtableInstances("p")
+	if err != nil || len(insts) != 1 {
+		t.Fatalf("list instances: %#v err=%v", insts, err)
+	}
 	if ok, err := st.DeleteBigtableTable("projects/p/instances/bt/tables/t1"); err != nil || !ok {
 		t.Fatalf("delete table: ok=%v err=%v", ok, err)
 	}

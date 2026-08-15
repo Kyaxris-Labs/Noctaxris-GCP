@@ -121,6 +121,13 @@ func TestCertificatesAndMapsCRUD(t *testing.T) {
 		t.Fatalf("maps=%#v", list)
 	}
 
+	req = httptest.NewRequest(http.MethodGet, mapBase+"/lab-map", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get map status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
 	req = httptest.NewRequest(http.MethodDelete, certBase+"/lab-cert", nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

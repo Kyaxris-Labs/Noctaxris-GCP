@@ -55,7 +55,7 @@ Repository secrets for Hub publish (never commit): `DOCKERHUB_USERNAME`, `DOCKER
 
 1. Stop Compose.
 2. Take a backup (above).
-3. Pull a Hub tag (`docker pull kyaxris/noctaxris-gcp:1.0.1`) or rebuild (`docker compose ... up --build`).
+3. Pull a Hub tag (`docker pull kyaxris/noctaxris-gcp:1.1.0`) or rebuild (`docker compose ... up --build`).
 4. Start Compose and confirm `/_noctaxris-gcp/ready` returns ready (optional: `/_noctaxris-gcp/version`).
 
 Schema changes are additive (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN` with duplicate-column ignore). There is no down-migration. Prefer stop → backup → start over live multi-writer upgrades.

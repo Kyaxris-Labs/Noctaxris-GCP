@@ -39,6 +39,10 @@ func TestOrgPolicySetGetListDelete(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get: ok=%v err=%v", ok, err)
 	}
+	byName, ok, err := st.GetOrgPolicyByName(got.Name)
+	if err != nil || !ok || byName.Constraint != constraint {
+		t.Fatalf("get by name: %#v ok=%v err=%v", byName, ok, err)
+	}
 	if got.SpecJSON == "" {
 		t.Fatal("empty spec")
 	}

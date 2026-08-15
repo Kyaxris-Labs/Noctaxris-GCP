@@ -13,6 +13,16 @@
 coverage.*
 *.coverprofile
 profile.cov
+cover-*.txt
+cover-*.log
+*-cover/
+*-cover-*.txt
+low.txt
+_gap.ps1
+_pkg_gap.ps1
+_uncovered.ps1
+test-batch*.log
+verify-*.log
 
 # Dependency directories
 # vendor/
