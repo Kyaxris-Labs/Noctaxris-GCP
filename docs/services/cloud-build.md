@@ -56,10 +56,12 @@ Checked on `projects/{project}`:
 `:run` requires `cloudbuild.builds.create`.
 
 Worker pools live in a host project. Create stores `NO_PUBLIC_EGRESS=true` on
-the pool. `createBuild` with `options.pool.name` requires
+the pool. `createBuild` and `retryBuild` with `options.pool.name` require
 `cloudbuild.workerpools.use` on that host project (not the caller project).
-Private pools are control-plane theatre: no nested pool VMs. Without a nested
-engine, builds remain status theatre (`WORKING` then `SUCCESS` on get) and echo
+`:retry` copies the original build request (`BuildJSON`); a pooled retry whose
+pool is missing is fail closed (`FailedPrecondition`). Private pools are
+control-plane theatre: no nested pool VMs. Without a nested engine, builds
+remain status theatre (`WORKING` then `SUCCESS` on get) and echo
 substitutions / logs / `availableSecrets` when present on the body.
 
 ## Emulator limits

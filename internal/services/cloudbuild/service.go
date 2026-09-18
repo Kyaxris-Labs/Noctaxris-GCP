@@ -128,20 +128,8 @@ func (s *Service) createBuild(w http.ResponseWriter, r *http.Request, p authn.Pr
 	if body == nil {
 		body = map[string]any{}
 	}
-	if poolName := workerPoolNameFromBuild(body); poolName != "" {
-		pool, ok, err := s.Store.GetCbWorkerPool(poolName)
-		if err != nil {
-			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-			return
-		}
-		if !ok {
-			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "worker pool not found")
-			return
-		}
-		if err := s.require(p, "cloudbuild.workerpools.use", pool.ProjectID); err != nil {
-			writeAuthzErr(w, err)
-			return
-		}
+	if !s.requireWorkerPoolUse(w, p, body) {
+		return
 	}
 	buildID := store.NewCbBuildID()
 	name := buildName(project, location, buildID)
@@ -317,6 +305,13 @@ func (s *Service) retryBuild(w http.ResponseWriter, _ *http.Request, p authn.Pri
 			gcperrors.NotFound(w, "Build not found")
 			return
 		}
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(src.BuildJSON), &cfg); err != nil {
+		cfg = map[string]any{}
+	}
+	if !s.requireWorkerPoolUse(w, p, cfg) {
+		return
 	}
 	retryLoc := src.Location
 	if location != "" && location != "global" {
@@ -678,6 +673,30 @@ func TriggerResourceJSON(t store.CbTrigger) map[string]any {
 // MayListTriggers reports whether p may list Cloud Build triggers in project.
 func (s *Service) MayListTriggers(p authn.Principal, projectID string) bool {
 	return s.require(p, "cloudbuild.triggers.list", projectID) == nil
+}
+
+// requireWorkerPoolUse enforces cloudbuild.workerpools.use on the pool host
+// project when options.pool.name is set. RetryBuild copies the original request,
+// so pooled retries use the same check as createBuild. Missing pool is fail closed.
+func (s *Service) requireWorkerPoolUse(w http.ResponseWriter, p authn.Principal, body map[string]any) bool {
+	poolName := workerPoolNameFromBuild(body)
+	if poolName == "" {
+		return true
+	}
+	pool, ok, err := s.Store.GetCbWorkerPool(poolName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	}
+	if !ok {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "worker pool not found")
+		return false
+	}
+	if err := s.require(p, "cloudbuild.workerpools.use", pool.ProjectID); err != nil {
+		writeAuthzErr(w, err)
+		return false
+	}
+	return true
 }
 
 func workerPoolNameFromBuild(body map[string]any) string {
