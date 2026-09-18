@@ -56,9 +56,14 @@ Otherwise invoke returns `{"ok":true,"service":"...","env":{...}}`. Last invoke 
 
 Jobs are control-plane theatre only (template stored; no execution).
 
-Create and patch with a container image consult Binary Authorization. An
-`ENFORCED` project policy admits the image only when Container Analysis has a
-matching occurrence (`resourceUri`). Default (no policy) admits.
+Create and patch on services and jobs consult Binary Authorization for every
+non-empty container image in the template, including job
+`template.template.containers` (Google Cloud applies an `ENFORCED` policy to
+both). Any image without a matching Container Analysis occurrence
+(`resourceUri`) is 403. Empty container list (or no image) under `ENFORCED` is
+also deny. The lab does not verify attestation signatures. Default (no policy,
+or a mode without `ENFORCED`) admits. Occurrence `POST` still requires a Bearer
+principal with `containeranalysis.occurrences.create` (not a public path).
 
 Metadata IMDS is public with `Metadata-Flavor: Google`. Identity is
 `runtime@{project}.iam.gserviceaccount.com`. `.../token` mints a lab Bearer for
@@ -104,7 +109,7 @@ service Invoker binding, invoke is denied. Root still bypasses.
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/cloudrun/ ./internal/compute/ ./internal/kernel/authz/ ./internal/server/ -run 'CloudRun|MockInvoker|RunAndFunctionsInvoker' -count=1
+go test ./internal/services/cloudrun/ ./internal/compute/ ./internal/kernel/authz/ ./internal/server/ -run 'CloudRun|MockInvoker|RunAndFunctionsInvoker|BinaryAuthorization' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 # Mock path (labResponseBody skips nested even if DOCKER_HOST is set):
 curl -s -H "Authorization: Bearer $TOKEN" \

@@ -144,7 +144,7 @@ func (s *Service) createService(w http.ResponseWriter, r *http.Request, p authn.
 		template = map[string]any{}
 	}
 	tplRaw, _ := json.Marshal(template)
-	if !s.admitImage(w, project, imageFromTemplateJSON(string(tplRaw))) {
+	if !s.admitTemplate(w, project, string(tplRaw)) {
 		return
 	}
 	labBody := labResponseFromTemplate(template)
@@ -255,7 +255,7 @@ func (s *Service) patchService(w http.ResponseWriter, r *http.Request, p authn.P
 	if template != nil {
 		b, _ := json.Marshal(template)
 		tplRaw = string(b)
-		if !s.admitImage(w, project, imageFromTemplateJSON(tplRaw)) {
+		if !s.admitTemplate(w, project, tplRaw) {
 			return
 		}
 		labBody = labResponseFromTemplate(template)
@@ -340,13 +340,13 @@ func (s *Service) listRevisions(w http.ResponseWriter, r *http.Request, p authn.
 		var tpl any
 		_ = json.Unmarshal([]byte(rev.TemplateJSON), &tpl)
 		items = append(items, map[string]any{
-			"name":           rev.Name,
-			"uid":            fmt.Sprintf("%s-%05d", svc.UID, rev.Generation),
-			"createTime":     rev.CreatedAt,
-			"generation":     strconv.FormatInt(rev.Generation, 10),
-			"containers":     containersFromTemplate(tpl),
-			"service":        name,
-			"reconciling":    false,
+			"name":               rev.Name,
+			"uid":                fmt.Sprintf("%s-%05d", svc.UID, rev.Generation),
+			"createTime":         rev.CreatedAt,
+			"generation":         strconv.FormatInt(rev.Generation, 10),
+			"containers":         containersFromTemplate(tpl),
+			"service":            name,
+			"reconciling":        false,
 			"observedGeneration": strconv.FormatInt(rev.Generation, 10),
 			"conditions": []map[string]any{
 				{"type": "Ready", "state": "CONDITION_SUCCEEDED", "message": "lab revision ready"},
@@ -438,6 +438,9 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 		template = map[string]any{}
 	}
 	tplRaw, _ := json.Marshal(template)
+	if !s.admitTemplate(w, project, string(tplRaw)) {
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	name := jobName(project, location, jobID)
 	created, err := s.Store.CreateRunJob(store.RunJob{
@@ -509,6 +512,9 @@ func (s *Service) patchJob(w http.ResponseWriter, r *http.Request, p authn.Princ
 	if template, ok := body["template"].(map[string]any); ok {
 		b, _ := json.Marshal(template)
 		tplRaw = string(b)
+		if !s.admitTemplate(w, project, tplRaw) {
+			return
+		}
 	}
 	job, ok, err := s.Store.UpdateRunJob(jobName(project, location, id), tplRaw)
 	if err != nil {
@@ -665,12 +671,12 @@ func toJobJSON(job store.RunJob) map[string]any {
 	var tpl any
 	_ = json.Unmarshal([]byte(job.TemplateJSON), &tpl)
 	return map[string]any{
-		"name":       job.Name,
-		"uid":        job.UID,
-		"generation": strconv.FormatInt(job.Generation, 10),
-		"createTime": job.CreatedAt,
-		"updateTime": job.UpdatedAt,
-		"template":   tpl,
+		"name":        job.Name,
+		"uid":         job.UID,
+		"generation":  strconv.FormatInt(job.Generation, 10),
+		"createTime":  job.CreatedAt,
+		"updateTime":  job.UpdatedAt,
+		"template":    tpl,
 		"reconciling": false,
 	}
 }
@@ -740,6 +746,19 @@ func asInt(v any) (int, bool) {
 	}
 }
 
+func (s *Service) admitTemplate(w http.ResponseWriter, project, templateJSON string) bool {
+	images := imagesFromTemplateJSON(templateJSON)
+	if len(images) == 0 {
+		return s.admitImage(w, project, "")
+	}
+	for _, image := range images {
+		if !s.admitImage(w, project, image) {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Service) admitImage(w http.ResponseWriter, project, image string) bool {
 	ok, err := s.Store.BinaryAuthzAllows(project, image)
 	if err != nil {
@@ -754,16 +773,34 @@ func (s *Service) admitImage(w http.ResponseWriter, project, image string) bool 
 }
 
 func imageFromTemplateJSON(templateJSON string) string {
+	images := imagesFromTemplateJSON(templateJSON)
+	if len(images) == 0 {
+		return ""
+	}
+	return images[0]
+}
+
+func imagesFromTemplateJSON(templateJSON string) []string {
 	var tpl map[string]any
 	_ = json.Unmarshal([]byte(templateJSON), &tpl)
+	out := containerImages(tpl)
+	nested, _ := tpl["template"].(map[string]any)
+	return append(out, containerImages(nested)...)
+}
+
+func containerImages(tpl map[string]any) []string {
+	if tpl == nil {
+		return nil
+	}
 	containers, _ := tpl["containers"].([]any)
+	var out []string
 	for _, c := range containers {
 		cm, _ := c.(map[string]any)
 		if img, _ := cm["image"].(string); img != "" {
-			return img
+			out = append(out, img)
 		}
 	}
-	return ""
+	return out
 }
 
 func envFromTemplateJSON(templateJSON string) map[string]string {

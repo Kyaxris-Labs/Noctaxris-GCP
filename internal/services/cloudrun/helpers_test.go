@@ -62,6 +62,14 @@ func TestCloudRunTemplateHelpers(t *testing.T) {
 	if imageFromTemplateJSON(string(raw)) != "img" {
 		t.Fatal("image")
 	}
+	sidecar := `{"containers":[{"image":"a"},{"image":"b"}]}`
+	if got := imagesFromTemplateJSON(sidecar); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("sidecar images %#v", got)
+	}
+	nested := `{"template":{"containers":[{"image":"a"},{"image":"b"}]}}`
+	if got := imagesFromTemplateJSON(nested); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("nested sidecar images %#v", got)
+	}
 	h := http.Header{}
 	h.Set("Authorization", "Bearer x")
 	h.Set("X-A", "1")
