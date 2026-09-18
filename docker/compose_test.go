@@ -60,6 +60,12 @@ func TestComposeEngineDefaultOn(t *testing.T) {
 	if !strings.Contains(content, "NOCTAXRIS_GCP_DOCKER_CERT_PATH") {
 		t.Fatal("default compose.yaml must set NOCTAXRIS_GCP_DOCKER_CERT_PATH")
 	}
+	if !strings.Contains(content, "docker:29-dind@sha256:") {
+		t.Fatal("noctaxris-gcp-engine image must be pinned by digest")
+	}
+	if !strings.Contains(content, "busybox:1.37@sha256:") {
+		t.Fatal("noctaxris-gcp-init image must be pinned by digest")
+	}
 	if !strings.Contains(content, "privileged: false") {
 		t.Fatal("default engine must use restricted DinD (privileged: false)")
 	}

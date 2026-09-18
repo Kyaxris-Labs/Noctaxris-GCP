@@ -1,5 +1,5 @@
 # Digests pinned for supply-chain integrity (refresh when intentionally upgrading bases).
-FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS build
+FROM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS build
 WORKDIR /src
 ARG VERSION=1.1.1
 ARG GIT_SHA=unknown
@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 go build \
   -o /noctaxris-gcp ./cmd/noctaxris-gcp
 RUN mkdir -p /var/lib/noctaxris-gcp && chown 65532:65532 /var/lib/noctaxris-gcp
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
 ARG VERSION=1.1.1
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.title="Noctaxris-GCP" \

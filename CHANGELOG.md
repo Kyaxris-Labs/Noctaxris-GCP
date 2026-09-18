@@ -2,16 +2,31 @@
 
 ## Unreleased
 
+### Toolchain
+
+- Go 1.27.1. Digest-pinned `golang:1.27.1-bookworm`, `docker:29-dind`, `busybox:1.37`, and distroless `static-debian12:nonroot`. CI govulncheck `v1.8.0`. Go modules refreshed, including `google.golang.org/grpc` at the GO-2026-6443 patch (`v1.85.0-dev.0.20260825072537`). Nested Engine stays `github.com/moby/moby/client`. Lab alpine pin is `alpine:3.23` (`alpine:3.20` remains allowlisted).
+
+### Identity
+
+- Identity Toolkit `accounts:lookup`: client getAccountInfo stays `idToken` only (that uid). `email[]`, `localId[]`, `phoneNumber[]`, and `federatedUserId[]` require Bearer plus `firebaseauth.users.get` or `firebaseauth.users.list` (or root). Missing credentials return `401` `MISSING_ID_TOKEN`; authenticated callers without those permissions get `403`. Denied identifier lookups do not return `userRecord`.
+
 ### Audit and lab APIs
 
 - Lab clock on the HTTP server (`clockMu` / `clockOverride`): `POST /_noctaxris-gcp/lab/clock:freeze`, `:unfreeze`, `:set`, and `POST /_noctaxris-gcp/lab/bulkSeed` (`suspicious-login`, `gcs-object-exfil`, `crypto-mining`) behind `NOCTAXRIS_GCP_LAB_FORENSICS` (default off, Bearer root). Logging and Cloud Audit inject timestamps use the lab clock. Bearer expiry and GOOG4 HMAC skew stay wall clock.
 - Logging `POST /_noctaxris-gcp/lab/logs:inject` behind `NOCTAXRIS_GCP_LOGS_INJECT` (default off). `entries:list` filters `resource.type` (`http_load_balancer`, `cloud_run_revision`, `gce_subnetwork`, `cloudsql_database`, `dns_query`, plus CAL Data Access). Sensitive inject keys redact. Sinks/views/exclusions lite: `_Required` keeps Admin Activity and cannot be patched or deleted; `_Default` can drop Data Access.
 - GCS XML List/Get/Put with GOOG4-HMAC-SHA256; `storage.hmacKeys` create/list/get/delete. HMAC Authorization cannot mint OAuth.
 - Identity Toolkit v2 tenants; locked tenant sign-up returns `admin-restricted-operation`. Firestore Identity Toolkit users may write only `.../documents/users/{uid}`.
-- Cloud Build private worker pools (host project `cloudbuild.workerpools.use`, `NO_PUBLIC_EGRESS` annotation). Pools are control-plane theatre (no nested pool VMs). Cloud Functions `:generateDownloadUrl`. Container Analysis occurrence read/create and Binary Authorization project policy; Cloud Run create/patch admits images only when an ENFORCED policy has a matching occurrence.
+- Cloud Build private worker pools (host project `cloudbuild.workerpools.use`, `NO_PUBLIC_EGRESS` annotation). Pools are control-plane theatre (no nested pool VMs). Cloud Functions `:generateDownloadUrl`. Container Analysis occurrence read/create and Binary Authorization project policy; Cloud Run service and job create/patch admit each non-empty container image under an `ENFORCED` policy only when Container Analysis has a matching occurrence (`resourceUri`).
 - IAM Credentials host/path alias `POST /iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{email}:generateAccessToken`. IAM `request.time` CEL uses the lab clock. VPC-SC optional enforce covers `cloudkms.googleapis.com` decrypt only (not Credentials or STS). Cloud Run metadata at `/computeMetadata/v1` with `Metadata-Flavor: Google`.
 - Cloud hosts TLS stays opt-in (`NOCTAXRIS_GCP_CLOUD_HOSTS`, listen `127.0.0.1:8443`, lab CA next to `master.key`). HTTP `:4588` remains the default. Prowler GCP still opens `*.googleapis.com` even when gcloud `api_endpoint_overrides` are set; Host/SNI is the path for that client.
 - CRM v1 `GET /v1/projects` and Compute `GET /compute/v1/projects/{project}/regions` return list 200s so Prowler enumerate can start. Check PASS/FAIL is out of scope.
+
+### Fixed
+
+- Cloud Build `:retry` of a private-pool build requires `cloudbuild.workerpools.use` on the pool host project (same as create). Missing pool on retry is fail closed.
+- VPC-SC KMS `:decrypt` places WIF `wif:{provider}:{subject}` in the pool project; unresolved callers are outside the perimeter, not the key project. Malformed perimeter status/spec JSON denies when enforce is on. Perimeter `resources` match CRM `projects/{number}` as well as project id.
+- VPC-SC GCS object upload and Pub/Sub publish use the same caller placement as KMS decrypt. Unresolved WIF is outside the perimeter, not the bucket or topic project. Operator root still skips GCS upload and Pub/Sub publish. IAM Credentials and STS stay unrestricted.
+- Cloud Run Binary Authorization admits every non-empty `containers[].image` on service and job create/patch (including job `template.template.containers`). An unattested sidecar is 403 under `ENFORCED`.
 
 ### Testing
 

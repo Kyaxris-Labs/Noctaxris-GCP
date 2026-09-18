@@ -60,7 +60,8 @@ Per-service deferred depth lives on each page. Shared gaps:
 - Cloud Build and Eventarc share regional `.../locations/.../triggers` (body-shape
   dispatch on create; list may merge); project-scoped triggers stay Cloud Build
 - Bearer required on API paths (health/ready/version are public; Identity Toolkit
-  `/identitytoolkit.googleapis.com/v1/accounts*` client methods are also public)
+  `/identitytoolkit.googleapis.com/v1/accounts*` client methods skip middleware Bearer.
+  `accounts:lookup` identifier arrays still require admin Bearer; see [firebase-auth.md](firebase-auth.md))
 - Root principal bypasses IAM evaluation (lab operator)
 - No host `docker.sock`; nested DinD on by default in Compose (see Nested DinD below)
 - Compute Engine stores instance/VPC/firewall metadata only (no VMs or NICs); Images are a fixed canned set; firewall `:validate` is single-rule lite

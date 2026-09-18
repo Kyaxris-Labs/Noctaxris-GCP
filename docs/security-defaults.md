@@ -20,13 +20,13 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED=1`.
 - Never mount host `/var/run/docker.sock` on the API service. Runtime rejects
   `unix://`, `npipe://`, and any host string containing `docker.sock`.
-- Engine is digest-pinned `docker:27-dind` as restricted DinD (`privileged: false` +
+- Engine is digest-pinned `docker:29-dind` as restricted DinD (`privileged: false` +
   caps / devices / `cgroup: host` / writable `/sys/fs/cgroup`). The engine API is
   not published to the host. Compatibility overlay `compose.engine.yaml` only
   reasserts API Docker env + depends_on (do not redeclare the engine service).
 - Non-default engine URLs require `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST`. TLS
   client PEMs are required whenever Docker host is set.
-- Image pulls fail closed: pinned lab bases (`alpine:3.20`, …) only, unless
+- Image pulls fail closed: pinned lab bases (`alpine:3.23`, …) only, unless
   extended with `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST` (exact refs, or prefixes
   ending in `/` with digest required for registry hosts).
 - With Compose fail-closed envs, nested dial/run/create failures return errors
@@ -47,7 +47,10 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   - STS `POST /v1/token` (WIF subject_token exchange)
   - OIDC lab discovery/JWKS `GET /_noctaxris-gcp/oidc-lab/.well-known/...` (no mint route)
   - Identity Toolkit client methods under `/identitytoolkit.googleapis.com/v1/accounts…`
-    (admin paths under `/v1/projects/{project}/accounts…` still require Bearer)
+    skip middleware Bearer (`idToken` self-lookup stays public). `accounts:lookup` with
+    `email[]` / `localId[]` / phone / federated is denied without admin Bearer; see
+    [firebase-auth.md](services/firebase-auth.md). Admin paths under
+    `/v1/projects/{project}/accounts…` still require Bearer
   - Lab edge dataplane `GET`/`HEAD` `/lb/{project}/{rule}/…` and `/cdn/{id}/…`
     (serve configured lab GCS object bytes without auth; control-plane CRUD stays Bearer)
 - Lab HTTP catcher deliveries are recorded in-process (Pub/Sub push, Eventarc,

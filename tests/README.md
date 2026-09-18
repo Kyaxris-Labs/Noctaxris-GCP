@@ -39,7 +39,7 @@ Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`,
 
 | Suite | Tools |
 |-------|--------|
-| SDK (Go) | Go 1.22+; feature `*_test.go` + `helpers_test.go` under `tests/sdk/go` |
+| SDK (Go) | Go 1.27+; feature `*_test.go` + `helpers_test.go` under `tests/sdk/go` |
 | SDK (Node.js) | Node.js 24+; `*.test.mjs` + `helpers.mjs` under `tests/sdk/nodejs` (`npm test`) |
 | SDK (Python) | Python 3.10+; `test_*.py` + `conftest.py` under `tests/sdk/python` |
 | Terraform | Terraform CLI 1.5+, Google provider resolved on `init` |

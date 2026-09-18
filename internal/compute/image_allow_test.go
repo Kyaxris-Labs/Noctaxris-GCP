@@ -12,7 +12,9 @@ func TestAllowImagePullPinned(t *testing.T) {
 	ok := []string{
 		compute.DefaultLabImage,
 		"alpine:3.20",
+		"alpine:3.23",
 		"public.ecr.aws/docker/library/alpine:3.20",
+		"public.ecr.aws/docker/library/alpine:3.23",
 		"rancher/k3s:v1.28.8-k3s1",
 		"postgres:16-alpine",
 		"mysql:8.0",
@@ -54,7 +56,7 @@ func TestAllowImagePullExtraAllowlistRequiresDigest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "digest") {
 		t.Fatalf("expected digest requirement, got %v", err)
 	}
-	if err := compute.AllowImagePull("ghcr.io/kyaxris-labs/tool@sha256:"+strings.Repeat("a", 64)); err != nil {
+	if err := compute.AllowImagePull("ghcr.io/kyaxris-labs/tool@sha256:" + strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
 }
