@@ -554,9 +554,10 @@ func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 		writeAuthzErr(w, err)
 		return
 	}
-	from := store.ProjectIDFromServiceAccountEmail(p.Email)
-	if from == "" {
-		from = project
+	from, err := s.Store.ProjectIDFromPrincipalEmail(p.Email)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
 	}
 	if err := s.Store.VPCSCDenyCrossPerimeter(from, project, "cloudkms.googleapis.com"); err != nil {
 		if errors.Is(err, store.ErrVPCSCPerimeter) {

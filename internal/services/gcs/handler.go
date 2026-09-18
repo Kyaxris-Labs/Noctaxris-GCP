@@ -1163,15 +1163,18 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !p.IsRoot {
-		if from := store.ProjectIDFromServiceAccountEmail(p.Email); from != "" {
-			if err := h.Store.VPCSCDenyCrossPerimeter(from, b.ProjectID, "storage.googleapis.com"); err != nil {
-				if errors.Is(err, store.ErrVPCSCPerimeter) {
-					gcperrors.PermissionDenied(w, err.Error())
-					return
-				}
-				gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		from, err := h.Store.ProjectIDFromPrincipalEmail(p.Email)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if err := h.Store.VPCSCDenyCrossPerimeter(from, b.ProjectID, "storage.googleapis.com"); err != nil {
+			if errors.Is(err, store.ErrVPCSCPerimeter) {
+				gcperrors.PermissionDenied(w, err.Error())
 				return
 			}
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
 		}
 	}
 	uploadType := r.URL.Query().Get("uploadType")

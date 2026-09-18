@@ -57,6 +57,13 @@ Permissions such as `pubsub.topics.*`, `pubsub.subscriptions.*`, and
 Acknowledge / ModifyAckDeadline / StreamingPull / Seek) are evaluated on
 `projects/{projectId}`.
 
+When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, publish (gRPC and REST) also checks VPC
+Service Controls for `pubsub.googleapis.com`. The caller project is the SA email
+project, or the WIF pool project for `wif:{providerId}:{subject}`. A caller that
+cannot be placed is outside the perimeter, not treated as the topic project.
+Operator root skips the check (lab provisioning). IAM Credentials and STS are not
+perimeter-restricted. See [access-context-manager.md](access-context-manager.md).
+
 gRPC Bearer auth is applied by the shared server interceptor. Handlers also
 re-check IAM when a principal is present.
 
@@ -125,7 +132,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   "$EP/v1/projects/$PROJECT/subscriptions/lab-sub:modifyPushConfig"
 ```
 
-Also: `go test ./internal/services/pubsub/ ./internal/store/ -run 'PubSub|DeadLetter|OIDC|Push|Deliver' -count=1`
+Also: `go test ./internal/services/pubsub/ ./internal/store/ -run 'PubSub|DeadLetter|OIDC|Push|Deliver|VPCSC' -count=1`
 (Pull DLQ redelivery needs repeated pull + `modifyAckDeadline` 0 or expired lease; push DLQ needs repeated failed push attempts; see store and `TestDeliverPushDeadLetterAfterMaxAttempts`.)
 
 Live SDK OIDC push smokes (soft-skip without endpoint; hard-fail `oidcToken` round-trip + publish; catcher Bearer soft-skips when dump empty or unavailable):
@@ -142,3 +149,4 @@ go test ./tests/sdk/go/ -run TestPubSubOIDCPushSmoke -count=1
 - Snapshot backlog retention and seek-to-snapshot
 - Full filter language (OR / NOT / HAS)
 - Real Google-signed push OIDC (lab uses `alg=none` theatre)
+- Operator root skips VPC-SC on publish; pull and subscribe are not perimeter-checked

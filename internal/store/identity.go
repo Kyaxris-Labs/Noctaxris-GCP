@@ -20,6 +20,24 @@ type Project struct {
 	CreatedAt   string
 }
 
+// LabProjectNumber is the CRM v1 projectNumber theatre for a project id.
+// VPC-SC perimeter resources may list projects/{number} using this value.
+func LabProjectNumber(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	var n uint64
+	for i := 0; i < len(id); i++ {
+		n = n*131 + uint64(id[i])
+	}
+	n = n % 1e12
+	if n == 0 {
+		n = 1
+	}
+	return strconv.FormatUint(n, 10)
+}
+
 // ServiceAccount is an IAM service account row.
 type ServiceAccount struct {
 	ProjectID   string

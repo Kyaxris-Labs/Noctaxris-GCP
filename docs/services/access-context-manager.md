@@ -40,22 +40,32 @@ Perimeter body fields used by the lab:
 | `spec` | Dry-run config |
 | `useExplicitDryRunSpec` | When true and `status` empty, `spec` is the dry-run config |
 
-Lab `resources` accept `projects/{projectId}` (project id, not only number).
+Lab `resources` accept `projects/{projectId}` and CRM v1 `projects/{number}`
+(the `projectNumber` from `GET /v1/projects`).
 
 ## Optional enforce
 
 Set `NOCTAXRIS_GCP_VPCSC_ENFORCE=1` (or `true`). Then:
 
-- Cross-project GCS copy and SA-principal upload to another project deny when a
+- Cross-project GCS copy and rewrite compare bucket project ids when a
   perimeter covers one side only and lists `storage.googleapis.com`
-- Pub/Sub publish denies when the caller SA project and topic project sit across
-  such a perimeter for `pubsub.googleapis.com`
-- Cloud KMS `:decrypt` denies when the caller SA project and key project sit
-  across a perimeter that lists `cloudkms.googleapis.com`
+- GCS object upload denies when the caller project and bucket project sit across
+  such a perimeter. Service account callers use the SA email project. WIF
+  callers use the pool project. Unresolved callers are outside the perimeter
+  (not the bucket project). Operator root skips this caller check.
+- Pub/Sub publish denies when the caller project and topic project sit across
+  such a perimeter for `pubsub.googleapis.com` (same SA / WIF / unresolved
+  placement as GCS upload). Operator root skips publish perimeter checks.
+- Cloud KMS `:decrypt` denies when the caller project and key project sit
+  across a perimeter that lists `cloudkms.googleapis.com`. Service account
+  callers use the SA email project. WIF callers use the pool project.
+  Unresolved callers are outside the perimeter (not the key project).
 - GCS `notificationConfigs` fanout skips publish when bucket and topic projects
   cross a restricting perimeter
 - Dry-run-only perimeters (`spec` + `useExplicitDryRunSpec`, empty `status`)
   participate only when enforce is on (optional dry-run enforce)
+- Invalid perimeter `status` or `spec` JSON denies the call when enforce is on
+  (empty `{}` status is still skipped unless dry-run spec is active)
 
 Default (env unset): CRUD theatre only; no deny.
 
@@ -89,7 +99,7 @@ auto-seeded; enable when gating creates).
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/accesscontextmanager/ ./internal/store/ -run 'AccessPolicy|ACM|VPCSC|Perimeter' -count=1
+go test ./internal/services/accesscontextmanager/ ./internal/store/ -run 'AccessPolicy|ACM|VPCSC|Perimeter|LabProjectNumber|ProjectIDFrom' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v1/accessPolicies?policyId=lab" \

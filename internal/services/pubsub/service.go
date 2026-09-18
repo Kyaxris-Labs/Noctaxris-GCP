@@ -267,6 +267,8 @@ func (s *Service) Publish(ctx context.Context, req *pubsubpb.PublishRequest) (*p
 }
 
 // checkVPCSCPublish denies cross-perimeter publish when NOCTAXRIS_GCP_VPCSC_ENFORCE is on.
+// Operator root skips (lab provisioning). Non-root callers always run the
+// perimeter check; empty or unresolved WIF is outside, not the topic project.
 func (s *Service) checkVPCSCPublish(ctx context.Context, topicProject string) error {
 	if s.Store == nil || !store.VPCSCEnforceEnabled() || s.Principal == nil {
 		return nil
@@ -278,9 +280,9 @@ func (s *Service) checkVPCSCPublish(ctx context.Context, topicProject string) er
 	if p.IsRoot {
 		return nil
 	}
-	from := store.ProjectIDFromServiceAccountEmail(p.Email)
-	if from == "" {
-		return nil
+	from, err := s.Store.ProjectIDFromPrincipalEmail(p.Email)
+	if err != nil {
+		return status.Errorf(codes.Internal, "%v", err)
 	}
 	if err := s.Store.VPCSCDenyCrossPerimeter(from, topicProject, "pubsub.googleapis.com"); err != nil {
 		if errors.Is(err, store.ErrVPCSCPerimeter) {

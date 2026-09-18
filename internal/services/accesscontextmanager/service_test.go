@@ -3,6 +3,7 @@ package accesscontextmanager_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -180,4 +181,31 @@ func TestUnauthenticated(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	_ = mux
+}
+
+func TestVPCSCPerimeterProjectNumberEnforce(t *testing.T) {
+	mux, st := acmMux(t)
+	t.Setenv("NOCTAXRIS_GCP_VPCSC_ENFORCE", "1")
+	project := "noctaxris-gcp-local"
+	req := httptest.NewRequest(http.MethodPost, "/v1/accessPolicies?policyId=num1", bytes.NewReader([]byte(
+		`{"parent":"organizations/noctaxris-gcp-org","title":"Num"}`,
+	)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create policy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := `{"title":"n","status":{"resources":["projects/` + store.LabProjectNumber(project) + `"],"restrictedServices":["cloudkms.googleapis.com"]}}`
+	req = httptest.NewRequest(http.MethodPost,
+		"/v1/accessPolicies/num1/servicePerimeters?servicePerimeterId=p-num",
+		bytes.NewReader([]byte(body)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create perimeter status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	err := st.VPCSCDenyCrossPerimeter(project, "other-proj", "cloudkms.googleapis.com")
+	if !errors.Is(err, store.ErrVPCSCPerimeter) {
+		t.Fatalf("number resources must deny: %v", err)
+	}
 }

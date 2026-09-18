@@ -2,7 +2,6 @@ package resourcemanager
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -718,7 +717,7 @@ func projectJSONV1(p store.Project) map[string]any {
 		state = "ACTIVE"
 	}
 	out := map[string]any{
-		"projectNumber":  v1ProjectNumber(p.ID),
+		"projectNumber":  store.LabProjectNumber(p.ID),
 		"projectId":      p.ID,
 		"name":           p.DisplayName,
 		"lifecycleState": state,
@@ -730,18 +729,6 @@ func projectJSONV1(p store.Project) map[string]any {
 		out["parent"] = map[string]string{"type": typeName, "id": id}
 	}
 	return out
-}
-
-func v1ProjectNumber(id string) string {
-	var n uint64
-	for i := 0; i < len(id); i++ {
-		n = n*131 + uint64(id[i])
-	}
-	n = n % 1e12
-	if n == 0 {
-		n = 1
-	}
-	return fmt.Sprintf("%d", n)
 }
 
 func splitResourceParent(name string) (typeName, id string, ok bool) {

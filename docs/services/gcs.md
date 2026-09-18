@@ -64,6 +64,14 @@ Eventarc finalize hooks remain separate and unchanged.
 project resource `projects/{projectId}` when the bucket is known (OR). Bucket IAM
 documents are stored under `buckets/{name}` via get/set IAM.
 
+When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, JSON object upload also checks VPC Service
+Controls for `storage.googleapis.com`. The caller project is the SA email project,
+or the WIF pool project for `wif:{providerId}:{subject}`. A caller that cannot be
+placed is outside the perimeter, not treated as the bucket project. Operator root
+skips this caller check. Copy and rewrite compare source and destination bucket
+projects. IAM Credentials and STS are not perimeter-restricted. See
+[access-context-manager.md](access-context-manager.md).
+
 ### V4 signed URL theatre
 
 `POST /storage/v1/b/{bucket}/o/{object}:generateSignedUrl` (Bearer required) body:
@@ -157,7 +165,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   "$EP/storage/v1/b/lab-bucket/notificationConfigs"
 ```
 
-Also: `go test ./internal/services/gcs/ ./internal/store/ -run 'GCS|Signed|Retention|Notification' -count=1`
+Also: `go test ./internal/services/gcs/ ./internal/store/ -run 'GCS|Signed|Retention|Notification|VPCSC' -count=1`
 
 ## Deferred depth
 
@@ -167,3 +175,4 @@ Also: `go test ./internal/services/gcs/ ./internal/store/ -run 'GCS|Signed|Reten
 - Object-level IAM and uniform bucket-level access edge cases
 - GCS service-agent `pubsub.topics.publish` fail-closed on notification deliver
 - `OBJECT_ARCHIVE` / `OBJECT_METADATA_UPDATE` / `OBJECT_INITIALIZE` notification events
+- XML HMAC and V4 signed URL PUT skip caller-project VPC-SC; copy/rewrite stay bucket-to-bucket

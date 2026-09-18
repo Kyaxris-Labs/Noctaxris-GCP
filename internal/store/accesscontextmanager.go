@@ -436,8 +436,10 @@ type perimeterConfig struct {
 
 // VPCSCDenyCrossPerimeter returns ErrVPCSCPerimeter when optional enforce is on and
 // fromProject/toProject sit across an active perimeter that restricts service.
-// Same-project calls always allow. Dry-run-only perimeters (spec + useExplicitDryRunSpec)
-// participate only when enforce is enabled (optional dry-run enforce).
+// Same-project calls allow when both sides resolve. An empty fromProject is outside
+// the perimeter (not treated as toProject). Dry-run-only perimeters
+// (spec + useExplicitDryRunSpec) participate only when enforce is enabled.
+// Invalid status/spec JSON denies while enforce is on.
 func (s *Store) VPCSCDenyCrossPerimeter(fromProject, toProject, service string) error {
 	if !VPCSCEnforceEnabled() {
 		return nil
@@ -445,10 +447,10 @@ func (s *Store) VPCSCDenyCrossPerimeter(fromProject, toProject, service string) 
 	fromProject = strings.TrimSpace(fromProject)
 	toProject = strings.TrimSpace(toProject)
 	service = strings.TrimSpace(service)
-	if fromProject == "" || toProject == "" || service == "" {
+	if toProject == "" || service == "" {
 		return nil
 	}
-	if fromProject == toProject {
+	if fromProject != "" && projectRefsMatch(fromProject, toProject) {
 		return nil
 	}
 	if err := s.ensureACM(); err != nil {
@@ -479,7 +481,7 @@ func (s *Store) VPCSCDenyCrossPerimeter(fromProject, toProject, service string) 
 		}
 		var cfg perimeterConfig
 		if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
-			continue
+			return ErrVPCSCPerimeter
 		}
 		if !restrictedServiceListed(cfg.RestrictedServices, service) {
 			continue
@@ -502,24 +504,57 @@ func restrictedServiceListed(list []string, service string) bool {
 	return false
 }
 
-func projectInPerimeterResources(resources []string, projectID string) bool {
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
+func projectInPerimeterResources(resources []string, projectRef string) bool {
+	projectRef = strings.TrimSpace(projectRef)
+	if projectRef == "" {
 		return false
 	}
-	candidates := []string{
-		projectID,
-		"projects/" + projectID,
-	}
+	bare := strings.TrimPrefix(projectRef, "projects/")
 	for _, r := range resources {
 		r = strings.TrimSpace(r)
-		for _, c := range candidates {
-			if r == c {
-				return true
-			}
+		if r == "" {
+			continue
+		}
+		rBare := strings.TrimPrefix(r, "projects/")
+		if r == projectRef || r == bare || rBare == bare || r == "projects/"+bare {
+			return true
+		}
+		if projectRefsMatch(bare, rBare) {
+			return true
 		}
 	}
 	return false
+}
+
+func projectRefsMatch(a, b string) bool {
+	a = strings.TrimPrefix(strings.TrimSpace(a), "projects/")
+	b = strings.TrimPrefix(strings.TrimSpace(b), "projects/")
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	aNum, bNum := a, b
+	if !isDecimalProjectNumber(a) {
+		aNum = LabProjectNumber(a)
+	}
+	if !isDecimalProjectNumber(b) {
+		bNum = LabProjectNumber(b)
+	}
+	return aNum != "" && aNum == bNum
+}
+
+func isDecimalProjectNumber(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ProjectIDFromServiceAccountEmail extracts the project id from
@@ -536,4 +571,58 @@ func ProjectIDFromServiceAccountEmail(email string) string {
 	}
 	host := email[at+1:]
 	return strings.TrimSuffix(host, suffix)
+}
+
+// ProjectIDFromPrincipalEmail returns the CRM project id for an SA email or a
+// WIF principal wif:{providerId}:{subject} (the provider's pool project).
+// Empty when the caller cannot be placed; VPC-SC treats that as outside the
+// perimeter rather than the resource project (KMS decrypt, GCS upload, Pub/Sub
+// publish).
+func (s *Store) ProjectIDFromPrincipalEmail(email string) (string, error) {
+	if id := ProjectIDFromServiceAccountEmail(email); id != "" {
+		return id, nil
+	}
+	return s.projectIDFromWIFPrincipal(email)
+}
+
+func (s *Store) projectIDFromWIFPrincipal(email string) (string, error) {
+	email = strings.TrimSpace(email)
+	rest, ok := strings.CutPrefix(email, "wif:")
+	if !ok {
+		return "", nil
+	}
+	providerID, _, ok := strings.Cut(rest, ":")
+	if !ok || strings.TrimSpace(providerID) == "" {
+		return "", nil
+	}
+	rows, err := s.db.Query(
+		`SELECT DISTINCT p.project_id
+		 FROM wif_providers w
+		 JOIN wif_pools p ON p.name = w.pool_name
+		 WHERE w.provider_id = ? AND w.state = 'ACTIVE' AND p.state = 'ACTIVE'`,
+		providerID,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var projects []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return "", err
+		}
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		projects = append(projects, id)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(projects) != 1 {
+		return "", nil
+	}
+	return projects[0], nil
 }

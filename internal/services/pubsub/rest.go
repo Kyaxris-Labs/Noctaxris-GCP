@@ -76,9 +76,10 @@ func (h *restHandler) checkVPCSCPublish(w http.ResponseWriter, r *http.Request, 
 	if !ok || p.IsRoot {
 		return true
 	}
-	from := store.ProjectIDFromServiceAccountEmail(p.Email)
-	if from == "" {
-		return true
+	from, err := h.svc.Store.ProjectIDFromPrincipalEmail(p.Email)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
 	}
 	if err := h.svc.Store.VPCSCDenyCrossPerimeter(from, topicProject, "pubsub.googleapis.com"); err != nil {
 		if errors.Is(err, store.ErrVPCSCPerimeter) {

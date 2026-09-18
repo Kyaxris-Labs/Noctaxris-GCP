@@ -119,6 +119,10 @@ func TestVPCSCDenyCrossPerimeterEnforce(t *testing.T) {
 	if err := st.VPCSCDenyCrossPerimeter("proj-a", "proj-b", "bigquery.googleapis.com"); err != nil {
 		t.Fatalf("unrestricted service must allow: %v", err)
 	}
+	err = st.VPCSCDenyCrossPerimeter("", "proj-a", "pubsub.googleapis.com")
+	if !errors.Is(err, store.ErrVPCSCPerimeter) {
+		t.Fatalf("empty fromProject must deny when dest is inside: %v", err)
+	}
 }
 
 func TestVPCSCDryRunEnforceOptional(t *testing.T) {
@@ -155,5 +159,101 @@ func TestProjectIDFromServiceAccountEmail(t *testing.T) {
 	}
 	if store.ProjectIDFromServiceAccountEmail("user@example.com") != "" {
 		t.Fatal("expected empty for non-SA")
+	}
+	if store.ProjectIDFromServiceAccountEmail("wif:oidc-lab:alice") != "" {
+		t.Fatal("expected empty for WIF principal")
+	}
+}
+
+func TestVPCSCDenyCrossPerimeterBadJSON(t *testing.T) {
+	st := openACMStore(t)
+	polName := store.AccessPolicyResourceName("bad-json")
+	if _, err := st.CreateAccessPolicy(store.AccessPolicy{
+		Name: polName, PolicyID: "bad-json", Parent: "organizations/noctaxris-gcp-org",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateServicePerimeter(store.ServicePerimeter{
+		Name:       store.ServicePerimeterResourceName("bad-json", "p-bad"),
+		PolicyName: polName, PerimeterID: "p-bad", StatusJSON: `{not-json`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NOCTAXRIS_GCP_VPCSC_ENFORCE", "1")
+	err := st.VPCSCDenyCrossPerimeter("proj-a", "proj-b", "cloudkms.googleapis.com")
+	if !errors.Is(err, store.ErrVPCSCPerimeter) {
+		t.Fatalf("bad status JSON must deny: %v", err)
+	}
+}
+
+func TestVPCSCDenyCrossPerimeterProjectNumber(t *testing.T) {
+	st := openACMStore(t)
+	polName := store.AccessPolicyResourceName("num-pol")
+	if _, err := st.CreateAccessPolicy(store.AccessPolicy{
+		Name: polName, PolicyID: "num-pol", Parent: "organizations/noctaxris-gcp-org",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inside := "proj-a"
+	status, _ := json.Marshal(map[string]any{
+		"resources":          []string{"projects/" + store.LabProjectNumber(inside)},
+		"restrictedServices": []string{"cloudkms.googleapis.com"},
+	})
+	if _, err := st.CreateServicePerimeter(store.ServicePerimeter{
+		Name:       store.ServicePerimeterResourceName("num-pol", "p-num"),
+		PolicyName: polName, PerimeterID: "p-num", StatusJSON: string(status),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NOCTAXRIS_GCP_VPCSC_ENFORCE", "1")
+	if err := st.VPCSCDenyCrossPerimeter(inside, inside, "cloudkms.googleapis.com"); err != nil {
+		t.Fatalf("same project via number resources must allow: %v", err)
+	}
+	if err := st.VPCSCDenyCrossPerimeter(store.LabProjectNumber(inside), inside, "cloudkms.googleapis.com"); err != nil {
+		t.Fatalf("caller number vs dest id of same project must allow: %v", err)
+	}
+	err := st.VPCSCDenyCrossPerimeter(inside, "proj-b", "cloudkms.googleapis.com")
+	if !errors.Is(err, store.ErrVPCSCPerimeter) {
+		t.Fatalf("id vs number perimeter must deny: %v", err)
+	}
+	err = st.VPCSCDenyCrossPerimeter(store.LabProjectNumber(inside), "proj-b", "cloudkms.googleapis.com")
+	if !errors.Is(err, store.ErrVPCSCPerimeter) {
+		t.Fatalf("caller number vs dest id must deny: %v", err)
+	}
+}
+
+func TestProjectIDFromPrincipalEmailWIF(t *testing.T) {
+	st := openACMStore(t)
+	got, err := st.ProjectIDFromPrincipalEmail("sa@my-lab.iam.gserviceaccount.com")
+	if err != nil || got != "my-lab" {
+		t.Fatalf("SA: got %q err=%v", got, err)
+	}
+	got, err = st.ProjectIDFromPrincipalEmail("wif:missing:alice")
+	if err != nil || got != "" {
+		t.Fatalf("unresolved WIF: got %q err=%v", got, err)
+	}
+	pool, err := st.CreateWIFPool("wif-home", "global", "lab-pool", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "[]", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.ProjectIDFromPrincipalEmail("wif:oidc-lab:alice")
+	if err != nil || got != "wif-home" {
+		t.Fatalf("resolved WIF: got %q err=%v", got, err)
+	}
+}
+
+func TestLabProjectNumberStable(t *testing.T) {
+	a := store.LabProjectNumber("noctaxris-gcp-local")
+	if a == "" || a == "noctaxris-gcp-local" {
+		t.Fatalf("number=%q", a)
+	}
+	if store.LabProjectNumber("noctaxris-gcp-local") != a {
+		t.Fatal("expected stable number")
+	}
+	if store.LabProjectNumber("other-proj") == a {
+		t.Fatal("distinct ids must not share a number")
 	}
 }
