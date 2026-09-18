@@ -67,6 +67,7 @@ type ListLogEntriesFilter struct {
 	Severity           string
 	TimestampGTE       string
 	TimestampLT        string
+	ResourceType       string
 	PageSize           int
 	// Offset is a simple numeric page token (lab).
 	Offset int
@@ -107,6 +108,10 @@ func (s *Store) ListLogEntries(f ListLogEntriesFilter) ([]LogEntry, error) {
 	if f.TimestampLT != "" {
 		q += ` AND timestamp < ?`
 		args = append(args, f.TimestampLT)
+	}
+	if f.ResourceType != "" {
+		q += ` AND json_extract(resource_json, '$.type') = ?`
+		args = append(args, f.ResourceType)
 	}
 	q += ` ORDER BY timestamp ASC, insert_id ASC LIMIT ? OFFSET ?`
 	args = append(args, pageSize, f.Offset)

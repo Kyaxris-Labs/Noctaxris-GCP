@@ -35,10 +35,16 @@ Admin (Bearer required):
 | `POST` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts:createCustomToken` |
 | `POST` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts:setCustomUserClaims` |
 | `POST` | `/identitytoolkit.googleapis.com/v1/projects/{project}/accounts:verifyIdToken` |
+| `POST` | `/identitytoolkit.googleapis.com/v2/projects/{project}/tenants` (`?tenantId=`) |
+| `GET` | `/identitytoolkit.googleapis.com/v2/projects/{project}/tenants` |
+| `GET` | `/identitytoolkit.googleapis.com/v2/projects/{project}/tenants/{tenant}` |
+| `PATCH` | `/identitytoolkit.googleapis.com/v2/projects/{project}/tenants/{tenant}` |
 
 Password reset: `sendOobCode` with `requestType=PASSWORD_RESET` returns a lab `oobCode` (no email send). `resetPassword` consumes the code and sets `newPassword`.
 
 `setCustomUserClaims` stores `customAttributes` / `claims` JSON on the user. `verifyIdToken` parses unsigned lab JWTs (`alg: none`) and returns `uid` / claims. Custom tokens and id tokens are **unsigned lab JWTs** (empty signature segment). Do not treat them as production credentials.
+
+v2 tenant CRUD stores `allowPasswordSignup`. `accounts:signUp` with `tenantId` of a locked tenant (`allowPasswordSignup=false`) returns `admin-restricted-operation`. Open tenants accept email/password sign-up.
 
 ## Client configuration
 
@@ -53,6 +59,7 @@ Admin calls still need `Authorization: Bearer <token>`.
 ## Authz (admin)
 
 - `firebaseauth.users.create|get|list|update|delete`
+- `identitytoolkit.tenants.create|get|list|update`
 
 ## Emulator limits
 
@@ -60,12 +67,12 @@ Admin calls still need `Authorization: Bearer <token>`.
 - Client `accounts:update` / `accounts:delete` require lab `idToken` matching `localId` when provided; admin project CRUD remains Bearer-only
 - Custom tokens and id tokens are unsigned lab JWTs (`alg: none`); not production credentials
 - `sendOobCode` returns a lab `oobCode` only (no email delivery)
-- No phone / OAuth / SAML / OIDC providers, MFA, blocking functions, or tenants
+- No phone / OAuth / SAML / OIDC providers, MFA, or blocking functions
 
 ## Deferred depth
 
 - Phone / OAuth / SAML / OIDC providers
-- MFA, blocking functions, tenant management
+- MFA, blocking functions
 - Signed JWTs / real Google public keys
 - Session cookies with real cookies
 

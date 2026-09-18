@@ -105,7 +105,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>IAM</td>
-      <td>Service accounts/keys; WIF pool/provider CRUD + PATCH <code>oidc.allowedAudiences</code>; STS <code>POST /v1/token</code> (theatre default; opt-in RS256 verify + lab <code>oidc-lab</code> issuer); TokenCreator <code>generateAccessToken</code>; project custom roles CRUD + <code>:undelete</code>; allow-policy Evaluate + <code>testIamPermissions</code>; optional Org Policy deny on key create.</td>
+      <td>Service accounts/keys; WIF pool/provider CRUD + PATCH <code>oidc.allowedAudiences</code>; STS <code>POST /v1/token</code> (theatre default; opt-in RS256 verify + lab <code>oidc-lab</code> issuer); TokenCreator <code>generateAccessToken</code> (including <code>iamcredentials.googleapis.com</code> alias); <code>request.time</code> CEL on lab clock; project custom roles CRUD + <code>:undelete</code>; allow-policy Evaluate + <code>testIamPermissions</code>; optional Org Policy deny on key create.</td>
       <td>Third-party OIDC issuers outside lab <code>oidc-lab</code> + egress-gated JWKS; org custom roles; PKCS#1 signBlob.</td>
     </tr>
     <tr>
@@ -126,13 +126,13 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud KMS</td>
-      <td>REST v1 key rings/keys; symmetric encrypt/decrypt; RSA_SIGN_PSS sign/verify.</td>
+      <td>REST v1 key rings/keys; symmetric encrypt/decrypt; RSA_SIGN_PSS sign/verify; optional VPC-SC on <code>:decrypt</code>.</td>
       <td>Asymmetric decrypt depth; import; multi-region keys.</td>
     </tr>
     <tr>
       <td rowspan="10" align="center" valign="middle">Data</td>
       <td>Cloud Storage</td>
-      <td>JSON API v1 objects/buckets; bucket IAM; V4 HMAC signed URL; <code>retentionPolicy</code> fail-closed delete/overwrite.</td>
+      <td>JSON API v1 objects/buckets; bucket IAM; V4 HMAC signed URL; XML HMAC List/Get/Put + <code>hmacKeys</code> CRUD; <code>retentionPolicy</code> fail-closed delete/overwrite.</td>
       <td>Object ACLs; soft delete / lifecycle enforce; RSA GOOG4 signed URLs via signBlob.</td>
     </tr>
     <tr>
@@ -142,7 +142,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Firestore</td>
-      <td>gRPC Firestore v1; atomic Commit + BatchWrite (<code>FIRESTORE_EMULATOR_HOST</code>).</td>
+      <td>gRPC Firestore v1; atomic Commit + BatchWrite (<code>FIRESTORE_EMULATOR_HOST</code>); Identity Toolkit users write only <code>users/{uid}</code>.</td>
       <td>Multi-database ids beyond <code>(default)</code>; Listen / realtime.</td>
     </tr>
     <tr>
@@ -183,12 +183,12 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     <tr>
       <td rowspan="5" align="center" valign="middle">Audit and observe</td>
       <td>Cloud Logging</td>
-      <td>REST v2 entries, sinks, one-shot tail, copy theatre.</td>
+      <td>REST v2 entries, sinks, exclusions/views lite, <code>resource.type</code> list filter, lab logs inject, one-shot tail, copy theatre.</td>
       <td>Live log router depth; BigQuery sink export engine.</td>
     </tr>
     <tr>
       <td>Cloud Audit Logs</td>
-      <td>Env-gated lab inject + listable <code>protoPayload</code> lite via Logging <code>entries:list</code> (honest theatre).</td>
+      <td>Env-gated lab inject + clock/BulkSeed + listable <code>protoPayload</code> lite via Logging <code>entries:list</code> (honest theatre).</td>
       <td>Full Admin/Data Access auto-generation; org sinks; Audit Logs Admin APIs.</td>
     </tr>
     <tr>
@@ -214,12 +214,12 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud Run</td>
-      <td>Admin API v2 services/jobs, traffic, IAM, <code>:invoke</code> status/delay; nested DinD on by default in Compose.</td>
+      <td>Admin API v2 services/jobs, traffic, IAM, <code>:invoke</code> status/delay; Binary Authorization admit; IMDS metadata; nested DinD on by default in Compose.</td>
       <td>Default nested containers; traffic percent enforce beyond metadata.</td>
     </tr>
     <tr>
       <td>Cloud Functions</td>
-      <td>Functions v2 CRUD, upload URL + source accept, IAM, <code>:invoke</code> stub; Eventarc eventTrigger wiring.</td>
+      <td>Functions v2 CRUD, upload/download URL + source accept, IAM, <code>:invoke</code> stub; Eventarc eventTrigger wiring.</td>
       <td>Real build/runtime; cascade-delete wired Eventarc triggers; 1st gen API.</td>
     </tr>
     <tr>
@@ -234,8 +234,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud Build</td>
-      <td>createBuild theatre + triggers CRUD lite; shared regional triggers mux with Eventarc.</td>
-      <td>Step execution; image pull/push; SCM checkout.</td>
+      <td>createBuild theatre + triggers CRUD lite; private worker pools (<code>cloudbuild.workerpools.use</code> on host project); shared regional triggers mux with Eventarc.</td>
+      <td>Step execution; image pull/push; SCM checkout; private-pool VMs.</td>
     </tr>
     <tr>
       <td>App Engine</td>
@@ -251,7 +251,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     <tr>
       <td rowspan="1" align="center" valign="middle">Policy</td>
       <td>Access Context Manager</td>
-      <td>accessPolicies + servicePerimeters CRUD theatre; optional <code>NOCTAXRIS_GCP_VPCSC_ENFORCE</code> cross-perimeter deny on GCS/Pub/Sub.</td>
+      <td>accessPolicies + servicePerimeters CRUD theatre; optional <code>NOCTAXRIS_GCP_VPCSC_ENFORCE</code> cross-perimeter deny on GCS/Pub/Sub/KMS decrypt (not Credentials or STS).</td>
       <td>Access levels; ingress/egress eval; bridge perimeters; network context.</td>
     </tr>
     <tr>
@@ -293,8 +293,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Firebase Auth</td>
-      <td>Identity Toolkit REST, OOB reset, claims, verifyIdToken.</td>
-      <td>Real SMS/email providers; multi-tenancy depth.</td>
+      <td>Identity Toolkit REST, OOB reset, claims, verifyIdToken, v2 tenants (<code>admin-restricted-operation</code> on locked sign-up).</td>
+      <td>Real SMS/email providers.</td>
     </tr>
     <tr>
       <td>Eventarc</td>

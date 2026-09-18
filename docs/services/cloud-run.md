@@ -39,6 +39,7 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 | `POST` | `/v2/projects/{p}/locations/{loc}/jobs?jobId=` |
 | `GET` | `/v2/projects/{p}/locations/{loc}/jobs` |
 | `GET`/`PATCH`/`DELETE` | `/v2/projects/{p}/locations/{loc}/jobs/{job}` |
+| `GET` | `/computeMetadata/v1` and `/computeMetadata/v1/...` (`Metadata-Flavor: Google`) |
 
 Create/patch may include `traffic` (percent allocation to latest/revision). Optional lab fields:
 
@@ -54,6 +55,22 @@ Create/patch may include `traffic` (percent allocation to latest/revision). Opti
 Otherwise invoke returns `{"ok":true,"service":"...","env":{...}}`. Last invoke stores method, path, query, headers (Authorization omitted), and body.
 
 Jobs are control-plane theatre only (template stored; no execution).
+
+Create and patch with a container image consult Binary Authorization. An
+`ENFORCED` project policy admits the image only when Container Analysis has a
+matching occurrence (`resourceUri`). Default (no policy) admits.
+
+Metadata IMDS is public with `Metadata-Flavor: Google`. Identity is
+`runtime@{project}.iam.gserviceaccount.com`. `.../token` mints a lab Bearer for
+that SA only (wall-clock expiry).
+
+Related REST (same listener):
+
+| Method | Path |
+|--------|------|
+| `GET` / `POST` | `/v1/projects/{p}/occurrences` (Container Analysis) |
+| `GET` | `/v1/projects/{p}/occurrences/{id}` |
+| `GET` / `PUT` | `/v1/projects/{p}/policy` (Binary Authorization) |
 
 ## Authz
 

@@ -43,6 +43,10 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/triggers/{trigger}", s.wrap(principalFrom, s.getTrigger))
 	mux.HandleFunc("POST /v1/projects/{project}/triggers/{trigger}", s.wrap(principalFrom, s.triggerPOSTAction))
 	mux.HandleFunc("DELETE /v1/projects/{project}/triggers/{trigger}", s.wrap(principalFrom, s.deleteTrigger))
+
+	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/workerPools", s.wrap(principalFrom, s.createWorkerPool))
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/workerPools", s.wrap(principalFrom, s.listWorkerPools))
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/workerPools/{pool}", s.wrap(principalFrom, s.getWorkerPool))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -123,6 +127,21 @@ func (s *Service) createBuild(w http.ResponseWriter, r *http.Request, p authn.Pr
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body == nil {
 		body = map[string]any{}
+	}
+	if poolName := workerPoolNameFromBuild(body); poolName != "" {
+		pool, ok, err := s.Store.GetCbWorkerPool(poolName)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !ok {
+			gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "worker pool not found")
+			return
+		}
+		if err := s.require(p, "cloudbuild.workerpools.use", pool.ProjectID); err != nil {
+			writeAuthzErr(w, err)
+			return
+		}
 	}
 	buildID := store.NewCbBuildID()
 	name := buildName(project, location, buildID)
@@ -659,6 +678,123 @@ func TriggerResourceJSON(t store.CbTrigger) map[string]any {
 // MayListTriggers reports whether p may list Cloud Build triggers in project.
 func (s *Service) MayListTriggers(p authn.Principal, projectID string) bool {
 	return s.require(p, "cloudbuild.triggers.list", projectID) == nil
+}
+
+func workerPoolNameFromBuild(body map[string]any) string {
+	opts, _ := body["options"].(map[string]any)
+	if opts == nil {
+		return ""
+	}
+	pool, _ := opts["pool"].(map[string]any)
+	if pool == nil {
+		return ""
+	}
+	name, _ := pool["name"].(string)
+	return strings.TrimSpace(name)
+}
+
+func workerPoolJSON(p store.CbWorkerPool) map[string]any {
+	var cfg, ann map[string]any
+	_ = json.Unmarshal([]byte(p.ConfigJSON), &cfg)
+	_ = json.Unmarshal([]byte(p.AnnotationsJSON), &ann)
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	out := map[string]any{
+		"name":       p.Name,
+		"state":      "RUNNING",
+		"createTime": p.CreatedAt,
+	}
+	if ann != nil {
+		out["annotations"] = ann
+	}
+	for k, v := range cfg {
+		if k == "name" || k == "annotations" || k == "workerPoolId" {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func (s *Service) createWorkerPool(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	if err := s.require(p, "cloudbuild.workerpools.create", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	poolID := r.URL.Query().Get("workerPoolId")
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body == nil {
+		body = map[string]any{}
+	}
+	if poolID == "" {
+		poolID, _ = body["workerPoolId"].(string)
+	}
+	if poolID == "" {
+		gcperrors.InvalidArgument(w, "workerPoolId is required")
+		return
+	}
+	ann := body["annotations"]
+	if ann == nil {
+		ann = map[string]any{"NO_PUBLIC_EGRESS": "true"}
+	}
+	annRaw, _ := json.Marshal(ann)
+	cfgRaw, _ := json.Marshal(body)
+	wp, created, err := s.Store.CreateCbWorkerPool(store.CbWorkerPool{
+		ProjectID: project, Location: location, PoolID: poolID,
+		AnnotationsJSON: string(annRaw), ConfigJSON: string(cfgRaw),
+	})
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !created {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "worker pool already exists")
+		return
+	}
+	writeJSON(w, http.StatusOK, workerPoolJSON(*wp))
+}
+
+func (s *Service) listWorkerPools(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "cloudbuild.workerpools.list", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	list, err := s.Store.ListCbWorkerPools(project, r.PathValue("location"))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	items := make([]map[string]any, 0, len(list))
+	for i := range list {
+		items = append(items, workerPoolJSON(list[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workerPools": items})
+}
+
+func (s *Service) getWorkerPool(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	location := r.PathValue("location")
+	poolID := r.PathValue("pool")
+	name := fmt.Sprintf("projects/%s/locations/%s/workerPools/%s", project, location, poolID)
+	wp, ok, err := s.Store.GetCbWorkerPool(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "worker pool not found")
+		return
+	}
+	if err := s.require(p, "cloudbuild.workerpools.get", wp.ProjectID); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workerPoolJSON(*wp))
 }
 
 func ensureStepStatus(steps any, status string) any {

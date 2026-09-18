@@ -21,6 +21,7 @@ type FirebaseUser struct {
 	Disabled         bool
 	CustomAttributes string
 	CreatedAt        string
+	TenantID         string
 }
 
 // CreateFirebaseUser inserts a user. created=false means email already exists.
@@ -44,9 +45,9 @@ func (s *Store) CreateFirebaseUser(u FirebaseUser) (*FirebaseUser, bool, error) 
 	}
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO firebase_users
-		 (local_id, project_id, email, password_hash, display_name, disabled, custom_attributes, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.LocalID, u.ProjectID, u.Email, u.PasswordHash, u.DisplayName, disabled, u.CustomAttributes, now,
+		 (local_id, project_id, email, password_hash, display_name, disabled, custom_attributes, created_at, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.LocalID, u.ProjectID, u.Email, u.PasswordHash, u.DisplayName, disabled, u.CustomAttributes, now, u.TenantID,
 	)
 	if err != nil {
 		return nil, false, err

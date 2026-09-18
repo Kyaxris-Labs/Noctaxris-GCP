@@ -53,6 +53,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /upload/storage/v1/b/{bucket}/o", h.uploadObject)
 	mux.HandleFunc("PUT /upload/storage/v1/b/{bucket}/o", h.putResumableUpload)
 	mux.HandleFunc("DELETE /upload/storage/v1/b/{bucket}/o", h.deleteResumableUpload)
+	mux.HandleFunc("POST /storage/v1/projects/{project}/hmacKeys", h.createHMACKey)
+	mux.HandleFunc("GET /storage/v1/projects/{project}/hmacKeys", h.listHMACKeys)
+	mux.HandleFunc("GET /storage/v1/projects/{project}/hmacKeys/{accessId}", h.getHMACKey)
+	mux.HandleFunc("DELETE /storage/v1/projects/{project}/hmacKeys/{accessId}", h.deleteHMACKey)
+	mux.HandleFunc("GET /storage/xml/{bucket}", h.xmlListBucket)
+	mux.HandleFunc("GET /storage/xml/{bucket}/{object...}", h.xmlGetObject)
+	mux.HandleFunc("PUT /storage/xml/{bucket}/{object...}", h.xmlPutObject)
 }
 
 func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {

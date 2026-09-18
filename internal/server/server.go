@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/config"
@@ -49,8 +50,10 @@ type Server struct {
 	authn *authn.Authenticator
 	authz *authz.Evaluator
 	grpc  *grpc.Server
-	mux   *http.ServeMux
-	now   func() time.Time
+	mux           *http.ServeMux
+	now           func() time.Time
+	clockMu       sync.RWMutex
+	clockOverride *time.Time
 }
 
 // New builds a Server with health routes, identity REST, and gRPC Bearer auth.
@@ -68,6 +71,7 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 		mux:   http.NewServeMux(),
 		now:   func() time.Time { return time.Now().UTC() },
 	}
+	s.authz.Now = s.effectiveNow
 	s.registerREST()
 	s.registerOIDCLab()
 	s.registerIdentity()
@@ -116,6 +120,7 @@ func (s *Server) registerREST() {
 	s.mux.HandleFunc("GET "+catcher, s.handleHTTPCatcherDump)
 	s.mux.HandleFunc("POST "+catcher, s.handleHTTPCatcherAccept)
 	s.mux.HandleFunc("POST "+catcher+"/{rest...}", s.handleHTTPCatcherAccept)
+	s.registerLabForensics()
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -171,6 +176,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			reqID = newRequestID()
 		}
 		w.Header().Set(requestIDHeader, reqID)
+		rewriteLabHostPath(r)
 		ctx := context.WithValue(r.Context(), ctxRequestID, reqID)
 
 		if authn.IsPublicPath(r.URL.Path) {
@@ -192,6 +198,12 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
+		}
+
+		// XML HMAC (GOOG4 header) authenticates in the XML handler; do not require Bearer.
+		if isGOOG4HMACAuth(r.Header.Get("Authorization")) && strings.HasPrefix(r.URL.Path, "/storage/xml/") {
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
 		}
 
 		p, err := s.authn.AuthenticateRequest(r)

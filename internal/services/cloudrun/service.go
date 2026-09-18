@@ -144,6 +144,9 @@ func (s *Service) createService(w http.ResponseWriter, r *http.Request, p authn.
 		template = map[string]any{}
 	}
 	tplRaw, _ := json.Marshal(template)
+	if !s.admitImage(w, project, imageFromTemplateJSON(string(tplRaw))) {
+		return
+	}
 	labBody := labResponseFromTemplate(template)
 	trafficJSON := ""
 	if t, ok := body["traffic"]; ok {
@@ -252,6 +255,9 @@ func (s *Service) patchService(w http.ResponseWriter, r *http.Request, p authn.P
 	if template != nil {
 		b, _ := json.Marshal(template)
 		tplRaw = string(b)
+		if !s.admitImage(w, project, imageFromTemplateJSON(tplRaw)) {
+			return
+		}
 		labBody = labResponseFromTemplate(template)
 	}
 	trafficJSON := ""
@@ -732,6 +738,19 @@ func asInt(v any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func (s *Service) admitImage(w http.ResponseWriter, project, image string) bool {
+	ok, err := s.Store.BinaryAuthzAllows(project, image)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	}
+	if !ok {
+		gcperrors.PermissionDenied(w, "image not admitted by Binary Authorization policy")
+		return false
+	}
+	return true
 }
 
 func imageFromTemplateJSON(templateJSON string) string {

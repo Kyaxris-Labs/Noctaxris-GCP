@@ -181,6 +181,130 @@ func HasV4Signature(query url.Values) bool {
 	return algo != "" && sig != ""
 }
 
+// SignGOOG4HMACHeader builds Authorization + x-goog-date for XML HMAC requests.
+func SignGOOG4HMACHeader(method, host, path, accessID, secret string, now time.Time) (authorization, googDate string) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.UTC()
+	datestamp := now.Format("20060102")
+	timestamp := now.Format("20060102T150405Z")
+	credentialScope := datestamp + "/auto/storage/goog4_request"
+	credential := accessID + "/" + credentialScope
+	signedHeaders := "host;x-goog-content-sha256;x-goog-date"
+	canonicalHeaders := "host:" + strings.ToLower(host) + "\n" +
+		"x-goog-content-sha256:UNSIGNED-PAYLOAD\n" +
+		"x-goog-date:" + timestamp + "\n"
+	canonicalRequest := strings.Join([]string{
+		strings.ToUpper(method),
+		path,
+		"",
+		canonicalHeaders,
+		signedHeaders,
+		"UNSIGNED-PAYLOAD",
+	}, "\n")
+	hashed := sha256Hex([]byte(canonicalRequest))
+	stringToSign := strings.Join([]string{
+		LabGCSSignAlgo,
+		timestamp,
+		credentialScope,
+		hashed,
+	}, "\n")
+	sig := hex.EncodeToString(hmacSHA256(deriveSigningKey(secret, datestamp), []byte(stringToSign)))
+	auth := LabGCSSignAlgo + " Credential=" + credential + ", SignedHeaders=" + signedHeaders + ", Signature=" + sig
+	return auth, timestamp
+}
+
+// VerifyGOOG4HMACHeader validates a GOOG4 Authorization header. Skew uses wall now.
+func VerifyGOOG4HMACHeader(method, host, path, authorization, googDate, secret string, now time.Time) error {
+	authorization = strings.TrimSpace(authorization)
+	if !strings.HasPrefix(authorization, LabGCSSignAlgo+" ") {
+		return fmt.Errorf("missing GOOG4-HMAC-SHA256 Authorization")
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(authorization, LabGCSSignAlgo+" "))
+	parts := strings.Split(rest, ",")
+	var credential, signedHeaders, signature string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		switch {
+		case strings.HasPrefix(p, "Credential="):
+			credential = strings.TrimPrefix(p, "Credential=")
+		case strings.HasPrefix(p, "SignedHeaders="):
+			signedHeaders = strings.ToLower(strings.TrimPrefix(p, "SignedHeaders="))
+		case strings.HasPrefix(p, "Signature="):
+			signature = strings.ToLower(strings.TrimPrefix(p, "Signature="))
+		}
+	}
+	if credential == "" || signedHeaders == "" || signature == "" {
+		return fmt.Errorf("incomplete Authorization")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if googDate == "" {
+		return fmt.Errorf("missing x-goog-date")
+	}
+	active, err := time.Parse("20060102T150405Z", googDate)
+	if err != nil {
+		return fmt.Errorf("invalid x-goog-date")
+	}
+	if now.After(active.Add(15 * time.Minute)) {
+		return fmt.Errorf("request expired")
+	}
+	if now.Before(active.Add(-15 * time.Minute)) {
+		return fmt.Errorf("request not yet valid")
+	}
+	scopeParts := strings.SplitN(credential, "/", 2)
+	if len(scopeParts) != 2 {
+		return fmt.Errorf("invalid credential")
+	}
+	credentialScope := scopeParts[1]
+	dsParts := strings.Split(credentialScope, "/")
+	if len(dsParts) != 4 || dsParts[2] != "storage" {
+		return fmt.Errorf("invalid credential scope")
+	}
+	datestamp := dsParts[0]
+	canonicalHeaders := "host:" + strings.ToLower(host) + "\n" +
+		"x-goog-content-sha256:UNSIGNED-PAYLOAD\n" +
+		"x-goog-date:" + googDate + "\n"
+	canonicalRequest := strings.Join([]string{
+		strings.ToUpper(method),
+		path,
+		"",
+		canonicalHeaders,
+		signedHeaders,
+		"UNSIGNED-PAYLOAD",
+	}, "\n")
+	hashed := sha256Hex([]byte(canonicalRequest))
+	stringToSign := strings.Join([]string{
+		LabGCSSignAlgo,
+		googDate,
+		credentialScope,
+		hashed,
+	}, "\n")
+	want := hex.EncodeToString(hmacSHA256(deriveSigningKey(secret, datestamp), []byte(stringToSign)))
+	if !hmac.Equal([]byte(want), []byte(signature)) {
+		return fmt.Errorf("signature mismatch")
+	}
+	return nil
+}
+
+func GOOG4AccessID(authorization string) string {
+	authorization = strings.TrimSpace(authorization)
+	idx := strings.Index(authorization, "Credential=")
+	if idx < 0 {
+		return ""
+	}
+	rest := authorization[idx+len("Credential="):]
+	if i := strings.IndexByte(rest, '/'); i > 0 {
+		return rest[:i]
+	}
+	if i := strings.IndexByte(rest, ','); i > 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
 func deriveSigningKey(secret, datestamp string) []byte {
 	kDate := hmacSHA256([]byte("GOOG4"+secret), []byte(datestamp))
 	kRegion := hmacSHA256(kDate, []byte("auto"))

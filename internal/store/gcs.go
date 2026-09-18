@@ -751,6 +751,31 @@ func (s *Store) ReadObjectBytes(o *ObjectMeta) ([]byte, error) {
 	return os.ReadFile(filepath.Join(s.dataRoot, "gcs", o.BlobPath))
 }
 
+// ListObjectGenerations lists every generation (not just latest) for XML versions=yes.
+func (s *Store) ListObjectGenerations(bucket, prefix string) ([]ObjectMeta, error) {
+	q := `SELECT ` + objectSelectCols + ` FROM objects WHERE bucket = ?`
+	args := []any{bucket}
+	if prefix != "" {
+		q += ` AND name LIKE ?`
+		args = append(args, prefix+"%")
+	}
+	q += ` ORDER BY name, generation`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ObjectMeta
+	for rows.Next() {
+		o, err := scanObject(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *o)
+	}
+	return out, rows.Err()
+}
+
 func sanitizeObjectPath(name string) string {
 	name = strings.ReplaceAll(name, `\`, "/")
 	parts := strings.Split(name, "/")

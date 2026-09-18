@@ -53,6 +53,10 @@ Permissions checked on `projects/{project}`:
 - `datastore.entities.delete`
 - `datastore.entities.list`
 
+Identity Toolkit JWT principals (`iss` `https://securetoken.google.com/`) may
+write only `.../documents/users/{uid}` matching the token `user_id` / `sub`.
+Other document paths and other users' docs are denied.
+
 ## Client configuration
 
 Official Go / many SDKs honor:

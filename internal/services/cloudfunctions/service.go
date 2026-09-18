@@ -193,6 +193,44 @@ func (s *Service) generateUploadUrl(w http.ResponseWriter, r *http.Request, p au
 	})
 }
 
+func (s *Service) generateDownloadUrl(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, id string) {
+	if err := s.require(p, "cloudfunctions.functions.sourceCodeGet", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	name := functionName(project, location, id)
+	fn, ok, err := s.Store.GetCloudFunction(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Function not found")
+		return
+	}
+	object := fmt.Sprintf("source/%s/%s.zip", project, fn.FunctionID)
+	if bucket, obj, hasSrc := storageSourceFromConfigJSON(fn.ConfigJSON); hasSrc {
+		if bucket == "" {
+			bucket = functionsUploadBucket
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"downloadUrl": fmt.Sprintf("http://127.0.0.1:4588/v2/projects/%s/locations/%s/functions:upload/%s", project, location, fn.FunctionID),
+			"storageSource": map[string]any{
+				"bucket": bucket,
+				"object": obj,
+			},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"downloadUrl": fmt.Sprintf("http://127.0.0.1:4588/v2/projects/%s/locations/%s/functions:upload/%s", project, location, fn.FunctionID),
+		"storageSource": map[string]any{
+			"bucket": functionsUploadBucket,
+			"object": object,
+		},
+	})
+}
+
 func (s *Service) acceptUpload(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
@@ -267,6 +305,9 @@ func (s *Service) getOrInvoke(w http.ResponseWriter, r *http.Request, p authn.Pr
 		return
 	case "setIamPolicy":
 		s.setIamPolicy(w, r, p, project, location, id)
+		return
+	case "generateDownloadUrl":
+		s.generateDownloadUrl(w, r, p, project, location, id)
 		return
 	}
 	if r.Method != http.MethodGet {

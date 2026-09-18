@@ -57,11 +57,18 @@ func (s *Service) principal(ctx context.Context) (authn.Principal, error) {
 	if !strings.HasPrefix(raw, prefix) {
 		return authn.Principal{}, status.Error(codes.Unauthenticated, "expected Bearer token")
 	}
-	p, err := s.Authn.AuthenticateToken(strings.TrimSpace(strings.TrimPrefix(raw, prefix)))
-	if err != nil {
-		return authn.Principal{}, err
+	token := strings.TrimSpace(strings.TrimPrefix(raw, prefix))
+	p, err := s.Authn.AuthenticateToken(token)
+	if err == nil {
+		return p, nil
 	}
-	return p, nil
+	if uid, ok := authn.LabIdentityToolkitUID(token); ok {
+		return authn.Principal{Email: uid, IsRoot: false}, nil
+	}
+	if err == authn.ErrUnauthenticated {
+		return authn.Principal{}, status.Error(codes.Unauthenticated, "unauthenticated")
+	}
+	return authn.Principal{}, err
 }
 
 func (s *Service) require(ctx context.Context, permission, projectID string) (authn.Principal, error) {
@@ -84,6 +91,35 @@ func (s *Service) require(ctx context.Context, permission, projectID string) (au
 		return authn.Principal{}, status.Error(codes.PermissionDenied, "The caller does not have permission.")
 	}
 	return p, nil
+}
+
+func isIdentityToolkitUser(p authn.Principal) bool {
+	return !p.IsRoot && p.Email != "" && !strings.Contains(p.Email, "@")
+}
+
+func ownUsersDoc(path, uid string) bool {
+	return strings.HasSuffix(path, "/documents/users/"+uid)
+}
+
+func (s *Service) authorizeWrite(ctx context.Context, permission, projectID, path string) error {
+	p, err := s.principal(ctx)
+	if err != nil {
+		if err == authn.ErrUnauthenticated {
+			return status.Error(codes.Unauthenticated, "unauthenticated")
+		}
+		if st, ok := status.FromError(err); ok {
+			return st.Err()
+		}
+		return status.Error(codes.Unauthenticated, err.Error())
+	}
+	if isIdentityToolkitUser(p) {
+		if !ownUsersDoc(path, p.Email) {
+			return status.Error(codes.PermissionDenied, "The caller does not have permission.")
+		}
+		return nil
+	}
+	_, err = s.require(ctx, permission, projectID)
+	return err
 }
 
 func projectFromName(name string) (string, error) {
@@ -212,14 +248,14 @@ func (s *Service) CreateDocument(ctx context.Context, req *firestorepb.CreateDoc
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if _, err := s.require(ctx, "datastore.entities.create", projectID); err != nil {
-		return nil, err
-	}
 	docID := req.GetDocumentId()
 	if docID == "" {
 		docID = newDocID()
 	}
 	path := strings.TrimSuffix(parent, "/") + "/" + coll + "/" + docID
+	if err := s.authorizeWrite(ctx, "datastore.entities.create", projectID, path); err != nil {
+		return nil, err
+	}
 	if _, ok, err := s.Store.GetFirestoreDoc(path); err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	} else if ok {
@@ -251,7 +287,7 @@ func (s *Service) UpdateDocument(ctx context.Context, req *firestorepb.UpdateDoc
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if _, err := s.require(ctx, "datastore.entities.update", projectID); err != nil {
+	if err := s.authorizeWrite(ctx, "datastore.entities.update", projectID, doc.GetName()); err != nil {
 		return nil, err
 	}
 	existing, ok, err := s.Store.GetFirestoreDoc(doc.GetName())

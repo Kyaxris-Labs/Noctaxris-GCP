@@ -2,8 +2,11 @@
 
 Lab Access Context Manager REST for access policies and service perimeters.
 Optional enforce (`NOCTAXRIS_GCP_VPCSC_ENFORCE=1`) denies cross-perimeter GCS
-object upload/copy and Pub/Sub publish (including GCS notification fanout) when
-a perimeter restricts `storage.googleapis.com` / `pubsub.googleapis.com`.
+object upload/copy, Pub/Sub publish (including GCS notification fanout), and
+Cloud KMS `:decrypt` when a perimeter restricts `storage.googleapis.com` /
+`pubsub.googleapis.com` / `cloudkms.googleapis.com`. IAM Credentials
+(`generateAccessToken`, `signBlob`, `signJwt`) and STS are not
+perimeter-restricted.
 
 ## Status
 
@@ -47,6 +50,8 @@ Set `NOCTAXRIS_GCP_VPCSC_ENFORCE=1` (or `true`). Then:
   perimeter covers one side only and lists `storage.googleapis.com`
 - Pub/Sub publish denies when the caller SA project and topic project sit across
   such a perimeter for `pubsub.googleapis.com`
+- Cloud KMS `:decrypt` denies when the caller SA project and key project sit
+  across a perimeter that lists `cloudkms.googleapis.com`
 - GCS `notificationConfigs` fanout skips publish when bucket and topic projects
   cross a restricting perimeter
 - Dry-run-only perimeters (`spec` + `useExplicitDryRunSpec`, empty `status`)

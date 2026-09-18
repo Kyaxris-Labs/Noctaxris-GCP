@@ -15,10 +15,18 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "")
 	t.Setenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", "")
 	t.Setenv(config.EnvAllowNonLoopbackListen, "")
+	t.Setenv(config.EnvLabForensics, "")
+	t.Setenv(config.EnvLogsInject, "")
 
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.LabForensics {
+		t.Fatal("LabForensics must default off")
+	}
+	if cfg.LogsInject {
+		t.Fatal("LogsInject must default off")
 	}
 	if cfg.ListenAddr != config.DefaultListenAddr {
 		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, config.DefaultListenAddr)
@@ -130,6 +138,23 @@ func TestValidateListenSecurityNonLoopbackRequiresTLSOrOptIn(t *testing.T) {
 	cfg.AllowNonLoopbackListen = true
 	if err := config.ValidateListenSecurity(cfg); err != nil {
 		t.Fatalf("opt-in should allow: %v", err)
+	}
+}
+
+func TestLoadFromEnvLabForensicsAndLogsInject(t *testing.T) {
+	t.Setenv("NOCTAXRIS_GCP_LISTEN", "127.0.0.1:4588")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "")
+	t.Setenv(config.EnvLabForensics, "1")
+	t.Setenv(config.EnvLogsInject, "true")
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LabForensics {
+		t.Fatal("LabForensics")
+	}
+	if !cfg.LogsInject {
+		t.Fatal("LogsInject")
 	}
 }
 

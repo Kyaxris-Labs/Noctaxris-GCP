@@ -107,6 +107,12 @@ func (s *Store) migrate() error {
 	if err := s.MigrateAccessContextManager(); err != nil {
 		return err
 	}
+	if err := s.migrateLoggingRouting(); err != nil {
+		return err
+	}
+	if err := s.migrateLabExtras(); err != nil {
+		return err
+	}
 	if err := s.ensureDataColumns(); err != nil {
 		return err
 	}
@@ -337,6 +343,9 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 	}
 
 	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if err := s.EnsureDefaultLogRouting(projectID); err != nil {
 		return err
 	}
 	// Lab org is outside the project seed transaction so concurrent

@@ -23,6 +23,13 @@ Colon custom methods use literal path segments (`entries:write`, `entries:list`,
 | `GET` | `/v2/projects/{project}/sinks/{sink}` |
 | `PUT` / `PATCH` | `/v2/projects/{project}/sinks/{sink}` |
 | `DELETE` | `/v2/projects/{project}/sinks/{sink}` |
+| `GET` / `POST` | `/v2/projects/{project}/exclusions` |
+| `GET` / `DELETE` | `/v2/projects/{project}/exclusions/{exclusion}` |
+| `GET` | `/v2/projects/{project}/locations/{location}/buckets` |
+| `GET` | `/v2/projects/{project}/locations/{location}/buckets/{bucket}` |
+| `GET` / `POST` | `.../buckets/{bucket}/views` |
+| `GET` | `.../buckets/{bucket}/views/{view}` |
+| `POST` | `/_noctaxris-gcp/lab/logs:inject` |
 
 `{log}` is the log id (URL-decoded by the server). Full log name is `projects/{project}/logs/{log}`.
 
@@ -61,6 +68,11 @@ Store `name`, `destination`, `filter`, theatre `writerIdentity`, timestamps. No 
 | `severity=ERROR` / `severity="ERROR"` | Exact severity (case-insensitive) |
 | `timestamp>="..."` / `timestamp>"..."` | Inclusive/exclusive lower bound (string compare on stored RFC3339) |
 | `timestamp<"..."` / `timestamp<="..."` | Upper bound (`<=` treated as exclusive `<` in lab) |
+| `resource.type="http_load_balancer"` | Exact `resource.type` (also unquoted). Lab types include `http_load_balancer` (Armor `enforcedSecurityPolicy` / `previewSecurityPolicy` in `jsonPayload`), `cloud_run_revision`, `gce_subnetwork` (VPC Flow `connection` 5-tuple + `bytes_sent`), `cloudsql_database` (`PgAuditEntry.statement`), `dns_query` |
+
+`POST /_noctaxris-gcp/lab/logs:inject` writes non-CAL entries when `NOCTAXRIS_GCP_LOGS_INJECT=1` (Bearer root). CAL names must use `auditLogs:inject`. Cap 50. Sensitive JSON keys redact.
+
+Seeded routing: `_Required` sink keeps Admin Activity and cannot be patched or deleted. `_Default` can drop Data Access via an exclusion (`LOG_ID("cloudaudit.googleapis.com/data_access")`).
 
 Combined filters in one string are parsed when patterns appear. Other Logging query language operators are deferred.
 
@@ -84,6 +96,7 @@ Checked on `projects/{project}`:
 - Entries and sinks persist in SQLite; sinks do not export to destinations
 - `entries:tail` is one-shot (no streaming); `entries:copy` is a completed LRO with no byte export
 - Filter language is the documented subset only
+- `_Required` / `_Default` buckets and views are metadata theatre (no real export pipeline)
 
 ## Client configuration
 
@@ -107,7 +120,7 @@ Cloud Audit Logs inject and `cloudaudit.googleapis.com` list filters: [cloud-aud
 
 ## Deferred depth
 
-- Real sink export, log-based metrics, buckets/views, exclusions
+- Real sink export and log-based metrics (buckets/views/exclusions are metadata theatre)
 - Full query language, histogram APIs, streaming TailLogEntries
 - gRPC `LoggingServiceV2` (REST is the lab path; protos not wired in this module)
 

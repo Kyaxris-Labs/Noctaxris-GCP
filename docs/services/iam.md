@@ -101,12 +101,22 @@ optional `lifetime` (Duration ending in `s`, max 12h, default 1h), optional
 registers the token so Bearer auth becomes the target SA. Project may be `-`
 (Credentials-style) or a concrete project id.
 
+The same handler is also registered at
+`POST /iamcredentials.googleapis.com/v1/projects/{project}/serviceAccounts/{email}`
+(colon methods such as `:generateAccessToken`). Host
+`iamcredentials.googleapis.com` rewrites onto that path prefix on the shared
+listener.
+
 Authz uses `EvaluateAny` for `iam.serviceAccounts.getAccessToken` on the SA
 resource **or** the parent project. Bind
 `roles/iam.serviceAccountTokenCreator` on the target SA (or grant
 `getAccessToken` via `roles/owner` / an explicit project binding). Basic
 `roles/viewer` and `roles/editor` do **not** grant token impersonation. Root
 still bypasses.
+
+IAM Conditions on Token Creator bindings evaluate `request.time` against the
+lab clock (`NOCTAXRIS_GCP_LAB_FORENSICS` freeze/set). Denies stay generic
+(no condition dump). Bearer token expiry stays wall clock.
 
 ### Workload Identity Federation + STS
 

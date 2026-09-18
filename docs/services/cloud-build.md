@@ -29,6 +29,7 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 | `POST` | `/v1/projects/{p}/triggers/{id}:run` |
 | `POST`/`GET`/`DELETE` | `/v1/projects/{p}/locations/{loc}/triggers[/{id}]` (shared mux with Eventarc; body shape selects Cloud Build vs Eventarc on create) |
 | `POST` | `/v1/projects/{p}/locations/{loc}/triggers/{id}:run` |
+| `POST`/`GET` | `/v1/projects/{p}/locations/{loc}/workerPools[/{pool}]` |
 
 Triggers use classic project-scoped paths and regional `.../locations/.../triggers`.
 Regional create dispatches by body: Eventarc-shaped (`eventFilters` /
@@ -54,17 +55,23 @@ Checked on `projects/{project}`:
 
 `:run` requires `cloudbuild.builds.create`.
 
+Worker pools live in a host project. Create stores `NO_PUBLIC_EGRESS=true` on
+the pool. `createBuild` with `options.pool.name` requires
+`cloudbuild.workerpools.use` on that host project (not the caller project).
+Without a nested engine, builds remain status theatre (`WORKING` then `SUCCESS`
+on get) and echo substitutions / logs / `availableSecrets` when present on the body.
+
 ## Emulator limits
 
 - Steps are never executed; images are never pulled or pushed
 - `:run` creates a WORKING build theatre only (no SCM checkout, no webhook delivery)
-- No worker pools, approvals, or real SCM webhooks
+- No private-pool VM execution, approvals, or real SCM webhooks
 - Logs URL is a lab string only
 - Regional create shares the path with Eventarc (body-shape dispatch); list merges both inventories when authorized
 
 ## Deferred depth
 
-- Worker pools, private pools, and build approvals
+- Private-pool VM execution and build approvals
 - Real step execution, log streaming, and artifact upload to GCS/AR
 - SCM webhooks, GitHub/GitLab triggers, and source fetch
 - Build attestations and SLSA/provenance

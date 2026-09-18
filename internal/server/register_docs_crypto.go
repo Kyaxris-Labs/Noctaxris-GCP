@@ -32,6 +32,6 @@ func (s *Server) registerDocsCrypto() {
 	kmsSvc := &kms.Service{Store: s.store, Authz: s.authz}
 	kmsSvc.Mount(s.mux, principalFrom)
 
-	logSvc := &logging.Service{Store: s.store, Authz: s.authz}
+	logSvc := &logging.Service{Store: s.store, Authz: s.authz, Now: s.effectiveNow}
 	logSvc.Mount(s.mux, principalFrom)
 }

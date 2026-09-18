@@ -17,6 +17,11 @@ const (
 	DefaultListenAddr = "127.0.0.1:4588"
 	DefaultDataRoot   = "/var/lib/noctaxris-gcp"
 	DefaultProjectID  = "noctaxris-gcp-local"
+
+	// EnvLabForensics enables lab FreezeClock / UnfreezeClock / SetClock / BulkSeed.
+	EnvLabForensics = "NOCTAXRIS_GCP_LAB_FORENSICS"
+	// EnvLogsInject enables lab POST /_noctaxris-gcp/lab/logs:inject (non-CAL log planes).
+	EnvLogsInject = "NOCTAXRIS_GCP_LOGS_INJECT"
 )
 
 // Shipped docker/.env.example root pair. Refused when listen is non-loopback.
@@ -41,6 +46,10 @@ type Config struct {
 	DockerHost string
 	// DockerTLSCertPath is the directory with ca.pem, cert.pem, key.pem for engine TLS.
 	DockerTLSCertPath string
+	// LabForensics enables /_noctaxris-gcp/lab clock and BulkSeed routes (default off).
+	LabForensics bool
+	// LogsInject enables /_noctaxris-gcp/lab/logs:inject (default off).
+	LogsInject bool
 }
 
 // LoadFromEnv reads configuration from the process environment.
@@ -57,6 +66,8 @@ func LoadFromEnv() (Config, error) {
 		AllowNonLoopbackListen: envTruthy(EnvAllowNonLoopbackListen),
 		DockerHost:             getenv("NOCTAXRIS_GCP_DOCKER_HOST", ""),
 		DockerTLSCertPath:      getenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", ""),
+		LabForensics:           envTruthy(EnvLabForensics),
+		LogsInject:             envTruthy(EnvLogsInject),
 	}
 	if err := compute.ValidateDockerHost(cfg.DockerHost, cfg.DockerTLSCertPath); err != nil {
 		return Config{}, err

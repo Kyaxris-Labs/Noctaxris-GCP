@@ -21,8 +21,10 @@ import (
 
 // Service serves Cloud Logging v2 REST (lab subset).
 type Service struct {
-	Store *store.Store
-	Authz *authz.Evaluator
+	Store      *store.Store
+	Authz      *authz.Evaluator
+	Now        func() time.Time
+	LogsInject bool
 }
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
@@ -43,6 +45,15 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("PUT /v2/projects/{project}/sinks/{sink}", s.wrap(principalFrom, s.updateSink))
 	mux.HandleFunc("PATCH /v2/projects/{project}/sinks/{sink}", s.wrap(principalFrom, s.updateSink))
 	mux.HandleFunc("DELETE /v2/projects/{project}/sinks/{sink}", s.wrap(principalFrom, s.deleteSink))
+	mux.HandleFunc("GET /v2/projects/{project}/exclusions", s.wrap(principalFrom, s.listExclusions))
+	mux.HandleFunc("POST /v2/projects/{project}/exclusions", s.wrap(principalFrom, s.createExclusion))
+	mux.HandleFunc("GET /v2/projects/{project}/exclusions/{exclusion}", s.wrap(principalFrom, s.getExclusion))
+	mux.HandleFunc("DELETE /v2/projects/{project}/exclusions/{exclusion}", s.wrap(principalFrom, s.deleteExclusion))
+	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/buckets", s.wrap(principalFrom, s.listBuckets))
+	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/buckets/{bucket}", s.wrap(principalFrom, s.getBucket))
+	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/buckets/{bucket}/views", s.wrap(principalFrom, s.listViews))
+	mux.HandleFunc("POST /v2/projects/{project}/locations/{location}/buckets/{bucket}/views", s.wrap(principalFrom, s.createView))
+	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/buckets/{bucket}/views/{view}", s.wrap(principalFrom, s.getView))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -70,6 +81,13 @@ func (s *Service) require(p authn.Principal, permission, projectID string) error
 }
 
 var errDenied = fmt.Errorf("permission denied")
+
+func (s *Service) now() time.Time {
+	if s != nil && s.Now != nil {
+		return s.Now().UTC()
+	}
+	return time.Now().UTC()
+}
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -112,6 +130,8 @@ var (
 	reTimestampGT   = regexp.MustCompile(`(?i)timestamp\s*>\s*"([^"]+)"`)
 	reTimestampLT   = regexp.MustCompile(`(?i)timestamp\s*<\s*"([^"]+)"`)
 	reTimestampLTE  = regexp.MustCompile(`(?i)timestamp\s*<=\s*"([^"]+)"`)
+	reResourceTypeQ = regexp.MustCompile(`(?i)resource\.type\s*=\s*"([^"]+)"`)
+	reResourceType  = regexp.MustCompile(`(?i)resource\.type\s*=\s*([A-Za-z0-9_]+)`)
 )
 
 func (s *Service) writeEntries(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -124,7 +144,7 @@ func (s *Service) writeEntries(w http.ResponseWriter, r *http.Request, p authn.P
 		gcperrors.InvalidArgument(w, "entries is required")
 		return
 	}
-	now := time.Now().UTC()
+	now := s.now()
 	out := make([]store.LogEntry, 0, len(req.Entries))
 	for i, e := range req.Entries {
 		logName := e.LogName
@@ -400,6 +420,10 @@ func (s *Service) listSinks(w http.ResponseWriter, r *http.Request, p authn.Prin
 func (s *Service) updateSink(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	sinkID := r.PathValue("sink")
+	if sinkID == "_Required" {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "the _Required sink cannot be modified")
+		return
+	}
 	if err := s.require(p, "logging.sinks.update", project); err != nil {
 		writeAuthz(w, err)
 		return
@@ -441,6 +465,10 @@ func (s *Service) updateSink(w http.ResponseWriter, r *http.Request, p authn.Pri
 func (s *Service) deleteSink(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	sinkID := r.PathValue("sink")
+	if sinkID == "_Required" {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "the _Required sink cannot be deleted")
+		return
+	}
 	if err := s.require(p, "logging.sinks.delete", project); err != nil {
 		writeAuthz(w, err)
 		return
@@ -540,19 +568,87 @@ func mergeUniqueSorted(a, b []string) []string {
 }
 
 func (s *Service) queryEntries(projectID, filter string, pageSize, offset int) ([]store.LogEntry, error) {
-	exactLog, textContains, severity, tsGTE, tsLT := parseFilter(filter)
-	if wantsCloudAudit(exactLog, filter) {
-		return s.Store.ListCloudAuditAsLogEntries(store.ListCloudAuditFilter{
-			ProjectID: projectID, ExactLogName: exactLog,
-			TimestampGTE: tsGTE, TimestampLT: tsLT,
-			PageSize: pageSize, Offset: offset,
+	exactLog, textContains, severity, tsGTE, tsLT, resourceType := parseFilter(filter)
+	lf := store.ListLogEntriesFilter{
+		ProjectID: projectID, ExactLogName: exactLog, TextPayloadContain: textContains,
+		Severity: severity, TimestampGTE: tsGTE, TimestampLT: tsLT, ResourceType: resourceType,
+		PageSize: pageSize, Offset: offset,
+	}
+	cf := store.ListCloudAuditFilter{
+		ProjectID: projectID, ExactLogName: exactLog,
+		TimestampGTE: tsGTE, TimestampLT: tsLT, ResourceType: resourceType,
+		PageSize: pageSize, Offset: offset,
+	}
+	if wantsCloudAudit(exactLog, filter) && resourceType == "" {
+		entries, err := s.Store.ListCloudAuditAsLogEntries(cf)
+		if err != nil {
+			return nil, err
+		}
+		return s.applyExclusions(projectID, exactLog, entries)
+	}
+	entries, err := s.Store.ListLogEntries(lf)
+	if err != nil {
+		return nil, err
+	}
+	if wantsCloudAudit(exactLog, filter) || resourceType != "" {
+		cal, err := s.Store.ListCloudAuditAsLogEntries(cf)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, cal...)
+		sort.SliceStable(entries, func(i, j int) bool {
+			if entries[i].Timestamp == entries[j].Timestamp {
+				return entries[i].InsertID < entries[j].InsertID
+			}
+			return entries[i].Timestamp < entries[j].Timestamp
 		})
 	}
-	return s.Store.ListLogEntries(store.ListLogEntriesFilter{
-		ProjectID: projectID, ExactLogName: exactLog, TextPayloadContain: textContains,
-		Severity: severity, TimestampGTE: tsGTE, TimestampLT: tsLT,
-		PageSize: pageSize, Offset: offset,
-	})
+	return s.applyExclusions(projectID, exactLog, entries)
+}
+
+func (s *Service) applyExclusions(projectID, exactLog string, entries []store.LogEntry) ([]store.LogEntry, error) {
+	if exactLog != "" {
+		return entries, nil
+	}
+	excls, err := s.Store.ListLogExclusions(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if len(excls) == 0 {
+		return entries, nil
+	}
+	out := make([]store.LogEntry, 0, len(entries))
+	for _, e := range entries {
+		drop := false
+		for _, x := range excls {
+			if x.Disabled {
+				continue
+			}
+			if exclusionMatches(x.Filter, e) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+func exclusionMatches(filter string, e store.LogEntry) bool {
+	f := strings.ToLower(filter)
+	if strings.Contains(f, "data_access") && strings.Contains(strings.ToLower(e.LogName), "data_access") {
+		return true
+	}
+	if m := reResourceTypeQ.FindStringSubmatch(filter); len(m) == 2 {
+		var res struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal([]byte(e.ResourceJSON), &res)
+		return res.Type == m[1]
+	}
+	return false
 }
 
 func entriesToMaps(entries []store.LogEntry) []map[string]any {
@@ -601,21 +697,19 @@ func projectFromListReq(req listReq) (string, error) {
 	return "", fmt.Errorf("resourceNames or projectIds is required")
 }
 
-func parseFilter(filter string) (exactLogName, textContains, severity, timestampGTE, timestampLT string) {
+func parseFilter(filter string) (exactLogName, textContains, severity, timestampGTE, timestampLT, resourceType string) {
 	filter = strings.TrimSpace(filter)
 	if filter == "" {
-		return "", "", "", "", ""
+		return "", "", "", "", "", ""
 	}
 	if m := reLogNameExact.FindStringSubmatch(filter); len(m) == 2 {
-		return m[1], "", "", "", ""
-	}
-	if m := reTextContains.FindStringSubmatch(filter); len(m) == 2 {
-		return "", m[1], "", "", ""
-	}
-	if m := reLogNameEq.FindStringSubmatch(filter); len(m) == 2 {
+		exactLogName = m[1]
+	} else if m := reLogNameEq.FindStringSubmatch(filter); len(m) == 2 {
 		exactLogName = m[1]
 	}
-	if m := reTextColon.FindStringSubmatch(filter); len(m) == 2 {
+	if m := reTextContains.FindStringSubmatch(filter); len(m) == 2 {
+		textContains = m[1]
+	} else if m := reTextColon.FindStringSubmatch(filter); len(m) == 2 {
 		textContains = m[1]
 	}
 	if m := reSeverityExact.FindStringSubmatch(filter); len(m) == 2 {
@@ -632,7 +726,12 @@ func parseFilter(filter string) (exactLogName, textContains, severity, timestamp
 		// Lab lite: <= uses the same exclusive upper bound as < (equal timestamps excluded).
 		timestampLT = m[1]
 	}
-	return exactLogName, textContains, severity, timestampGTE, timestampLT
+	if m := reResourceTypeQ.FindStringSubmatch(filter); len(m) == 2 {
+		resourceType = m[1]
+	} else if m := reResourceType.FindStringSubmatch(filter); len(m) == 2 {
+		resourceType = m[1]
+	}
+	return exactLogName, textContains, severity, timestampGTE, timestampLT, resourceType
 }
 
 func projectFromLogName(logName string) (string, error) {

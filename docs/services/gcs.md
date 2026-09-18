@@ -25,6 +25,8 @@ Noctaxris-GCP (`127.0.0.1:4588` by default).
 | Media PUT (lab) | `PUT /upload/storage/v1/b/{bucket}/o?uploadType=media&name=` (signed URL uploads) |
 | Download | `GET .../o/{object}?alt=media` |
 | V4 signed URL | `POST .../o/{object}:generateSignedUrl` + verify query signature on GET/PUT |
+| HMAC keys | `POST` / `GET` / `DELETE /storage/v1/projects/{project}/hmacKeys[/{accessId}]` (`storage.hmacKeys.*`) |
+| XML API | `GET` / `PUT /storage/xml/{bucket}[/{object}]` with `Authorization: GOOG4-HMAC-SHA256`; list supports `?versions=true` |
 | Versioning | Each write creates a new generation; list/get default to latest |
 
 Object bytes live under `$NOCTAXRIS_GCP_DATA_ROOT/gcs/{bucket}/...`. Metadata is in SQLite (`buckets`, `objects`, `gcs_notification_configs`).
@@ -82,6 +84,16 @@ omit `Authorization`. The GCS handler verifies the signature (host, path, method
 expiry) fail-closed before serving GET media or PUT media upload. Official Cloud
 Storage signed URLs target the XML API; this lab verifies on the JSON/upload paths
 returned by `:generateSignedUrl`.
+
+### XML HMAC (lab)
+
+JSON HMAC key CRUD (`kind=storage#hmacKey` / `storage#hmacKeysMetadata`) returns
+`accessId` and `secret` once on create. XML List/Get/Put under `/storage/xml/`
+require header `Authorization: GOOG4-HMAC-SHA256 Credential=...` plus `x-goog-date`.
+Signature skew uses wall clock. The HMAC principal (`hmac:{accessId}`) authenticates
+the XML API only and cannot mint OAuth tokens or call IAM.
+
+Host `storage.googleapis.com` rewrites onto `/storage/xml/...` on the shared listener.
 
 ## Emulator limits
 
@@ -151,7 +163,6 @@ Also: `go test ./internal/services/gcs/ ./internal/store/ -run 'GCS|Signed|Reten
 
 - RSA (GOOG4-RSA-SHA256) signed URLs via IAM signBlob
 - Multi-chunk resumable resume / status queries
-- User-managed HMAC key CRUD
 - Autoclass, soft delete, event-based / temporary hold, per-object retention
 - Object-level IAM and uniform bucket-level access edge cases
 - GCS service-agent `pubsub.topics.publish` fail-closed on notification deliver

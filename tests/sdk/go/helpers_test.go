@@ -120,6 +120,20 @@ func truthyEnv(name string) bool {
 	return v == "1" || strings.EqualFold(v, "true")
 }
 
+func requireLabForensics(t *testing.T) {
+	t.Helper()
+	if !truthyEnv("NOCTAXRIS_GCP_LAB_FORENSICS") {
+		t.Skip("NOCTAXRIS_GCP_LAB_FORENSICS unset; soft-skip lab clock/BulkSeed smoke")
+	}
+}
+
+func requireLogsInject(t *testing.T) {
+	t.Helper()
+	if !truthyEnv("NOCTAXRIS_GCP_LOGS_INJECT") {
+		t.Skip("NOCTAXRIS_GCP_LOGS_INJECT unset; soft-skip Logging inject smoke")
+	}
+}
+
 func grpcDialTarget(ep string) string {
 	u, err := url.Parse(ep)
 	if err != nil || u.Host == "" {

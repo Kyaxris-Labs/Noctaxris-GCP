@@ -18,7 +18,7 @@ func (s *Server) registerCloudAudit() {
 	principalFrom := func(r *http.Request) (authn.Principal, bool) {
 		return PrincipalFromContext(r.Context())
 	}
-	logSvc := &logging.Service{Store: s.store, Authz: s.authz}
+	logSvc := &logging.Service{Store: s.store, Authz: s.authz, Now: s.effectiveNow, LogsInject: s.cfg.LogsInject}
 	logSvc.MountLab(s.mux, principalFrom, s.cfg.ProjectID)
 
 	if s.audit != nil {

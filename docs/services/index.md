@@ -6,29 +6,29 @@ with honest emulator limits on each page.
 | Service | Status | Doc | Protocol |
 |---------|--------|-----|----------|
 | Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects, org seed, folders, tag keys/bindings lite |
-| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys, WIF pool/provider + STS `/v1/token`, TokenCreator `generateAccessToken` |
+| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys, WIF pool/provider + STS `/v1/token`, TokenCreator `generateAccessToken` (including `iamcredentials.googleapis.com` alias) |
 | Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable |
 | Organization Policy | lab | [orgpolicy.md](orgpolicy.md) | REST v2 policies get/set/list; boolean constraints theatre (SA keys + GCS public IAM) |
-| Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL; bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
+| Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL + XML HMAC List/Get/Put; bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
 | Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST topics/subscriptions/snapshots; dead-letter + exactly-once; push `oidcToken` Bearer JWT (`PUBSUB_EMULATOR_HOST`) |
 | Secret Manager | lab | [secret-manager.md](secret-manager.md) | REST + gRPC; rotation config + lab `:rotateSecret` |
-| Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1; atomic Commit + BatchWrite (`FIRESTORE_EMULATOR_HOST`) |
-| Cloud KMS | lab | [kms.md](kms.md) | REST v1 symmetric + RSA_SIGN_PSS sign/verify |
-| Cloud Logging | lab | [logging.md](logging.md) | REST v2 entries, sinks, one-shot tail, copy theatre |
-| Cloud Audit Logs | lab (theatre) | [cloud-audit-logs.md](cloud-audit-logs.md) | Env-gated inject + listable `protoPayload` lite via Logging `entries:list` |
+| Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1; atomic Commit + BatchWrite; Identity Toolkit users write only `users/{uid}` (`FIRESTORE_EMULATOR_HOST`) |
+| Cloud KMS | lab | [kms.md](kms.md) | REST v1 symmetric + RSA_SIGN_PSS sign/verify; optional VPC-SC on `:decrypt` |
+| Cloud Logging | lab | [logging.md](logging.md) | REST v2 entries, sinks, exclusions/views lite, `resource.type` list filter, lab logs inject |
+| Cloud Audit Logs | lab (theatre) | [cloud-audit-logs.md](cloud-audit-logs.md) | Env-gated inject + lab clock/BulkSeed; listable `protoPayload` lite via Logging `entries:list` |
 | Security Command Center | lab | [security-command-center.md](security-command-center.md) | Sources/findings CRUD lite; lab InjectFindings (`NOCTAXRIS_GCP_SCC_INJECT`) |
 | Cloud Asset Inventory | lab (theatre) | [cloud-asset-inventory.md](cloud-asset-inventory.md) | searchAllResources / listAssets / exportAssets lite over store resources; feeds + history |
-| Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke` status/delay; opt-in nested fail-closed |
-| Cloud Functions | lab | [cloud-functions.md](cloud-functions.md) | REST Functions v2, upload URL + source accept, IAM, `:invoke` stub |
+| Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke`; Binary Authorization admit; IMDS metadata |
+| Cloud Functions | lab | [cloud-functions.md](cloud-functions.md) | REST Functions v2, upload/download URL + source accept, IAM, `:invoke` stub |
 | Cloud Scheduler | lab | [cloud-scheduler.md](cloud-scheduler.md) | REST v1 jobs, 5-field cron next-run, pause/resume, OIDC audience |
 | Cloud Tasks | lab | [cloud-tasks.md](cloud-tasks.md) | REST v2 queues/tasks, rate limits, retry, App Engine fields, `:run` |
 | BigQuery | lab | [bigquery.md](bigquery.md) | REST v2 datasets/tables, insertAll, tabledata.list, jobs.query (GROUP BY / UNION / INFORMATION_SCHEMA) |
-| Firebase Auth | lab | [firebase-auth.md](firebase-auth.md) | Identity Toolkit REST, OOB reset, claims, verifyIdToken |
+| Firebase Auth | lab | [firebase-auth.md](firebase-auth.md) | Identity Toolkit REST, OOB reset, claims, verifyIdToken, v2 tenants |
 | Cloud Monitoring | lab | [monitoring.md](monitoring.md) | REST v3 descriptors, time series, alertPolicies theatre |
 | Cloud Datastore | lab | [datastore.md](datastore.md) | gRPC Datastore v1 (`DATASTORE_EMULATOR_HOST`) |
 | Eventarc | lab | [eventarc.md](eventarc.md) | REST v1 triggers/channels; Pub/Sub and GCS delivery + retry |
 | Artifact Registry | lab | [artifact-registry.md](artifact-registry.md) | REST v1 repos/packages/versions metadata (no blobs) |
-| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild theatre with step statuses + triggers CRUD lite |
+| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild theatre with step statuses + triggers CRUD lite + worker pools |
 | Workflows | lab | [workflows.md](workflows.md) | REST v1 workflows CRUD + executions SUCCEEDED theatre |
 | Cloud Spanner | lab | [spanner.md](spanner.md) | REST v1 instances/databases; session commit insert + ExecuteSql/Read rows |
 | App Engine | lab | [app-engine.md](app-engine.md) | REST Admin API v1 apps/services/versions (control-plane theatre) |
@@ -46,7 +46,7 @@ with honest emulator limits on each page.
 | GKE | lab | [gke.md](gke.md) | Container API v1 clusters CRUD; optional k3s one-shot with nested engine |
 | HTTP(S) load balancing | lab | [load-balancing.md](load-balancing.md) | Global LB metadata + public `/lb/{project}/{rule}/...` GCS dataplane |
 | Cloud CDN | lab | [cloud-cdn.md](cloud-cdn.md) | Distributions CRUD + public `/cdn/{id}/...` edge |
-| Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC cross-perimeter deny on GCS/Pub/Sub |
+| Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC cross-perimeter deny on GCS/Pub/Sub/KMS decrypt |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 Seeded organization: `organizations/noctaxris-gcp-org`.

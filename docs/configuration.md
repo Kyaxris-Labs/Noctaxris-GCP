@@ -24,8 +24,10 @@ All settings use the `NOCTAXRIS_GCP_*` prefix.
 | `NOCTAXRIS_GCP_HTTP_ALLOWLIST` | empty | Comma-separated exact HTTP(S) URLs allowed when egress is on. Listed URLs still reject private, loopback, link-local, and metadata hosts; delivery does not follow redirects. Ignored when egress is off. For STS verify, allowlist both the OIDC discovery URL and `jwks_uri` (exact match). |
 | `NOCTAXRIS_GCP_STS_VERIFY` | empty (off) | Set to `1` or `true` to fail-closed verify WIF STS `subject_token` as RS256 JWT when the provider has `issuerUri` (JWKS/discovery via `httpegress`). Default off keeps any non-empty token theatre so unit tests and smoke stay green. Empty `issuerUri` stays theatre even when verify is on. Built-in issuer `http://127.0.0.1:4588/_noctaxris-gcp/oidc-lab` (discovery + JWKS on the lab listener) needs no egress allowlist on loopback. |
 | `NOCTAXRIS_GCP_AUDIT_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/auditLogs:inject` (still requires Bearer root). Default off returns `PERMISSION_DENIED`. See [services/cloud-audit-logs.md](services/cloud-audit-logs.md). |
+| `NOCTAXRIS_GCP_LAB_FORENSICS` | empty (off) | Set to `1` or `true` to enable `POST /_noctaxris-gcp/lab/clock:freeze`, `:unfreeze`, `:set`, and `POST /_noctaxris-gcp/lab/bulkSeed` (Bearer root). Audit and log timestamps use the lab clock. Bearer token expiry and HMAC or signature skew stay wall clock. See [services/cloud-audit-logs.md](services/cloud-audit-logs.md). |
+| `NOCTAXRIS_GCP_LOGS_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/logs:inject` for non-CAL log planes (Bearer root). Default off returns `PERMISSION_DENIED`. See [services/logging.md](services/logging.md). |
 | `NOCTAXRIS_GCP_SCC_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/securitycenter:injectFindings`. Default off returns PermissionDenied. |
-| `NOCTAXRIS_GCP_VPCSC_ENFORCE` | empty (off) | Set to `1` or `true` to deny cross-perimeter GCS upload/copy and Pub/Sub publish when a service perimeter restricts those APIs (dry-run `spec` included). Default off keeps Access Context Manager CRUD theatre only. See [services/access-context-manager.md](services/access-context-manager.md). |
+| `NOCTAXRIS_GCP_VPCSC_ENFORCE` | empty (off) | Set to `1` or `true` to deny cross-perimeter GCS upload/copy, Pub/Sub publish, and Cloud KMS decrypt when a service perimeter restricts those APIs (dry-run `spec` included). IAM Credentials `generateAccessToken` / `signBlob` / `signJwt` and STS are not perimeter-restricted. Default off keeps Access Context Manager CRUD theatre only. See [services/access-context-manager.md](services/access-context-manager.md). |
 
 EnsureRoot also seeds lab organization `organizations/noctaxris-gcp-org` (folders
 CRUD lite attaches under that parent). See [services/resourcemanager.md](services/resourcemanager.md).
@@ -215,6 +217,8 @@ soft-skip when `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is unset. Unit tests
 | `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` | Bearer for authenticated SDK/Terraform cases |
 | `NOCTAXRIS_GCP_PROJECT` | Optional; defaults to `noctaxris-gcp-local` |
 | `NOCTAXRIS_GCP_NESTED` | Optional; set to `1` when running `tests/run-all.sh` so nested/DinD-oriented SDK rows stay enabled (still soft-skip without a healthy engine) |
+| `NOCTAXRIS_GCP_LAB_FORENSICS` | Optional live smoke for clock/BulkSeed; unset skips those rows |
+| `NOCTAXRIS_GCP_LOGS_INJECT` | Optional live smoke for Logging inject; unset skips those rows |
 
 ```bash
 export NOCTAXRIS_GCP_ENDPOINT=http://127.0.0.1:4588

@@ -21,6 +21,7 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 |--------|------|
 | `POST` | `/v2/projects/{p}/locations/{loc}/functions?functionId=` |
 | `POST` | `/v2/projects/{p}/locations/{loc}/functions:generateUploadUrl` |
+| `POST` | `/v2/projects/{p}/locations/{loc}/functions/{fn}:generateDownloadUrl` |
 | `PUT`/`POST` | `/v2/projects/{p}/locations/{loc}/functions:upload/{uploadId}` |
 | `GET` | `/v2/projects/{p}/locations/{loc}/functions` |
 | `GET` | `/v2/projects/{p}/locations/{loc}/functions/{fn}` |
@@ -34,6 +35,10 @@ Optional request field `labResponse` (object or string) sets the invoke body. `b
 `generateUploadUrl` returns a lab `uploadUrl` and `storageSource` object names.
 `PUT`/`POST` to `uploadUrl` accepts body bytes (theatre; not executed) and
 activates matching `DEPLOYING` functions.
+
+`:generateDownloadUrl` requires `cloudfunctions.functions.sourceCodeGet` and
+returns a lab `downloadUrl` plus stored `storageSource` (or a default zip object
+name).
 
 ### Event triggers
 
@@ -57,6 +62,7 @@ for that path).
 Checked on `projects/{project}` for control-plane actions:
 
 - `cloudfunctions.functions.create|get|list|update|delete|getIamPolicy|setIamPolicy`
+- `cloudfunctions.functions.sourceCodeGet` for `:generateDownloadUrl`
 
 `:invoke` uses `EvaluateAny` on the **function resource** and the project
 (`cloudfunctions.functions.invoke`). A non-root principal with only

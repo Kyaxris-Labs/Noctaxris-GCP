@@ -110,6 +110,9 @@ func IsPublicPath(raw string) bool {
 		if strings.HasPrefix(path, "/_noctaxris-gcp/oidc-lab/.well-known/") {
 			return true
 		}
+		if strings.HasPrefix(path, "/computeMetadata/v1") {
+			return true
+		}
 		return false
 	}
 }

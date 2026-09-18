@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Policy is a Google IAM Policy allow document (bindings only for lab depth).
@@ -14,8 +15,16 @@ type Policy struct {
 
 // Binding maps a role to members.
 type Binding struct {
-	Role    string   `json:"role"`
-	Members []string `json:"members"`
+	Role      string   `json:"role"`
+	Members   []string `json:"members"`
+	Condition *Expr    `json:"condition,omitempty"`
+}
+
+// Expr is a Google IAM condition (CEL subset in this lab).
+type Expr struct {
+	Expression  string `json:"expression,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // PolicyStore loads IAM policies by resource name.
@@ -42,6 +51,8 @@ type Evaluator struct {
 	Policies PolicyStore
 	Roles    RoleStore
 	Parents  CRMParentStore // optional; when set, project/folder Evaluate walks CRM ancestry
+	// Now is the lab clock for IAM condition request.time. Nil uses wall UTC.
+	Now func() time.Time
 }
 
 // Evaluate returns true when principal may perform permission on resource.
@@ -97,6 +108,9 @@ func (e *Evaluator) evaluateOnResource(principalEmail, permission, resource stri
 		if !memberIn(b.Members, member) {
 			continue
 		}
+		if !e.conditionAllows(b) {
+			continue
+		}
 		ok, err := e.roleGrants(b.Role, permission)
 		if err != nil {
 			return false, err
@@ -106,6 +120,17 @@ func (e *Evaluator) evaluateOnResource(principalEmail, permission, resource stri
 		}
 	}
 	return false, nil
+}
+
+func (e *Evaluator) conditionAllows(b Binding) bool {
+	if b.Condition == nil || strings.TrimSpace(b.Condition.Expression) == "" {
+		return true
+	}
+	now := time.Now().UTC()
+	if e != nil && e.Now != nil {
+		now = e.Now().UTC()
+	}
+	return evalRequestTimeCEL(b.Condition.Expression, now)
 }
 
 // resourcePolicyChain returns the resource then its project parent when nested.
@@ -281,6 +306,8 @@ func (e *Evaluator) roleGrants(role, permission string) (bool, error) {
 		return permission == "run.routes.invoke", nil
 	case "roles/cloudfunctions.invoker":
 		return permission == "cloudfunctions.functions.invoke", nil
+	case "roles/cloudbuild.workerPoolUser":
+		return permission == "cloudbuild.workerpools.use" || permission == "cloudbuild.workerpools.get", nil
 	default:
 		if isCustomRoleName(role) {
 			if e == nil || e.Roles == nil {
@@ -345,6 +372,63 @@ var labPredefinedServicePrefixes = map[string]bool{
 	"serviceusage":         true,
 	"accesscontextmanager": true,
 	"cloudasset":           true,
+	"cloudbuild":           true,
+	"containeranalysis":    true,
+	"binaryauthorization":  true,
+	"firebaseauth":         true,
+	"identitytoolkit":      true,
+}
+
+func evalRequestTimeCEL(expr string, now time.Time) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return true
+	}
+	parts := strings.Split(expr, "&&")
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if !evalRequestTimeClause(p, now) {
+			return false
+		}
+	}
+	return true
+}
+
+func evalRequestTimeClause(clause string, now time.Time) bool {
+	clause = strings.TrimSpace(clause)
+	ops := []string{"<=", ">=", "<", ">"}
+	for _, op := range ops {
+		needle := "request.time " + op + " timestamp("
+		idx := strings.Index(strings.ToLower(clause), strings.ToLower(needle))
+		if idx < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(clause[idx+len(needle):])
+		rest = strings.TrimPrefix(rest, `"`)
+		end := strings.Index(rest, `"`)
+		if end <= 0 {
+			return false
+		}
+		raw := rest[:end]
+		ts, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			ts, err = time.Parse(time.RFC3339Nano, raw)
+			if err != nil {
+				return false
+			}
+		}
+		switch op {
+		case "<":
+			return now.Before(ts)
+		case ">":
+			return now.After(ts)
+		case "<=":
+			return now.Before(ts) || now.Equal(ts)
+		case ">=":
+			return now.After(ts) || now.Equal(ts)
+		}
+	}
+	return false
 }
 
 // tokenCreatorGrants mirrors roles/iam.serviceAccountTokenCreator (impersonation).

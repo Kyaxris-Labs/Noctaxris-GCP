@@ -49,6 +49,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	h.MountRoles(mux)
 	h.MountWIF(mux)
 	h.MountSTS(mux)
+	mux.HandleFunc("POST /iamcredentials.googleapis.com/v1/projects/{project}/serviceAccounts/{account}", h.serviceAccountPost)
 }
 
 func (h *Handler) principal(r *http.Request) (authn.Principal, bool) {

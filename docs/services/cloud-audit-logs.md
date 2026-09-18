@@ -15,6 +15,8 @@ Cloud Audit Logs / Admin Activity export pipeline.
 | Method | Path | Notes |
 |--------|------|-------|
 | `POST` | `/_noctaxris-gcp/lab/auditLogs:inject` | Lab-only; env-gated; Bearer root |
+| `POST` | `/_noctaxris-gcp/lab/clock:freeze` / `:unfreeze` / `:set` | Lab clock; `NOCTAXRIS_GCP_LAB_FORENSICS`; Bearer root |
+| `POST` | `/_noctaxris-gcp/lab/bulkSeed` | Scenario packs (`suspicious-login`, `s3-data-exfil`, `crypto-mining`) |
 | `POST` | `/v2/entries:list` | Filter `logName="projects/.../logs/cloudaudit.googleapis.com%2Factivity"` (also `data_access` / `system_event`) |
 | `GET` | `/v2/projects/{project}/logs` | Includes distinct CAL log names |
 
@@ -56,6 +58,10 @@ Inject is refused unless **both**:
 2. Bearer root (`IsRoot`)
 
 Unset env or non-root Bearer returns `PERMISSION_DENIED`.
+
+Injected rows without `timestamp` use the lab clock (`NOCTAXRIS_GCP_LAB_FORENSICS` freeze/set). Bearer token expiry stays wall clock.
+
+Sensitive keys in `protoPayload` (`password`, `secret`, `token`, …) are stored as `[REDACTED]`. Cap 50 entries per request.
 
 ### Live audit mirror
 

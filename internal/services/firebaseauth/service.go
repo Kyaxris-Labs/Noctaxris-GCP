@@ -45,6 +45,11 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/projects/{project}/accounts:createCustomToken", s.wrap(principalFrom, s.createCustomToken))
 	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/projects/{project}/accounts:setCustomUserClaims", s.wrap(principalFrom, s.setCustomUserClaims))
 	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v1/projects/{project}/accounts:verifyIdToken", s.wrap(principalFrom, s.verifyIdToken))
+
+	mux.HandleFunc("POST /identitytoolkit.googleapis.com/v2/projects/{project}/tenants", s.wrap(principalFrom, s.createTenant))
+	mux.HandleFunc("GET /identitytoolkit.googleapis.com/v2/projects/{project}/tenants", s.wrap(principalFrom, s.listTenants))
+	mux.HandleFunc("GET /identitytoolkit.googleapis.com/v2/projects/{project}/tenants/{tenant}", s.wrap(principalFrom, s.getTenant))
+	mux.HandleFunc("PATCH /identitytoolkit.googleapis.com/v2/projects/{project}/tenants/{tenant}", s.wrap(principalFrom, s.patchTenant))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -238,6 +243,7 @@ func (s *Service) signUp(w http.ResponseWriter, r *http.Request, _ authn.Princip
 		DisplayName       string `json:"displayName"`
 		ReturnSecureToken bool   `json:"returnSecureToken"`
 		TargetProjectID   string `json:"targetProjectId"`
+		TenantID          string `json:"tenantId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")
@@ -248,6 +254,21 @@ func (s *Service) signUp(w http.ResponseWriter, r *http.Request, _ authn.Princip
 		return
 	}
 	project := s.projectFromBody(r, body.TargetProjectID)
+	if body.TenantID != "" {
+		t, ok, err := s.Store.GetIdentityTenant(project, body.TenantID)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !ok {
+			gcperrors.NotFound(w, "tenant not found")
+			return
+		}
+		if !t.AllowPasswordSignup {
+			gcperrors.InvalidArgument(w, "admin-restricted-operation")
+			return
+		}
+	}
 	hash, err := hashPassword(body.Password)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -255,7 +276,7 @@ func (s *Service) signUp(w http.ResponseWriter, r *http.Request, _ authn.Princip
 	}
 	u, created, err := s.Store.CreateFirebaseUser(store.FirebaseUser{
 		LocalID: uuid.NewString(), ProjectID: project, Email: body.Email,
-		PasswordHash: hash, DisplayName: body.DisplayName,
+		PasswordHash: hash, DisplayName: body.DisplayName, TenantID: body.TenantID,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -832,3 +853,105 @@ func writeAuthz(w http.ResponseWriter, err error) {
 	}
 	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 }
+
+func tenantJSON(t *store.IdentityTenant) map[string]any {
+	return map[string]any{
+		"name":                t.Name,
+		"displayName":         t.DisplayName,
+		"allowPasswordSignup": t.AllowPasswordSignup,
+		"createTime":          t.CreatedAt,
+	}
+}
+
+func (s *Service) createTenant(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "identitytoolkit.tenants.create", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	tenantID := r.URL.Query().Get("tenantId")
+	var body struct {
+		DisplayName         string `json:"displayName"`
+		AllowPasswordSignup *bool  `json:"allowPasswordSignup"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if tenantID == "" {
+		tenantID = uuid.NewString()
+	}
+	allow := true
+	if body.AllowPasswordSignup != nil {
+		allow = *body.AllowPasswordSignup
+	}
+	t, created, err := s.Store.CreateIdentityTenant(store.IdentityTenant{
+		ProjectID: project, TenantID: tenantID, DisplayName: body.DisplayName, AllowPasswordSignup: allow,
+	})
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !created {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "tenant already exists")
+		return
+	}
+	writeJSON(w, http.StatusOK, tenantJSON(t))
+}
+
+func (s *Service) listTenants(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "identitytoolkit.tenants.list", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	list, err := s.Store.ListIdentityTenants(project)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	items := make([]map[string]any, 0, len(list))
+	for i := range list {
+		items = append(items, tenantJSON(&list[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tenants": items})
+}
+
+func (s *Service) getTenant(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "identitytoolkit.tenants.get", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	t, ok, err := s.Store.GetIdentityTenant(project, r.PathValue("tenant"))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "tenant not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, tenantJSON(t))
+}
+
+func (s *Service) patchTenant(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "identitytoolkit.tenants.update", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
+	var body struct {
+		DisplayName         *string `json:"displayName"`
+		AllowPasswordSignup *bool   `json:"allowPasswordSignup"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	t, ok, err := s.Store.PatchIdentityTenant(project, r.PathValue("tenant"), body.AllowPasswordSignup, body.DisplayName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "tenant not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, tenantJSON(t))
+}
+

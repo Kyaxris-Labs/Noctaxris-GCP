@@ -70,6 +70,11 @@ Checked on `projects/{project}`:
 - `cloudkms.cryptoKeys.create|get|list|update|getIamPolicy|setIamPolicy`
 - `cloudkms.cryptoKeyVersions.get|list|useToEncrypt|useToDecrypt|useToSign|viewPublicKey|destroy|restore`
 
+When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, `:decrypt` also checks VPC Service
+Controls for `cloudkms.googleapis.com` (caller SA project vs key project). Encrypt
+and IAM Credentials / STS are not perimeter-restricted. See
+[access-context-manager.md](access-context-manager.md).
+
 ## Client configuration
 
 No official `*_EMULATOR_HOST` for KMS. Point the SDK with `WithEndpoint`:

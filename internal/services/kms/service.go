@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -551,6 +552,18 @@ func (s *Service) encrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
 	if err := s.require(p, "cloudkms.cryptoKeyVersions.useToDecrypt", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	from := store.ProjectIDFromServiceAccountEmail(p.Email)
+	if from == "" {
+		from = project
+	}
+	if err := s.Store.VPCSCDenyCrossPerimeter(from, project, "cloudkms.googleapis.com"); err != nil {
+		if errors.Is(err, store.ErrVPCSCPerimeter) {
+			gcperrors.PermissionDenied(w, err.Error())
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
 	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)

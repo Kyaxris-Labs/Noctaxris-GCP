@@ -6,7 +6,9 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/appengine"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/artifactregistry"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/binaryauthorization"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/cloudbuild"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/containeranalysis"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/spanner"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/workflows"
 )
@@ -23,6 +25,12 @@ func (s *Server) registerAppsBuild() {
 
 	cb := &cloudbuild.Service{Store: s.store, Authz: s.authz}
 	cb.Mount(s.mux, principalFrom)
+
+	ca := &containeranalysis.Service{Store: s.store, Authz: s.authz}
+	ca.Mount(s.mux, principalFrom)
+
+	ba := &binaryauthorization.Service{Store: s.store, Authz: s.authz}
+	ba.Mount(s.mux, principalFrom)
 
 	wf := &workflows.Service{Store: s.store, Authz: s.authz}
 	wf.Mount(s.mux, principalFrom)
