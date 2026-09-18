@@ -92,7 +92,8 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
 ## Outbound HTTP (SSRF fail-closed)
 
 - Pub/Sub push, Eventarc `httpEndpoint`, Cloud Tasks `httpRequest`,
-  Scheduler `httpTarget`, and STS OIDC JWKS/discovery fetches are deny-by-default.
+  Scheduler `httpTarget`, STS OIDC JWKS/discovery fetches, and Cloud Build
+  private-pool step http(s) URLs are deny-by-default.
 - Allowed without opt-in: lab HTTP catcher
   `http://127.0.0.1:4588/_noctaxris-gcp/http-catcher...`, loopback
   `/_noctaxris-gcp/oidc-lab/.well-known/...`, and other loopback `:4588`

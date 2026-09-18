@@ -113,7 +113,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>IAM</td>
-      <td>Service accounts/keys; WIF pool/provider CRUD + PATCH <code>oidc.allowedAudiences</code>; STS <code>POST /v1/token</code> (theatre default; opt-in RS256 verify + lab <code>oidc-lab</code> issuer); TokenCreator <code>generateAccessToken</code> (including <code>iamcredentials.googleapis.com</code> alias); <code>request.time</code> CEL on lab clock; project custom roles CRUD + <code>:undelete</code>; allow-policy Evaluate + <code>testIamPermissions</code>; optional Org Policy deny on key create.</td>
+      <td>Service accounts/keys; WIF pool/provider CRUD + PATCH <code>oidc.allowedAudiences</code>; STS <code>POST /v1/token</code> (theatre default; opt-in RS256 verify + lab <code>oidc-lab</code> issuer; STS unrestricted under VPC-SC); TokenCreator <code>generateAccessToken</code> / <code>signBlob</code> / <code>signJwt</code> (including <code>iamcredentials.googleapis.com</code> alias; optional VPC-SC); <code>request.time</code> CEL on lab clock; project custom roles CRUD + <code>:undelete</code>; allow-policy Evaluate + <code>testIamPermissions</code>; optional Org Policy deny on key create.</td>
       <td>Third-party OIDC issuers outside lab <code>oidc-lab</code> + egress-gated JWKS; org custom roles; PKCS#1 signBlob.</td>
     </tr>
     <tr>
@@ -242,8 +242,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud Build</td>
-      <td>createBuild theatre + triggers CRUD lite; private worker pools are control-plane theatre (<code>cloudbuild.workerpools.use</code> on host project; no nested pool VMs); shared regional triggers mux with Eventarc.</td>
-      <td>Step execution; image pull/push; SCM checkout; nested private-pool VMs.</td>
+      <td>createBuild nested step execution when the engine is configured; missing engine stays WORKING (never SUCCESS); private pools require <code>cloudbuild.workerpools.use</code> on the host project; <code>NO_PUBLIC_EGRESS</code> via httpegress (WAN deny, in-emulator GCS on <code>:4588</code> allow); shared regional triggers mux with Eventarc.</td>
+      <td>SCM webhooks; SLSA/attestations; approvals; live log streaming.</td>
     </tr>
     <tr>
       <td>App Engine</td>
@@ -259,7 +259,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     <tr>
       <td rowspan="1" align="center" valign="middle">Policy</td>
       <td>Access Context Manager</td>
-      <td>accessPolicies + servicePerimeters CRUD theatre; optional <code>NOCTAXRIS_GCP_VPCSC_ENFORCE</code> cross-perimeter deny on GCS/Pub/Sub/KMS decrypt (not Credentials or STS).</td>
+      <td>accessPolicies + servicePerimeters CRUD theatre; optional <code>NOCTAXRIS_GCP_VPCSC_ENFORCE</code> cross-perimeter deny on GCS/Pub/Sub/KMS decrypt and IAM Credentials <code>generateAccessToken</code> / <code>signBlob</code> / <code>signJwt</code> (STS unrestricted).</td>
       <td>Access levels; ingress/egress eval; bridge perimeters; network context.</td>
     </tr>
     <tr>

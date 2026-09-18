@@ -6,7 +6,7 @@ with honest emulator limits on each page.
 | Service | Status | Doc | Protocol |
 |---------|--------|-----|----------|
 | Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects, org seed, folders, tag keys/bindings lite |
-| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys, WIF pool/provider + STS `/v1/token`, TokenCreator `generateAccessToken` (including `iamcredentials.googleapis.com` alias) |
+| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys, WIF pool/provider + STS `/v1/token` (STS unrestricted under VPC-SC), TokenCreator `generateAccessToken` / `signBlob` / `signJwt` (including `iamcredentials.googleapis.com` alias; optional VPC-SC) |
 | Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable |
 | Organization Policy | lab | [orgpolicy.md](orgpolicy.md) | REST v2 policies get/set/list; boolean constraints theatre (SA keys + GCS public IAM) |
 | Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL + XML HMAC List/Get/Put; bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
@@ -28,7 +28,7 @@ with honest emulator limits on each page.
 | Cloud Datastore | lab | [datastore.md](datastore.md) | gRPC Datastore v1 (`DATASTORE_EMULATOR_HOST`) |
 | Eventarc | lab | [eventarc.md](eventarc.md) | REST v1 triggers/channels; Pub/Sub and GCS delivery + retry |
 | Artifact Registry | lab | [artifact-registry.md](artifact-registry.md) | REST v1 repos/packages/versions metadata (no blobs) |
-| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild theatre with step statuses + triggers CRUD lite + worker pools (control-plane theatre, no nested pool VMs) |
+| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild nested step execution + triggers CRUD lite + worker pools (`NO_PUBLIC_EGRESS` via httpegress: WAN deny, `:4588` GCS allow) |
 | Workflows | lab | [workflows.md](workflows.md) | REST v1 workflows CRUD + executions SUCCEEDED theatre |
 | Cloud Spanner | lab | [spanner.md](spanner.md) | REST v1 instances/databases; session commit insert + ExecuteSql/Read rows |
 | App Engine | lab | [app-engine.md](app-engine.md) | REST Admin API v1 apps/services/versions (control-plane theatre) |
@@ -46,7 +46,7 @@ with honest emulator limits on each page.
 | GKE | lab | [gke.md](gke.md) | Container API v1 clusters CRUD; optional k3s one-shot with nested engine |
 | HTTP(S) load balancing | lab | [load-balancing.md](load-balancing.md) | Global LB metadata + public `/lb/{project}/{rule}/...` GCS dataplane |
 | Cloud CDN | lab | [cloud-cdn.md](cloud-cdn.md) | Distributions CRUD + public `/cdn/{id}/...` edge |
-| Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC cross-perimeter deny on GCS/Pub/Sub/KMS decrypt |
+| Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC cross-perimeter deny on GCS/Pub/Sub/KMS decrypt and IAM Credentials `generateAccessToken` / `signBlob` / `signJwt` (STS unrestricted) |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 Seeded organization: `organizations/noctaxris-gcp-org`.
@@ -220,7 +220,7 @@ gcloud config set api_endpoint_overrides/sqladmin http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/container http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/certificatemanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
-# Filestore lab paths are under /file/v1/ — use filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/"
+# Filestore lab paths are under /file/v1/. Use filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/"
 # (see tests/terraform/README.md for BaseUrl prefix skip; create returns completed Operation)
 # (bare api_endpoint_overrides/file to :4588/ alone misses the /file prefix)
 # Managed Kafka / LB / CDN: REST on :4588 (see managed-kafka.md, load-balancing.md, cloud-cdn.md)
