@@ -577,7 +577,7 @@ func ProjectIDFromServiceAccountEmail(email string) string {
 // WIF principal wif:{providerId}:{subject} (the provider's pool project).
 // Empty when the caller cannot be placed; VPC-SC treats that as outside the
 // perimeter rather than the resource project (KMS decrypt, GCS upload, Pub/Sub
-// publish).
+// publish, IAM Credentials generateAccessToken / signBlob / signJwt).
 func (s *Store) ProjectIDFromPrincipalEmail(email string) (string, error) {
 	if id := ProjectIDFromServiceAccountEmail(email); id != "" {
 		return id, nil

@@ -61,7 +61,7 @@ When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, publish (gRPC and REST) also checks VP
 Service Controls for `pubsub.googleapis.com`. The caller project is the SA email
 project, or the WIF pool project for `wif:{providerId}:{subject}`. A caller that
 cannot be placed is outside the perimeter, not treated as the topic project.
-Operator root skips the check (lab provisioning). IAM Credentials and STS are not
+Operator root skips the check (lab provisioning). STS is not
 perimeter-restricted. See [access-context-manager.md](access-context-manager.md).
 
 gRPC Bearer auth is applied by the shared server interceptor. Handlers also
@@ -150,3 +150,4 @@ go test ./tests/sdk/go/ -run TestPubSubOIDCPushSmoke -count=1
 - Full filter language (OR / NOT / HAS)
 - Real Google-signed push OIDC (lab uses `alg=none` theatre)
 - Operator root skips VPC-SC on publish; pull and subscribe are not perimeter-checked
+- STS stays unrestricted

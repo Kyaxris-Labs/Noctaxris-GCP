@@ -2,11 +2,11 @@
 
 Lab Access Context Manager REST for access policies and service perimeters.
 Optional enforce (`NOCTAXRIS_GCP_VPCSC_ENFORCE=1`) denies cross-perimeter GCS
-object upload/copy, Pub/Sub publish (including GCS notification fanout), and
-Cloud KMS `:decrypt` when a perimeter restricts `storage.googleapis.com` /
-`pubsub.googleapis.com` / `cloudkms.googleapis.com`. IAM Credentials
-(`generateAccessToken`, `signBlob`, `signJwt`) and STS are not
-perimeter-restricted.
+object upload/copy, Pub/Sub publish (including GCS notification fanout), Cloud
+KMS `:decrypt`, and IAM Credentials `generateAccessToken` / `signBlob` /
+`signJwt` when a perimeter restricts `storage.googleapis.com` /
+`pubsub.googleapis.com` / `cloudkms.googleapis.com` /
+`iamcredentials.googleapis.com`. STS is not perimeter-restricted.
 
 ## Status
 
@@ -60,6 +60,12 @@ Set `NOCTAXRIS_GCP_VPCSC_ENFORCE=1` (or `true`). Then:
   across a perimeter that lists `cloudkms.googleapis.com`. Service account
   callers use the SA email project. WIF callers use the pool project.
   Unresolved callers are outside the perimeter (not the key project).
+  Operator root does not skip decrypt.
+- IAM Credentials `generateAccessToken`, `signBlob`, and `signJwt` deny when
+  the caller project and target SA project sit across a perimeter that lists
+  `iamcredentials.googleapis.com` (same SA / WIF / unresolved placement as GCS
+  upload). Operator root skips this caller check. Deny message is
+  `Request is denied because of VPC Service Controls`.
 - GCS `notificationConfigs` fanout skips publish when bucket and topic projects
   cross a restricting perimeter
 - Dry-run-only perimeters (`spec` + `useExplicitDryRunSpec`, empty `status`)
@@ -95,6 +101,7 @@ auto-seeded; enable when gating creates).
 - Ingress / egress policy evaluation
 - Bridge perimeters and perimeter dry-run commit
 - Seed `accesscontextmanager.googleapis.com` in EnsureRoot
+- STS token exchange stays unrestricted
 
 ## Verification / CLI smoke
 
@@ -106,5 +113,5 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   -d '{"parent":"organizations/noctaxris-gcp-org","title":"Lab"}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v1/accessPolicies/lab/servicePerimeters?servicePerimeterId=p1" \
-  -d '{"title":"p1","status":{"resources":["projects/noctaxris-gcp-local"],"restrictedServices":["storage.googleapis.com","pubsub.googleapis.com"]}}'
+  -d '{"title":"p1","status":{"resources":["projects/noctaxris-gcp-local"],"restrictedServices":["storage.googleapis.com","pubsub.googleapis.com","cloudkms.googleapis.com","iamcredentials.googleapis.com"]}}'
 ```

@@ -69,7 +69,7 @@ Controls for `storage.googleapis.com`. The caller project is the SA email projec
 or the WIF pool project for `wif:{providerId}:{subject}`. A caller that cannot be
 placed is outside the perimeter, not treated as the bucket project. Operator root
 skips this caller check. Copy and rewrite compare source and destination bucket
-projects. IAM Credentials and STS are not perimeter-restricted. See
+projects. STS is not perimeter-restricted. See
 [access-context-manager.md](access-context-manager.md).
 
 ### V4 signed URL theatre
@@ -176,3 +176,4 @@ Also: `go test ./internal/services/gcs/ ./internal/store/ -run 'GCS|Signed|Reten
 - GCS service-agent `pubsub.topics.publish` fail-closed on notification deliver
 - `OBJECT_ARCHIVE` / `OBJECT_METADATA_UPDATE` / `OBJECT_INITIALIZE` notification events
 - XML HMAC and V4 signed URL PUT skip caller-project VPC-SC; copy/rewrite stay bucket-to-bucket
+- STS stays unrestricted

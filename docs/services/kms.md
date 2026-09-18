@@ -74,8 +74,8 @@ When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, `:decrypt` also checks VPC Service
 Controls for `cloudkms.googleapis.com`. The caller project is the SA email
 project, or the WIF pool project for `wif:{providerId}:{subject}`. A caller
 that cannot be placed (including a WIF principal with no matching provider) is
-outside the perimeter, not treated as the key project. Encrypt and IAM
-Credentials (`generateAccessToken`, `signBlob`, `signJwt`) / STS are not
+outside the perimeter, not treated as the key project. Operator root does not
+skip decrypt. Encrypt is not perimeter-restricted. STS is not
 perimeter-restricted. See
 [access-context-manager.md](access-context-manager.md).
 
@@ -106,7 +106,7 @@ gcloud config set api_endpoint_overrides/cloudkms http://127.0.0.1:4588/
 
 - `ASYMMETRIC_DECRYPT`, MAC keys, HSM protection levels, import jobs, automatic rotation
 - gRPC `KeyManagementService` (REST is the lab path; protos not wired)
-- VPC-SC remains decrypt-only (no encrypt, Credentials, or STS)
+- VPC-SC remains decrypt-only (no encrypt). STS stays unrestricted.
 
 ## Verification / CLI smoke
 

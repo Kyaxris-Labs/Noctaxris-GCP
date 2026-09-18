@@ -335,6 +335,25 @@ func (h *Handler) resolveServiceAccount(projectID, account string) (store.Servic
 	return h.Store.GetServiceAccountInProject(projectID, account)
 }
 
+func (h *Handler) checkVPCSCCredentials(w http.ResponseWriter, p authn.Principal, sa store.ServiceAccount) bool {
+	if !p.IsRoot {
+		from, err := h.Store.ProjectIDFromPrincipalEmail(p.Email)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return false
+		}
+		if err := h.Store.VPCSCDenyCrossPerimeter(from, sa.ProjectID, "iamcredentials.googleapis.com"); err != nil {
+			if errors.Is(err, store.ErrVPCSCPerimeter) {
+				gcperrors.PermissionDenied(w, err.Error())
+				return false
+			}
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return false
+		}
+	}
+	return true
+}
+
 // generateAccessToken mints a lab Bearer token for the target SA (impersonation theatre).
 // Shape matches IAM Credentials generateAccessToken (accessToken + expireTime).
 // Authz requires iam.serviceAccounts.getAccessToken on the SA resource (TokenCreator)
@@ -353,6 +372,9 @@ func (h *Handler) generateAccessToken(w http.ResponseWriter, r *http.Request, pr
 	}
 	if !allowed {
 		gcperrors.PermissionDenied(w, "")
+		return
+	}
+	if !h.checkVPCSCCredentials(w, p, sa) {
 		return
 	}
 	if sa.Disabled {
@@ -439,7 +461,11 @@ func (h *Handler) undeleteServiceAccount(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) signBlob(w http.ResponseWriter, r *http.Request, projectResource string, sa store.ServiceAccount) {
-	if _, ok := h.require(w, r, "iam.serviceAccounts.signBlob", projectResource); !ok {
+	p, ok := h.require(w, r, "iam.serviceAccounts.signBlob", projectResource)
+	if !ok {
+		return
+	}
+	if !h.checkVPCSCCredentials(w, p, sa) {
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -485,10 +511,13 @@ func (h *Handler) signBlob(w http.ResponseWriter, r *http.Request, projectResour
 // signJwt mints an unsigned lab JWT (alg=none, empty signature). Not real asymmetric signing.
 // Shape matches IAM Credentials projects.serviceAccounts.signJwt (payload + keyId + signedJwt).
 func (h *Handler) signJwt(w http.ResponseWriter, r *http.Request, projectResource string, sa store.ServiceAccount) {
-	if _, ok := h.require(w, r, "iam.serviceAccounts.signJwt", projectResource); !ok {
+	p, ok := h.require(w, r, "iam.serviceAccounts.signJwt", projectResource)
+	if !ok {
 		return
 	}
-	_ = sa
+	if !h.checkVPCSCCredentials(w, p, sa) {
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		gcperrors.InvalidArgument(w, "unable to read body")

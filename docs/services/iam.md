@@ -114,6 +114,16 @@ resource **or** the parent project. Bind
 `roles/viewer` and `roles/editor` do **not** grant token impersonation. Root
 still bypasses.
 
+When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, `generateAccessToken`, `signBlob`,
+and `signJwt` also check VPC Service Controls for
+`iamcredentials.googleapis.com` after TokenCreator allow and before minting.
+Caller project is the SA email project, or the WIF pool project for
+`wif:{providerId}:{subject}`. A caller that cannot be placed sits outside the
+perimeter, not the target SA project. Operator root skips the check. Deny
+message is `Request is denied because of VPC Service Controls`. STS
+`POST /v1/token` is not perimeter-restricted. See
+[access-context-manager.md](access-context-manager.md).
+
 IAM Conditions on Token Creator bindings evaluate `request.time` against the
 lab clock (`NOCTAXRIS_GCP_LAB_FORENSICS` freeze/set). Denies stay generic
 (no condition dump). Bearer token expiry stays wall clock.
@@ -206,11 +216,12 @@ Create service account fails with `FAILED_PRECONDITION` when
 
 - Organization-level custom roles CRUD
 - gRPC IAM Admin service registration
+- STS stays unrestricted under VPC-SC
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/kernel/authz/ ./internal/services/iam/ ./internal/store/ ./internal/kernel/authn/ ./internal/server/ -count=1 -run 'CustomRole|UnknownRole|TokenCreator|STS|WIF|GenerateAccess|IAM|Token|OrgIAM|FolderIAM'
+go test ./internal/kernel/authz/ ./internal/services/iam/ ./internal/store/ ./internal/kernel/authn/ ./internal/server/ -count=1 -run 'CustomRole|UnknownRole|TokenCreator|STS|WIF|GenerateAccess|IAM|Token|OrgIAM|FolderIAM|VPCSC'
 gcloud config set api_endpoint_overrides/iam http://127.0.0.1:4588/
 gcloud iam service-accounts create lab-runner \
   --display-name="Lab Runner" --project=noctaxris-gcp-local
