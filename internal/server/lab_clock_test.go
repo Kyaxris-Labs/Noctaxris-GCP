@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/config"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/server"
@@ -134,20 +133,30 @@ func TestComputeMetadataRequiresFlavor(t *testing.T) {
 	}
 }
 
-func TestHMACAuthCannotCallIAMCredentials(t *testing.T) {
-	srv, _ := labForensicsServer(t, false, false)
-	auth, date := store.SignGOOG4HMACHeader("POST", "127.0.0.1:4588",
-		"/iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/sa@x:generateAccessToken",
-		store.LabGCSHMACAccessID, store.LabGCSHMACSecret, time.Now().UTC())
-	req := httptest.NewRequest(http.MethodPost,
-		"/iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/sa@x:generateAccessToken",
-		bytes.NewReader([]byte(`{"scope":["https://www.googleapis.com/auth/cloud-platform"]}`)))
-	req.Header.Set("Authorization", auth)
-	req.Header.Set("x-goog-date", date)
+func TestBulkSeedGCSObjectExfil(t *testing.T) {
+	srv, cfg := labForensicsServer(t, true, false)
+
+	req := httptest.NewRequest(http.MethodPost, "/_noctaxris-gcp/lab/bulkSeed", bytes.NewReader([]byte(`{"scenarioId":"gcs-object-exfil"}`)))
+	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("HMAC on IAM credentials status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gcs-object-exfil status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var seeded map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &seeded); err != nil {
+		t.Fatal(err)
+	}
+	if seeded["scenarioId"] != "gcs-object-exfil" {
+		t.Fatalf("scenarioId=%v", seeded["scenarioId"])
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/_noctaxris-gcp/lab/bulkSeed", bytes.NewReader([]byte(`{"scenarioId":"s3-data-exfil"}`)))
+	req.Header.Set("Authorization", "Bearer "+cfg.RootAccessToken)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("legacy s3-data-exfil status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -58,14 +58,15 @@ Checked on `projects/{project}`:
 Worker pools live in a host project. Create stores `NO_PUBLIC_EGRESS=true` on
 the pool. `createBuild` with `options.pool.name` requires
 `cloudbuild.workerpools.use` on that host project (not the caller project).
-Without a nested engine, builds remain status theatre (`WORKING` then `SUCCESS`
-on get) and echo substitutions / logs / `availableSecrets` when present on the body.
+Private pools are control-plane theatre: no nested pool VMs. Without a nested
+engine, builds remain status theatre (`WORKING` then `SUCCESS` on get) and echo
+substitutions / logs / `availableSecrets` when present on the body.
 
 ## Emulator limits
 
 - Steps are never executed; images are never pulled or pushed
 - `:run` creates a WORKING build theatre only (no SCM checkout, no webhook delivery)
-- No private-pool VM execution, approvals, or real SCM webhooks
+- No private-pool VM execution, approvals, or real SCM webhooks (pools are control-plane theatre)
 - Logs URL is a lab string only
 - Regional create shares the path with Eventarc (body-shape dispatch); list merges both inventories when authorized
 

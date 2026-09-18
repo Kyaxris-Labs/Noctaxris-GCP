@@ -16,7 +16,7 @@ Cloud Audit Logs / Admin Activity export pipeline.
 |--------|------|-------|
 | `POST` | `/_noctaxris-gcp/lab/auditLogs:inject` | Lab-only; env-gated; Bearer root |
 | `POST` | `/_noctaxris-gcp/lab/clock:freeze` / `:unfreeze` / `:set` | Lab clock; `NOCTAXRIS_GCP_LAB_FORENSICS`; Bearer root |
-| `POST` | `/_noctaxris-gcp/lab/bulkSeed` | Scenario packs (`suspicious-login`, `s3-data-exfil`, `crypto-mining`) |
+| `POST` | `/_noctaxris-gcp/lab/bulkSeed` | Scenario packs (`suspicious-login`, `gcs-object-exfil`, `crypto-mining`) |
 | `POST` | `/v2/entries:list` | Filter `logName="projects/.../logs/cloudaudit.googleapis.com%2Factivity"` (also `data_access` / `system_event`) |
 | `GET` | `/v2/projects/{project}/logs` | Includes distinct CAL log names |
 
@@ -97,6 +97,7 @@ NOCTAXRIS_GCP_AUDIT_INJECT=1
 - Org-level and folder-scoped audit log names
 - Log-based metrics / sink export of CAL
 - gRPC Logging + Audit Logs Admin APIs
+- Live gcloud / Prowler against a running instance (SDK rows skip unless `NOCTAXRIS_GCP_ENDPOINT` and lab flags are set)
 
 ## Verification / CLI smoke
 

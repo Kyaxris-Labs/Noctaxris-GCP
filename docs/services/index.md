@@ -28,7 +28,7 @@ with honest emulator limits on each page.
 | Cloud Datastore | lab | [datastore.md](datastore.md) | gRPC Datastore v1 (`DATASTORE_EMULATOR_HOST`) |
 | Eventarc | lab | [eventarc.md](eventarc.md) | REST v1 triggers/channels; Pub/Sub and GCS delivery + retry |
 | Artifact Registry | lab | [artifact-registry.md](artifact-registry.md) | REST v1 repos/packages/versions metadata (no blobs) |
-| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild theatre with step statuses + triggers CRUD lite + worker pools |
+| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild theatre with step statuses + triggers CRUD lite + worker pools (control-plane theatre, no nested pool VMs) |
 | Workflows | lab | [workflows.md](workflows.md) | REST v1 workflows CRUD + executions SUCCEEDED theatre |
 | Cloud Spanner | lab | [spanner.md](spanner.md) | REST v1 instances/databases; session commit insert + ExecuteSql/Read rows |
 | App Engine | lab | [app-engine.md](app-engine.md) | REST Admin API v1 apps/services/versions (control-plane theatre) |
@@ -111,6 +111,7 @@ HTTP live smokes under `tests/sdk/` (Go, Node.js, Python) cover:
 | Area | Smoke |
 |------|-------|
 | CRM | get project; get org; list folders under `organizations/noctaxris-gcp-org` |
+| Prowler GCP | `TestProwlerGCPEnumerateSmoke`: CRM v1 projects list, Service Usage list, Compute regions, GCS buckets, IAM service accounts (soft-skip without `prowler` or `NOCTAXRIS_GCP_ENDPOINT`) |
 | GCS | list buckets |
 | Pub/Sub | create topic (unique id) + list topics; delete on cleanup |
 | Secret Manager | create secret, addVersion, access; delete on cleanup |
@@ -227,6 +228,11 @@ gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
 Firebase Auth and Datastore prefer emulator host env vars
 (`FIREBASE_AUTH_EMULATOR_HOST`, `DATASTORE_EMULATOR_HOST`) rather than gcloud
 endpoint overrides. See [configuration.md](../configuration.md).
+
+Prowler GCP does not honor `api_endpoint_overrides`. Set
+`CLOUDSDK_AUTH_ACCESS_TOKEN` to the lab Bearer and use opt-in Host/SNI
+(`NOCTAXRIS_GCP_CLOUD_HOSTS`) as documented in
+[configuration.md](../configuration.md#prowler-gcp).
 
 ## Verification
 

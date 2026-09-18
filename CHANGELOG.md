@@ -4,16 +4,19 @@
 
 ### Audit and lab APIs
 
-- Lab clock on the HTTP server (`clockMu` / `clockOverride`): `POST /_noctaxris-gcp/lab/clock:freeze`, `:unfreeze`, `:set`, and `POST /_noctaxris-gcp/lab/bulkSeed` behind `NOCTAXRIS_GCP_LAB_FORENSICS` (default off, Bearer root). Logging and Cloud Audit inject timestamps use the lab clock. Bearer expiry and GOOG4 HMAC skew stay wall clock.
+- Lab clock on the HTTP server (`clockMu` / `clockOverride`): `POST /_noctaxris-gcp/lab/clock:freeze`, `:unfreeze`, `:set`, and `POST /_noctaxris-gcp/lab/bulkSeed` (`suspicious-login`, `gcs-object-exfil`, `crypto-mining`) behind `NOCTAXRIS_GCP_LAB_FORENSICS` (default off, Bearer root). Logging and Cloud Audit inject timestamps use the lab clock. Bearer expiry and GOOG4 HMAC skew stay wall clock.
 - Logging `POST /_noctaxris-gcp/lab/logs:inject` behind `NOCTAXRIS_GCP_LOGS_INJECT` (default off). `entries:list` filters `resource.type` (`http_load_balancer`, `cloud_run_revision`, `gce_subnetwork`, `cloudsql_database`, `dns_query`, plus CAL Data Access). Sensitive inject keys redact. Sinks/views/exclusions lite: `_Required` keeps Admin Activity and cannot be patched or deleted; `_Default` can drop Data Access.
 - GCS XML List/Get/Put with GOOG4-HMAC-SHA256; `storage.hmacKeys` create/list/get/delete. HMAC Authorization cannot mint OAuth.
 - Identity Toolkit v2 tenants; locked tenant sign-up returns `admin-restricted-operation`. Firestore Identity Toolkit users may write only `.../documents/users/{uid}`.
-- Cloud Build private worker pools (host project `cloudbuild.workerpools.use`, `NO_PUBLIC_EGRESS` annotation). Cloud Functions `:generateDownloadUrl`. Container Analysis occurrence read/create and Binary Authorization project policy; Cloud Run create/patch admits images only when an ENFORCED policy has a matching occurrence.
+- Cloud Build private worker pools (host project `cloudbuild.workerpools.use`, `NO_PUBLIC_EGRESS` annotation). Pools are control-plane theatre (no nested pool VMs). Cloud Functions `:generateDownloadUrl`. Container Analysis occurrence read/create and Binary Authorization project policy; Cloud Run create/patch admits images only when an ENFORCED policy has a matching occurrence.
 - IAM Credentials host/path alias `POST /iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{email}:generateAccessToken`. IAM `request.time` CEL uses the lab clock. VPC-SC optional enforce covers `cloudkms.googleapis.com` decrypt only (not Credentials or STS). Cloud Run metadata at `/computeMetadata/v1` with `Metadata-Flavor: Google`.
+- Cloud hosts TLS stays opt-in (`NOCTAXRIS_GCP_CLOUD_HOSTS`, listen `127.0.0.1:8443`, lab CA next to `master.key`). HTTP `:4588` remains the default. Prowler GCP still opens `*.googleapis.com` even when gcloud `api_endpoint_overrides` are set; Host/SNI is the path for that client.
+- CRM v1 `GET /v1/projects` and Compute `GET /compute/v1/projects/{project}/regions` return list 200s so Prowler enumerate can start. Check PASS/FAIL is out of scope.
 
 ### Testing
 
 - Unit coverage for `./internal/...` at lab bar (~70%); coverage profiles stay local-only (PR gates: unit + image + govulncheck)
+- Prowler enumerate smoke under `tests/sdk/go` soft-skips when `prowler` is missing or `NOCTAXRIS_GCP_ENDPOINT` is unset. Live `prowler gcp` against Host/SNI TLS was not executed in this cut
 
 ## 1.1.1
 

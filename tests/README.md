@@ -35,7 +35,7 @@ export NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 export NOCTAXRIS_GCP_PROJECT="${NOCTAXRIS_GCP_PROJECT:-noctaxris-gcp-local}"
 ```
 
-Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`, `NOCTAXRIS_GCP_PROJECT`.
+Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`, `NOCTAXRIS_GCP_PROJECT`. Live Prowler (not executed here) would also need `CLOUDSDK_AUTH_ACCESS_TOKEN` and `GOOGLE_CLOUD_PROJECT`; `TestProwlerGCPEnumerateSmoke` does not exec the CLI.
 
 | Suite | Tools |
 |-------|--------|
@@ -52,6 +52,8 @@ Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`,
 | API not ready when running `tests/run-all.sh` | Hard-fail (exit 1) |
 | Root token unset when running `tests/run-all.sh` | Hard-fail (exit 1) |
 | Nested Cloud Run / DinD rows without healthy engine | Soft-skip inside SDK tests |
+| `prowler` missing or `NOCTAXRIS_GCP_ENDPOINT` unset | Soft-skip `TestProwlerGCPEnumerateSmoke` |
+| Live `prowler gcp` against Host/SNI (`:8443`) | Not executed in this cut. The smoke hits HTTP list 200s after `LookPath("prowler")`; it does not exec Prowler against `*.googleapis.com` |
 
 Set `NOCTAXRIS_GCP_NESTED=1` to keep nested-oriented SDK rows enabled (still soft-skip without a healthy engine). Nested compute talks to DinD via `github.com/moby/moby/client` + `github.com/moby/moby/api` (not `github.com/docker/docker`); soft-skip behavior is unchanged. Default Compose starts the nested engine; bare binary without `NOCTAXRIS_GCP_DOCKER_HOST` stays mock/theatre.
 

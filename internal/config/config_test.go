@@ -17,6 +17,8 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv(config.EnvAllowNonLoopbackListen, "")
 	t.Setenv(config.EnvLabForensics, "")
 	t.Setenv(config.EnvLogsInject, "")
+	t.Setenv(config.EnvCloudHosts, "")
+	t.Setenv("NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN", "")
 
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
@@ -27,6 +29,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.LogsInject {
 		t.Fatal("LogsInject must default off")
+	}
+	if cfg.CloudHosts {
+		t.Fatal("CloudHosts must default off")
 	}
 	if cfg.ListenAddr != config.DefaultListenAddr {
 		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, config.DefaultListenAddr)
@@ -164,5 +169,56 @@ func TestExampleRootCredentials(t *testing.T) {
 	}
 	if config.ExampleRootCredentials("root@example.iam.gserviceaccount.com", "other") {
 		t.Fatal("mismatched token must not match")
+	}
+}
+
+func TestLoadFromEnvCloudHosts(t *testing.T) {
+	t.Setenv("NOCTAXRIS_GCP_LISTEN", "127.0.0.1:4588")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "")
+	t.Setenv(config.EnvCloudHosts, "1")
+	t.Setenv("NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN", "")
+	t.Setenv(config.EnvAllowNonLoopbackListen, "")
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CloudHosts {
+		t.Fatal("CloudHosts")
+	}
+	if cfg.CloudHostsListen != config.DefaultCloudHostsListenAddr {
+		t.Fatalf("CloudHostsListen = %q", cfg.CloudHostsListen)
+	}
+
+	t.Setenv("NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN", "0.0.0.0:8443")
+	if _, err := config.LoadFromEnv(); err == nil {
+		t.Fatal("expected non-loopback cloud-hosts listen fail")
+	}
+	t.Setenv(config.EnvAllowNonLoopbackListen, "1")
+	cfg, err = config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CloudHostsListen != "0.0.0.0:8443" {
+		t.Fatalf("CloudHostsListen = %q", cfg.CloudHostsListen)
+	}
+}
+
+func TestValidateCloudHostsListen(t *testing.T) {
+	t.Setenv(config.EnvAllowNonLoopbackListen, "")
+	if err := config.ValidateCloudHostsListen(config.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateCloudHostsListen(config.Config{CloudHosts: true, CloudHostsListen: "127.0.0.1:8443"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateCloudHostsListen(config.Config{CloudHosts: true, CloudHostsListen: "0.0.0.0:8443"}); err == nil {
+		t.Fatal("expected error for non-loopback cloud-hosts without allow")
+	}
+	if err := config.ValidateCloudHostsListen(config.Config{
+		CloudHosts:             true,
+		CloudHostsListen:       "0.0.0.0:8443",
+		AllowNonLoopbackListen: true,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

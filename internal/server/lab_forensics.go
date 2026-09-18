@@ -177,10 +177,10 @@ func (s *Server) handleLabBulkSeed(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, e.InsertID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"scenarioId":             scenarioID,
-		"cloudAuditEventCount":   len(entries),
-		"cloudAuditInsertIds":    ids,
-		"logEntryCount":          len(logs),
+		"scenarioId":           scenarioID,
+		"cloudAuditEventCount": len(entries),
+		"cloudAuditInsertIds":  ids,
+		"logEntryCount":        len(logs),
 	})
 }
 
@@ -188,12 +188,12 @@ func labScenarioPack(projectID, scenarioID string, base time.Time) ([]store.Clou
 	switch scenarioID {
 	case "suspicious-login":
 		return labScenarioSuspiciousLogin(projectID, base), nil, nil
-	case "s3-data-exfil":
+	case "gcs-object-exfil":
 		return labScenarioGCSExfil(projectID, base)
 	case "crypto-mining":
 		return labScenarioCryptoMining(projectID, base)
 	default:
-		return nil, nil, fmt.Errorf("unknown scenarioId %q (known: suspicious-login, s3-data-exfil, crypto-mining)", scenarioID)
+		return nil, nil, fmt.Errorf("unknown scenarioId %q (known: suspicious-login, gcs-object-exfil, crypto-mining)", scenarioID)
 	}
 }
 
@@ -245,13 +245,13 @@ func labScenarioGCSExfil(projectID string, base time.Time) ([]store.CloudAuditEn
 	cal := []store.CloudAuditEntry{
 		{
 			InsertID: "seed-gcs-list-1", ProjectID: projectID,
-			LogName: store.CloudAuditLogName(projectID, store.CloudAuditLogIDActivity),
+			LogName:  store.CloudAuditLogName(projectID, store.CloudAuditLogIDActivity),
 			Severity: "NOTICE", Timestamp: t1, ProtoPayloadJSON: string(listProto),
 			ResourceJSON: `{"type":"gcs_bucket"}`,
 		},
 		{
 			InsertID: "seed-gcs-get-1", ProjectID: projectID,
-			LogName: store.CloudAuditLogName(projectID, store.CloudAuditLogIDDataAccess),
+			LogName:  store.CloudAuditLogName(projectID, store.CloudAuditLogIDDataAccess),
 			Severity: "INFO", Timestamp: t2, ProtoPayloadJSON: string(getProto),
 			ResourceJSON: `{"type":"gcs_bucket","labels":{"bucket_name":"` + bucket + `"}}`,
 		},
@@ -261,7 +261,7 @@ func labScenarioGCSExfil(projectID string, base time.Time) ([]store.CloudAuditEn
 	})
 	logs := []store.LogEntry{{
 		InsertID: "seed-gcs-log-1", ProjectID: projectID,
-		LogName: "projects/" + projectID + "/logs/storage.googleapis.com%2Fdata_access",
+		LogName:  "projects/" + projectID + "/logs/storage.googleapis.com%2Fdata_access",
 		Severity: "INFO", Timestamp: t2, PayloadJSON: string(payload),
 		ResourceJSON: `{"type":"gcs_bucket","labels":{"bucket_name":"` + bucket + `"}}`,
 	}}
@@ -282,7 +282,7 @@ func labScenarioCryptoMining(projectID string, base time.Time) ([]store.CloudAud
 	})
 	cal := []store.CloudAuditEntry{{
 		InsertID: "seed-gce-run-1", ProjectID: projectID,
-		LogName: store.CloudAuditLogName(projectID, store.CloudAuditLogIDActivity),
+		LogName:  store.CloudAuditLogName(projectID, store.CloudAuditLogIDActivity),
 		Severity: "NOTICE", Timestamp: t, ProtoPayloadJSON: string(proto),
 		ResourceJSON: `{"type":"gce_instance"}`,
 	}}

@@ -22,6 +22,10 @@ const (
 	EnvLabForensics = "NOCTAXRIS_GCP_LAB_FORENSICS"
 	// EnvLogsInject enables lab POST /_noctaxris-gcp/lab/logs:inject (non-CAL log planes).
 	EnvLogsInject = "NOCTAXRIS_GCP_LOGS_INJECT"
+	// EnvCloudHosts enables the second loopback TLS listener with googleapis SANs.
+	EnvCloudHosts = "NOCTAXRIS_GCP_CLOUD_HOSTS"
+
+	DefaultCloudHostsListenAddr = "127.0.0.1:8443"
 )
 
 // Shipped docker/.env.example root pair. Refused when listen is non-loopback.
@@ -50,6 +54,10 @@ type Config struct {
 	LabForensics bool
 	// LogsInject enables /_noctaxris-gcp/lab/logs:inject (default off).
 	LogsInject bool
+	// CloudHosts starts a second TLS listener with googleapis DNS SANs (default off).
+	CloudHosts bool
+	// CloudHostsListen is the TLS bind when CloudHosts is on.
+	CloudHostsListen string
 }
 
 // LoadFromEnv reads configuration from the process environment.
@@ -68,11 +76,19 @@ func LoadFromEnv() (Config, error) {
 		DockerTLSCertPath:      getenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", ""),
 		LabForensics:           envTruthy(EnvLabForensics),
 		LogsInject:             envTruthy(EnvLogsInject),
+		CloudHosts:             envTruthy(EnvCloudHosts),
+		CloudHostsListen:       getenv("NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN", ""),
+	}
+	if cfg.CloudHosts && strings.TrimSpace(cfg.CloudHostsListen) == "" {
+		cfg.CloudHostsListen = DefaultCloudHostsListenAddr
 	}
 	if err := compute.ValidateDockerHost(cfg.DockerHost, cfg.DockerTLSCertPath); err != nil {
 		return Config{}, err
 	}
 	if err := ValidateListenSecurity(cfg); err != nil {
+		return Config{}, err
+	}
+	if err := ValidateCloudHostsListen(cfg); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -142,4 +158,19 @@ func ValidateListenSecurity(c Config) error {
 	}
 	return fmt.Errorf("NOCTAXRIS_GCP_LISTEN %q is non-loopback without TLS; set NOCTAXRIS_GCP_TLS_CERT and NOCTAXRIS_GCP_TLS_KEY, or %s=1 when host publish stays loopback (Compose)",
 		c.ListenAddr, EnvAllowNonLoopbackListen)
+}
+
+// ValidateCloudHostsListen fails closed for non-loopback cloud-hosts TLS without allow.
+func ValidateCloudHostsListen(c Config) error {
+	if !c.CloudHosts {
+		return nil
+	}
+	if ListenIsLoopback(c.CloudHostsListen) {
+		return nil
+	}
+	if c.AllowNonLoopbackListen || envTruthy(EnvAllowNonLoopbackListen) {
+		return nil
+	}
+	return fmt.Errorf("NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN %q is non-loopback; keep loopback or set %s=1 when host publish stays loopback",
+		c.CloudHostsListen, EnvAllowNonLoopbackListen)
 }

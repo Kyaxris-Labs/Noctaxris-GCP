@@ -78,6 +78,14 @@ Fixed theatre catalog (same set for any `{p}`, including `debian-cloud` /
 Get by name also accepts the family string as an alias. Responses include
 `selfLink`, `name`, `family`, and `status`.
 
+### Regions
+
+| Method | Path |
+|--------|------|
+| `GET` | `/compute/v1/projects/{p}/regions` |
+
+Canned `us-central1` and `us-east1` with `status: UP` (Prowler `get_regions` at startup).
+
 ## Authz
 
 Checked on `projects/{project}`:
@@ -87,6 +95,7 @@ Checked on `projects/{project}`:
 - `compute.subnetworks.create|get|list|delete|update`
 - `compute.firewalls.create|get|list|delete|update`
 - `compute.images.get|list`
+- `compute.regions.list`
 - `compute.zoneOperations.get` (fallback `compute.instances.get`); `compute.regionOperations.get` (fallback `compute.subnetworks.get`); `compute.globalOperations.get` (fallback `compute.networks.get`)
 
 Seeded Service Usage: `compute.googleapis.com`.
@@ -117,6 +126,8 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   -d '{"name":"lab-vm","machineType":"zones/us-central1-a/machineTypes/e2-micro","metadata":{"role":"lab"},"bootDisk":{"initializeParams":{"image":"debian-cloud/debian-12"}}}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/global/images/family/debian-12"
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/regions"
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/compute/v1/projects/noctaxris-gcp-local/global/firewalls" \
   -d '{"name":"allow-http","network":"global/networks/default","sourceRanges":["0.0.0.0/0"],"allowed":[{"IPProtocol":"tcp","ports":["80"]}]}'

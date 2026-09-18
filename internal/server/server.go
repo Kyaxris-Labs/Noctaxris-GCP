@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/tlsutil"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/version"
 	"golang.org/x/net/http2"
@@ -44,12 +47,12 @@ const (
 
 // Server is the combined REST + gRPC (h2c) listener.
 type Server struct {
-	cfg   config.Config
-	store *store.Store
-	audit *audit.Writer
-	authn *authn.Authenticator
-	authz *authz.Evaluator
-	grpc  *grpc.Server
+	cfg           config.Config
+	store         *store.Store
+	audit         *audit.Writer
+	authn         *authn.Authenticator
+	authz         *authz.Evaluator
+	grpc          *grpc.Server
 	mux           *http.ServeMux
 	now           func() time.Time
 	clockMu       sync.RWMutex
@@ -230,28 +233,65 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 // ListenAndServeContext serves until ctx is cancelled, then drains with a timeout.
 func (s *Server) ListenAndServeContext(ctx context.Context) error {
-	srv := &http.Server{
+	handler := s.Handler()
+	var cloudPaths tlsutil.Paths
+	var cloudTLS *tls.Config
+	if s.cfg.CloudHosts {
+		secretsDir := filepath.Dir(store.DefaultMasterKeyPath(s.cfg.DataRoot))
+		if strings.TrimSpace(s.cfg.MasterKeyPath) != "" {
+			secretsDir = filepath.Dir(s.cfg.MasterKeyPath)
+		}
+		var err error
+		cloudPaths, err = tlsutil.EnsureServerCert(secretsDir, time.Time{})
+		if err != nil {
+			return fmt.Errorf("cloud-hosts cert: %w", err)
+		}
+		cloudTLS, err = tlsutil.LoadTLSConfig(cloudPaths)
+		if err != nil {
+			return err
+		}
+	}
+
+	main := &http.Server{
 		Addr:              s.cfg.ListenAddr,
-		Handler:           s.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		var err error
 		if s.cfg.TLSEnabled() {
-			err = srv.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+			err = main.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
 		} else {
-			err = srv.ListenAndServe()
+			err = main.ListenAndServe()
 		}
 		errCh <- err
 	}()
 
+	var cloud *http.Server
+	if s.cfg.CloudHosts {
+		cloud = &http.Server{
+			Addr:              s.cfg.CloudHostsListen,
+			Handler:           handler,
+			TLSConfig:         cloudTLS,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			errCh <- cloud.ListenAndServeTLS(cloudPaths.ServerCert, cloudPaths.ServerKey)
+		}()
+	}
+
 	select {
 	case <-ctx.Done():
-		s.grpc.GracefulStop()
+		if s.grpc != nil {
+			s.grpc.GracefulStop()
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		_ = main.Shutdown(shutdownCtx)
+		if cloud != nil {
+			_ = cloud.Shutdown(shutdownCtx)
+		}
 		err := <-errCh
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil

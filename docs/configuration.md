@@ -26,6 +26,8 @@ All settings use the `NOCTAXRIS_GCP_*` prefix.
 | `NOCTAXRIS_GCP_AUDIT_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/auditLogs:inject` (still requires Bearer root). Default off returns `PERMISSION_DENIED`. See [services/cloud-audit-logs.md](services/cloud-audit-logs.md). |
 | `NOCTAXRIS_GCP_LAB_FORENSICS` | empty (off) | Set to `1` or `true` to enable `POST /_noctaxris-gcp/lab/clock:freeze`, `:unfreeze`, `:set`, and `POST /_noctaxris-gcp/lab/bulkSeed` (Bearer root). Audit and log timestamps use the lab clock. Bearer token expiry and HMAC or signature skew stay wall clock. See [services/cloud-audit-logs.md](services/cloud-audit-logs.md). |
 | `NOCTAXRIS_GCP_LOGS_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/logs:inject` for non-CAL log planes (Bearer root). Default off returns `PERMISSION_DENIED`. See [services/logging.md](services/logging.md). |
+| `NOCTAXRIS_GCP_CLOUD_HOSTS` | unset / false | Second TLS listener with googleapis SANs (`cloudresourcemanager.googleapis.com`, `iam.googleapis.com`, `serviceusage.googleapis.com`, `storage.googleapis.com`, `compute.googleapis.com`, `logging.googleapis.com`, `iamcredentials.googleapis.com`, plus `oauth2.googleapis.com` / `www.googleapis.com`) |
+| `NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN` | `127.0.0.1:8443` when cloud hosts is on | Cloud-hosts TLS bind. Keep loopback unless `NOCTAXRIS_GCP_ALLOW_NONLOOPBACK_LISTEN=1` |
 | `NOCTAXRIS_GCP_SCC_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/securitycenter:injectFindings`. Default off returns PermissionDenied. |
 | `NOCTAXRIS_GCP_VPCSC_ENFORCE` | empty (off) | Set to `1` or `true` to deny cross-perimeter GCS upload/copy, Pub/Sub publish, and Cloud KMS decrypt when a service perimeter restricts those APIs (dry-run `spec` included). IAM Credentials `generateAccessToken` / `signBlob` / `signJwt` and STS are not perimeter-restricted. Default off keeps Access Context Manager CRUD theatre only. See [services/access-context-manager.md](services/access-context-manager.md). |
 
@@ -99,6 +101,7 @@ before starting. Startup refuses that pair on the non-loopback container bind.
 | Cloud Armor | Same Compute Engine endpoint (`/compute/v1/.../global/securityPolicies`); ByteMatchSet `:validate` is lab preview only (no edge enforce) |
 | Certificate Manager | `option.WithEndpoint("127.0.0.1:4588")` + Bearer (REST `/v1/projects/.../locations/...`; create returns completed Operation) |
 | Other Google clients | `option.WithEndpoint("127.0.0.1:4588")` (or language equivalent) + Bearer |
+| Prowler GCP | `CLOUDSDK_AUTH_ACCESS_TOKEN` and `GOOGLE_CLOUD_PROJECT`, plus Host/SNI. gcloud `api_endpoint_overrides` do not move Prowler's `googleapiclient.discovery` clients |
 | Terraform Google provider | Custom endpoints with versioned path suffixes (see below) |
 
 Cloud Build and Eventarc share regional
@@ -201,6 +204,81 @@ gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
 gcloud projects describe noctaxris-gcp-local --format=json
 ```
 
+gcloud honors `api_endpoint_overrides` (and `CLOUDSDK_AUTH_ACCESS_TOKEN`). Prowler GCP does not. Its provider builds `googleapiclient.discovery` clients with no `api_endpoint`, so those calls still go to `*.googleapis.com` on 443. Path rewrite on the HTTP listener (`iamcredentials.googleapis.com` -> `/iamcredentials.googleapis.com/...`, `storage.googleapis.com` XML -> `/storage/xml/...`) only applies after the TCP connection already reached `:4588`. For Prowler enumerate, use cloud-hosts TLS below.
+
+### Prowler GCP
+
+Enumerate bar: the process starts and lists lab projects / services. Check PASS/FAIL is not a lab goal. Soft-skip live smoke when `prowler` is not on `PATH` or `NOCTAXRIS_GCP_ENDPOINT` is unset. Live `prowler gcp` against Host/SNI TLS was not executed in this cut.
+
+```bash
+export CLOUDSDK_AUTH_ACCESS_TOKEN="$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN"
+export GOOGLE_CLOUD_PROJECT=noctaxris-gcp-local
+unset GOOGLE_APPLICATION_CREDENTIALS
+prowler gcp --project-ids noctaxris-gcp-local --list-project-ids
+```
+
+Prowler's access-token path also requires `GOOGLE_CLOUD_PROJECT`. ADC (`gcloud auth application-default login`) works only if the planted token is the lab Bearer. Prefer `CLOUDSDK_AUTH_ACCESS_TOKEN` so Prowler does not refresh against real OAuth.
+
+Point gcloud at the lab too if you mix CLI and Prowler in the same shell:
+
+```bash
+export CLOUDSDK_AUTH_ACCESS_TOKEN="$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN"
+gcloud config set api_endpoint_overrides/cloudresourcemanager http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/iam http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/serviceusage http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/storage http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/compute http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/logging http://127.0.0.1:4588/
+```
+
+Those overrides do not redirect Prowler. Keep Host/SNI if you want Prowler itself on the lab.
+
+## Cloud hosts TLS
+
+HTTP `:4588` remains the default. Set `NOCTAXRIS_GCP_CLOUD_HOSTS=1` to start a second listener on `127.0.0.1:8443` (override with `NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN`). The process writes a lab CA and server cert into the secrets directory next to `master.key`:
+
+| File | Role |
+|------|------|
+| `lab-ca.crt` | Lab CA (install this if a client verifies TLS) |
+| `cloud-hosts.crt` | Server cert with googleapis DNS SANs plus `127.0.0.1` / `::1` |
+| `cloud-hosts.key` | Server private key (mode `0600`; do not commit) |
+
+Generate the same PEMs without starting the API:
+
+```bash
+go run ./scripts/generatelabca ./lab-ca
+```
+
+Wrappers: `scripts/generate-lab-ca.sh` and `scripts/generate-lab-ca.ps1`. Output belongs in a local directory (`./lab-ca` is gitignored). Never commit private keys.
+
+### Redirect 443 to 8443
+
+Windows (loopback only):
+
+```bat
+netsh interface portproxy add v4tov4 listenaddress=127.0.0.1 listenport=443 connectaddress=127.0.0.1 connectport=8443
+```
+
+Linux (loopback example):
+
+```bash
+sudo iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 443 -j REDIRECT --to-ports 8443
+```
+
+### Hosts file
+
+Mapping `cloudresourcemanager.googleapis.com`, `iam.googleapis.com`, `compute.googleapis.com`, or other googleapis names to `127.0.0.1` hijacks those names for every process on the machine, including real `gcloud` against production. Use a dedicated lab VM or a tool-specific hosts override. Remove the entries when the lab is done.
+
+Minimum names for Prowler enumerate:
+
+```
+127.0.0.1 cloudresourcemanager.googleapis.com iam.googleapis.com serviceusage.googleapis.com storage.googleapis.com compute.googleapis.com logging.googleapis.com iamcredentials.googleapis.com oauth2.googleapis.com www.googleapis.com
+```
+
+### Install the lab CA
+
+Windows: import `lab-ca.crt` into "Trusted Root Certification Authorities" for the lab user or local machine. Python clients (Prowler) often ignore the OS store and use certifi; set `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` to `lab-ca.crt` for that process. Linux: copy it into `/usr/local/share/ca-certificates/` and run `update-ca-certificates` (Debian/Ubuntu) or the distro equivalent. Trust this CA only on lab hosts.
+
 Full service list (including Firebase Auth and Datastore emulator hosts):
 [services/index.md](services/index.md).
 
@@ -219,6 +297,7 @@ soft-skip when `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is unset. Unit tests
 | `NOCTAXRIS_GCP_NESTED` | Optional; set to `1` when running `tests/run-all.sh` so nested/DinD-oriented SDK rows stay enabled (still soft-skip without a healthy engine) |
 | `NOCTAXRIS_GCP_LAB_FORENSICS` | Optional live smoke for clock/BulkSeed; unset skips those rows |
 | `NOCTAXRIS_GCP_LOGS_INJECT` | Optional live smoke for Logging inject; unset skips those rows |
+| `prowler` on `PATH` | Required for `TestProwlerGCPEnumerateSmoke`; missing binary skips that test |
 
 ```bash
 export NOCTAXRIS_GCP_ENDPOINT=http://127.0.0.1:4588

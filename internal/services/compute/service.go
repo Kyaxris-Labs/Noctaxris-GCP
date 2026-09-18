@@ -64,6 +64,9 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /compute/v1/projects/{project}/global/images", s.wrap(principalFrom, s.listImages))
 	mux.HandleFunc("GET /compute/v1/projects/{project}/global/images/family/{family}", s.wrap(principalFrom, s.getImageFromFamily))
 	mux.HandleFunc("GET /compute/v1/projects/{project}/global/images/{image}", s.wrap(principalFrom, s.getImage))
+
+	// Prowler GcpProvider.get_regions() calls regions.list at startup.
+	mux.HandleFunc("GET /compute/v1/projects/{project}/regions", s.wrap(principalFrom, s.listRegions))
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -1090,6 +1093,50 @@ func (s *Service) listImages(w http.ResponseWriter, r *http.Request, p authn.Pri
 		"items":    items,
 		"selfLink": selfLink("projects", project, "global", "images"),
 	})
+}
+
+func (s *Service) listRegions(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	if err := s.require(p, "compute.regions.list", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	items := cannedRegionList(project)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":     "compute#regionList",
+		"id":       "projects/" + project + "/regions",
+		"items":    items,
+		"selfLink": selfLink("projects", project, "regions"),
+	})
+}
+
+func cannedRegionList(project string) []map[string]any {
+	type spec struct {
+		name  string
+		id    string
+		zones []string
+	}
+	catalog := []spec{
+		{name: "us-central1", id: "1000", zones: []string{"us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"}},
+		{name: "us-east1", id: "2000", zones: []string{"us-east1-b", "us-east1-c", "us-east1-d"}},
+	}
+	out := make([]map[string]any, 0, len(catalog))
+	for _, r := range catalog {
+		zones := make([]string, 0, len(r.zones))
+		for _, z := range r.zones {
+			zones = append(zones, selfLink("projects", project, "zones", z))
+		}
+		out = append(out, map[string]any{
+			"kind":              "compute#region",
+			"id":                r.id,
+			"name":              r.name,
+			"status":            "UP",
+			"zones":             zones,
+			"selfLink":          selfLink("projects", project, "regions", r.name),
+			"creationTimestamp": "2020-01-01T00:00:00.000-00:00",
+		})
+	}
+	return out
 }
 
 func (s *Service) getImage(w http.ResponseWriter, r *http.Request, p authn.Principal) {

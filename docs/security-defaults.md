@@ -7,6 +7,7 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 | Setting | Default | Notes |
 |---------|---------|-------|
 | Listen | `127.0.0.1:4588` | Non-loopback without TLS requires `NOCTAXRIS_GCP_ALLOW_NONLOOPBACK_LISTEN=1` |
+| Cloud hosts TLS | off | `NOCTAXRIS_GCP_CLOUD_HOSTS=1` binds `127.0.0.1:8443`. Non-loopback listen still requires the allow env. Mapping googleapis names in the hosts file hijacks them machine-wide. |
 | Compose publish | `127.0.0.1:4588` | Container bind is `0.0.0.0:4588` with the opt-in above |
 | Host Docker socket | never mounted | Nested DinD is on in default Compose (`noctaxris-gcp-engine`); never mount host `docker.sock` |
 

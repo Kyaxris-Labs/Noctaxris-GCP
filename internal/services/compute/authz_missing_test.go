@@ -41,6 +41,7 @@ func TestComputeAuthzDenyAndMissing(t *testing.T) {
 		{http.MethodGet, "/compute/v1/projects/" + project + "/global/firewalls", ""},
 		{http.MethodGet, "/compute/v1/projects/" + project + "/zones/us-central1-a/instances", ""},
 		{http.MethodGet, "/compute/v1/projects/" + project + "/global/images", ""},
+		{http.MethodGet, "/compute/v1/projects/" + project + "/regions", ""},
 	}
 	for _, p := range paths {
 		var req *http.Request

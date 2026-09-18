@@ -10,6 +10,7 @@ and search, and TagKeys / TagBindings lite.
 | Action | Method | Path |
 |--------|--------|------|
 | List projects | `GET` | `/v3/projects` |
+| List projects (v1) | `GET` | `/v1/projects` (`projectId`, `projectNumber`, `lifecycleState`, v1 `parent`) |
 | Search projects | `POST` | `/v3/projects:search` |
 | Get project | `GET` | `/v3/projects/{project}` |
 | Patch project | `PATCH` | `/v3/projects/{project}` |
@@ -124,6 +125,8 @@ gcloud config set api_endpoint_overrides/cloudresourcemanager http://127.0.0.1:4
 gcloud projects describe noctaxris-gcp-local --format=json
 gcloud resource-manager folders list --organization=noctaxris-gcp-org --format=json
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:4588/v1/projects
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"parent":"organizations/noctaxris-gcp-org","shortName":"env"}' \
   http://127.0.0.1:4588/v3/tagKeys

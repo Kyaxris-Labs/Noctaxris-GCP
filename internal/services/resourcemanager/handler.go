@@ -2,6 +2,7 @@ package resourcemanager
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -26,6 +27,8 @@ type Handler struct {
 // Mount registers CRM routes on mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v3/projects", h.handleListProjects)
+	// Prowler discovery.build("cloudresourcemanager","v1") lists GET /v1/projects.
+	mux.HandleFunc("GET /v1/projects", h.handleListProjectsV1)
 	mux.HandleFunc("GET /v3/projects/{project}", h.handleGetProject)
 	mux.HandleFunc("PATCH /v3/projects/{project}", h.handlePatchProject)
 	mux.HandleFunc("POST /v3/projects/{project}", h.handleProjectPost)
@@ -90,6 +93,26 @@ func (h *Handler) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	projects := make([]map[string]any, 0, len(list))
 	for _, p := range list {
 		projects = append(projects, projectJSON(p))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
+}
+
+func (h *Handler) handleListProjectsV1(w http.ResponseWriter, r *http.Request) {
+	resource := "projects/-"
+	if p := r.URL.Query().Get("parent"); p != "" {
+		resource = p
+	}
+	if _, ok := h.require(w, r, "resourcemanager.projects.list", resource); !ok {
+		return
+	}
+	list, err := h.Store.ListProjects()
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	projects := make([]map[string]any, 0, len(list))
+	for _, p := range list {
+		projects = append(projects, projectJSONV1(p))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
 }
@@ -683,6 +706,51 @@ func (h *Handler) testIamPermissions(w http.ResponseWriter, r *http.Request, res
 		granted = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"permissions": granted})
+}
+
+func projectJSONV1(p store.Project) map[string]any {
+	var labels any = map[string]string{}
+	if p.LabelsJSON != "" {
+		_ = json.Unmarshal([]byte(p.LabelsJSON), &labels)
+	}
+	state := p.State
+	if state == "" {
+		state = "ACTIVE"
+	}
+	out := map[string]any{
+		"projectNumber":  v1ProjectNumber(p.ID),
+		"projectId":      p.ID,
+		"name":           p.DisplayName,
+		"lifecycleState": state,
+		"labels":         labels,
+		"createTime":     p.CreatedAt,
+	}
+	parent := strings.TrimSpace(store.DefaultOrganizationName)
+	if typeName, id, ok := splitResourceParent(parent); ok {
+		out["parent"] = map[string]string{"type": typeName, "id": id}
+	}
+	return out
+}
+
+func v1ProjectNumber(id string) string {
+	var n uint64
+	for i := 0; i < len(id); i++ {
+		n = n*131 + uint64(id[i])
+	}
+	n = n % 1e12
+	if n == 0 {
+		n = 1
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func splitResourceParent(name string) (typeName, id string, ok bool) {
+	i := strings.IndexByte(name, '/')
+	if i <= 0 || i == len(name)-1 {
+		return "", "", false
+	}
+	typeName = strings.TrimSuffix(name[:i], "s")
+	return typeName, name[i+1:], true
 }
 
 func projectJSON(p store.Project) map[string]any {

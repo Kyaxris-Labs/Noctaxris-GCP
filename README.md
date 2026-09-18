@@ -28,7 +28,15 @@ curl http://127.0.0.1:4588/_noctaxris-gcp/health
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Kyaxris-Labs/Noctaxris-GCP" alt="MIT License"></a>
 </p>
 
-Point GCP clients at `http://127.0.0.1:4588` with `Authorization: Bearer <token>`.
+Point GCP clients at `http://127.0.0.1:4588` with `Authorization: Bearer <token>`. HTTP `:4588` stays the default. Cloud-hosts TLS (`NOCTAXRIS_GCP_CLOUD_HOSTS=1`) listens on `127.0.0.1:8443` with a lab CA for tools that still open `*.googleapis.com` (Prowler GCP is one). Mapping those names in the hosts file hijacks them for every process on the machine; use a lab VM and uninstall the lab CA when finished. Details: [docs/configuration.md](docs/configuration.md).
+
+## Client environments
+
+| Client | Point it at the lab |
+|--------|---------------------|
+| gcloud | `CLOUDSDK_AUTH_ACCESS_TOKEN` plus `GOOGLE_CLOUD_PROJECT=noctaxris-gcp-local`, then `gcloud config set api_endpoint_overrides/<service> http://127.0.0.1:4588/` |
+| Official SDKs | `option.WithEndpoint("127.0.0.1:4588")` (or language equivalent) and Bearer |
+| Prowler GCP | `CLOUDSDK_AUTH_ACCESS_TOKEN` and `GOOGLE_CLOUD_PROJECT`. `api_endpoint_overrides` do not move Prowler. Use Host/SNI (`NOCTAXRIS_GCP_CLOUD_HOSTS=1` on `127.0.0.1:8443`) plus lab CA / `REQUESTS_CA_BUNDLE`. Live `prowler gcp` against TLS is not executed in this cut. |
 
 Go module: [`github.com/Kyaxris-Labs/Noctaxris-GCP`](https://github.com/Kyaxris-Labs/Noctaxris-GCP). Image tags: `latest`, semver releases, and `nightly` from CI.
 
@@ -234,8 +242,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud Build</td>
-      <td>createBuild theatre + triggers CRUD lite; private worker pools (<code>cloudbuild.workerpools.use</code> on host project); shared regional triggers mux with Eventarc.</td>
-      <td>Step execution; image pull/push; SCM checkout; private-pool VMs.</td>
+      <td>createBuild theatre + triggers CRUD lite; private worker pools are control-plane theatre (<code>cloudbuild.workerpools.use</code> on host project; no nested pool VMs); shared regional triggers mux with Eventarc.</td>
+      <td>Step execution; image pull/push; SCM checkout; nested private-pool VMs.</td>
     </tr>
     <tr>
       <td>App Engine</td>
@@ -326,6 +334,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
 | Setting | Value |
 |---------|--------|
 | Listen | `127.0.0.1:4588` only |
+| Host/SNI googleapis | Opt-in `NOCTAXRIS_GCP_CLOUD_HOSTS=1` on `127.0.0.1:8443`; lab CA from `go run ./scripts/generatelabca ./lab-ca` or secrets next to `master.key` |
 | Docker | No host `docker.sock` (default nested `noctaxris-gcp-engine` for Cloud Run, SQL, Kafka, Redis, GKE) |
 | Nested compute | On by default in Compose (`NOCTAXRIS_GCP_DOCKER_HOST` → engine). Bare binary leaves host empty (mock/theatre) |
 | Data ports | Compose publishes only `127.0.0.1:4588` |
