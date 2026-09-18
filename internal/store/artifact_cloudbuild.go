@@ -94,12 +94,12 @@ type ArRepository struct {
 
 // ArPackage is an Artifact Registry package metadata row (no blob storage).
 type ArPackage struct {
-	Name            string
-	RepositoryName  string
-	PackageID       string
-	DisplayName     string
-	CreatedAt       string
-	UpdatedAt       string
+	Name           string
+	RepositoryName string
+	PackageID      string
+	DisplayName    string
+	CreatedAt      string
+	UpdatedAt      string
 }
 
 // ArVersion is an Artifact Registry version metadata row (no blob storage).
@@ -436,7 +436,8 @@ func (s *Store) DeleteArVersion(name string) (bool, error) {
 
 // --- Cloud Build ---
 
-// CbBuild is a Cloud Build build theatre row (no container execution).
+// CbBuild is a Cloud Build build row. HTTP get returns this status as stored;
+// nested step execution updates it, and getBuild does not auto-advance WORKING.
 type CbBuild struct {
 	Name          string
 	ProjectID     string
@@ -577,8 +578,8 @@ func (s *Store) ListCbBuilds(projectID, location string) ([]CbBuild, error) {
 	return out, rows.Err()
 }
 
-// AdvanceCbBuildToSuccess flips WORKING builds to SUCCESS theatre and returns the updated row.
-// Persists per-step status SUCCESS into build_json so getBuild shows STEPS.
+// AdvanceCbBuildToSuccess flips WORKING builds to SUCCESS and returns the updated row.
+// Cloud Build HTTP getBuild must not call this; store and Eventarc tests still use it.
 func (s *Store) AdvanceCbBuildToSuccess(name string) (CbBuild, bool, error) {
 	b, ok, err := s.GetCbBuild(name)
 	if err != nil || !ok {
@@ -587,9 +588,9 @@ func (s *Store) AdvanceCbBuildToSuccess(name string) (CbBuild, bool, error) {
 	if b.Status == "WORKING" || b.Status == "QUEUED" || b.Status == "PENDING" {
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		b.Status = "SUCCESS"
-		b.StatusDetail = "lab theatre: steps marked SUCCESS (not executed)"
+		b.StatusDetail = "steps marked SUCCESS"
 		b.FinishTime = now
-		b.BuildJSON = markCbBuildStepsStatus(b.BuildJSON, "SUCCESS")
+		b.BuildJSON = MarkCbBuildStepsStatus(b.BuildJSON, "SUCCESS")
 		_, err = s.db.Exec(
 			`UPDATE cb_builds SET status = ?, status_detail = ?, finish_time = ?, build_json = ? WHERE name = ?`,
 			b.Status, b.StatusDetail, b.FinishTime, b.BuildJSON, name,
@@ -601,8 +602,41 @@ func (s *Store) AdvanceCbBuildToSuccess(name string) (CbBuild, bool, error) {
 	return b, true, nil
 }
 
-// markCbBuildStepsStatus sets status on each step in build JSON (Cloud Build BuildStep.status).
-func markCbBuildStepsStatus(buildJSON, status string) string {
+// PutCbBuildProgress updates a non-terminal build. Terminal rows (CANCELLED, SUCCESS,
+// FAILURE, and the other finished statuses) are left unchanged.
+func (s *Store) PutCbBuildProgress(name, status, detail, buildJSON, finishTime string) (CbBuild, bool, error) {
+	b, ok, err := s.GetCbBuild(name)
+	if err != nil || !ok {
+		return CbBuild{}, ok, err
+	}
+	switch b.Status {
+	case "SUCCESS", "FAILURE", "INTERNAL_ERROR", "TIMEOUT", "CANCELLED", "EXPIRED":
+		return b, true, nil
+	}
+	if status != "" {
+		b.Status = status
+	}
+	if detail != "" {
+		b.StatusDetail = detail
+	}
+	if buildJSON != "" {
+		b.BuildJSON = buildJSON
+	}
+	if finishTime != "" {
+		b.FinishTime = finishTime
+	}
+	_, err = s.db.Exec(
+		`UPDATE cb_builds SET status = ?, status_detail = ?, finish_time = ?, build_json = ? WHERE name = ?`,
+		b.Status, b.StatusDetail, b.FinishTime, b.BuildJSON, name,
+	)
+	if err != nil {
+		return CbBuild{}, false, err
+	}
+	return b, true, nil
+}
+
+// MarkCbBuildStepsStatus sets status on each step in build JSON (Cloud Build BuildStep.status).
+func MarkCbBuildStepsStatus(buildJSON, status string) string {
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(buildJSON), &cfg); err != nil || cfg == nil {
 		cfg = map[string]any{}

@@ -24,6 +24,9 @@ func TestDisabledClientFailClosedPaths(t *testing.T) {
 	if _, err := c.RunLabOneShot(ctx, ""); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("oneshot: %v", err)
 	}
+	if _, err := c.RunBuildStep(ctx, BuildStepRun{Image: DefaultLabImage, Cmd: []string{"true"}}); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("build step: %v", err)
+	}
 	if _, err := c.StartLabDaemon(ctx, DefaultLabImage, "name", nil, 0); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("daemon: %v", err)
 	}

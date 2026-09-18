@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/compute"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
@@ -15,10 +16,14 @@ import (
 // DefaultLocation is the lab default Cloud Build location for triggers.
 const DefaultLocation = "global"
 
-// Service serves Cloud Build REST v1 (builds theatre + triggers CRUD lite).
+// Service serves Cloud Build REST v1 (builds, triggers, nested step execution).
 type Service struct {
 	Store *store.Store
 	Authz *authz.Evaluator
+	// Invoker is optional, like Cloud Run. Unset uses compute.NewInvokerFromEnv.
+	Invoker compute.Invoker
+	// StepRunner is optional; tests inject a runner. Unset uses EngineRunner.
+	StepRunner StepRunner
 }
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
@@ -135,9 +140,13 @@ func (s *Service) createBuild(w http.ResponseWriter, r *http.Request, p authn.Pr
 	name := buildName(project, location, buildID)
 	body["steps"] = ensureStepStatus(body["steps"], "WORKING")
 	raw, _ := json.Marshal(body)
+	logURL := ""
+	if v, ok := body["logUrl"].(string); ok {
+		logURL = strings.TrimSpace(v)
+	}
 	created, err := s.Store.CreateCbBuild(store.CbBuild{
 		Name: name, ProjectID: project, Location: location, BuildID: buildID,
-		Status: "WORKING", StatusDetail: "lab theatre: build accepted", BuildJSON: string(raw),
+		Status: "WORKING", StatusDetail: "build accepted", BuildJSON: string(raw), LogURL: logURL,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -157,6 +166,7 @@ func (s *Service) createBuild(w http.ResponseWriter, r *http.Request, p authn.Pr
 		},
 		"done": false,
 	})
+	s.runSteps(r.Context(), b)
 }
 
 func (s *Service) listBuildsGlobal(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -215,18 +225,8 @@ func (s *Service) getBuild(w http.ResponseWriter, _ *http.Request, p authn.Princ
 			gcperrors.NotFound(w, "Build not found")
 			return
 		}
-		name = b.Name
 	}
-	adv, ok, err := s.Store.AdvanceCbBuildToSuccess(name)
-	if err != nil {
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return
-	}
-	if !ok {
-		gcperrors.NotFound(w, "Build not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, toBuildJSON(adv))
+	writeJSON(w, http.StatusOK, toBuildJSON(b))
 }
 
 func (s *Service) buildPOSTActionGlobal(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -284,7 +284,7 @@ func (s *Service) cancelBuild(w http.ResponseWriter, _ *http.Request, p authn.Pr
 	writeJSON(w, http.StatusOK, toBuildJSON(out))
 }
 
-func (s *Service) retryBuild(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, id string) {
+func (s *Service) retryBuild(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, id string) {
 	if err := s.require(p, "cloudbuild.builds.create", project); err != nil {
 		writeAuthzErr(w, err)
 		return
@@ -321,7 +321,7 @@ func (s *Service) retryBuild(w http.ResponseWriter, _ *http.Request, p authn.Pri
 	newName := buildName(project, retryLoc, buildID)
 	created, err := s.Store.CreateCbBuild(store.CbBuild{
 		Name: newName, ProjectID: project, Location: retryLoc, BuildID: buildID,
-		Status: "WORKING", StatusDetail: "lab theatre: retry of " + src.BuildID, BuildJSON: src.BuildJSON,
+		Status: "WORKING", StatusDetail: "retry of " + src.BuildID, BuildJSON: src.BuildJSON,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -341,6 +341,7 @@ func (s *Service) retryBuild(w http.ResponseWriter, _ *http.Request, p authn.Pri
 		},
 		"done": false,
 	})
+	s.runSteps(r.Context(), b)
 }
 
 func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -571,7 +572,7 @@ func (s *Service) runTrigger(w http.ResponseWriter, r *http.Request, p authn.Pri
 	name := buildName(project, "global", buildID)
 	created, err := s.Store.CreateCbBuild(store.CbBuild{
 		Name: name, ProjectID: project, Location: "global", BuildID: buildID,
-		Status: "WORKING", StatusDetail: "lab theatre: trigger run (no webhook)", BuildJSON: string(raw),
+		Status: "WORKING", StatusDetail: "trigger run (no webhook)", BuildJSON: string(raw),
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -591,6 +592,7 @@ func (s *Service) runTrigger(w http.ResponseWriter, r *http.Request, p authn.Pri
 		},
 		"done": false,
 	})
+	s.runSteps(r.Context(), b)
 }
 
 func extractTriggerFilename(triggerJSON string) (string, bool) {

@@ -154,6 +154,98 @@ func (c *Client) RunLabOneShot(ctx context.Context, imageRef string) (OneShotRes
 	}, nil
 }
 
+// BuildStepRun is one Cloud Build step for nested engine execution.
+type BuildStepRun struct {
+	Image  string
+	Cmd    []string
+	Env    []string
+	Script string
+}
+
+// RunBuildStep pulls (if needed) and runs one allowlisted build step.
+// Host docker.sock is never mounted. Network stays the engine default (not
+// "none") so in-emulator GCS on loopback is not blocked at the container net
+// layer; Cloud Build still gates destinations with httpegress.
+func (c *Client) RunBuildStep(ctx context.Context, step BuildStepRun) (OneShotResult, error) {
+	if !c.Enabled() {
+		return OneShotResult{}, fmt.Errorf("compute: engine disabled (NOCTAXRIS_GCP_DOCKER_HOST empty)")
+	}
+	ref := strings.TrimSpace(step.Image)
+	if ref == "" && strings.TrimSpace(step.Script) != "" {
+		ref = DefaultLabImage
+	}
+	if ref == "" {
+		return OneShotResult{}, fmt.Errorf("compute: build step image is empty")
+	}
+	if err := AllowImagePull(ref); err != nil {
+		return OneShotResult{}, err
+	}
+	if err := c.Ping(ctx); err != nil {
+		return OneShotResult{}, err
+	}
+	if err := c.pullImage(ctx, ref); err != nil {
+		return OneShotResult{}, err
+	}
+
+	cmd := step.Cmd
+	if strings.TrimSpace(step.Script) != "" {
+		cmd = []string{"sh", "-c", step.Script}
+	}
+
+	name := "noctaxris-gcp-cb-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	create, err := c.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: ref,
+			Cmd:   cmd,
+			Env:   step.Env,
+			Tty:   false,
+		},
+		HostConfig: &container.HostConfig{
+			AutoRemove: false,
+		},
+		Name: name,
+	})
+	if err != nil {
+		return OneShotResult{}, fmt.Errorf("compute: build step create: %w", err)
+	}
+	id := create.ID
+	defer func() {
+		_, _ = c.cli.ContainerRemove(context.Background(), id, client.ContainerRemoveOptions{Force: true})
+	}()
+
+	if _, err := c.cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
+		return OneShotResult{}, fmt.Errorf("compute: build step start: %w", err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	wait := c.cli.ContainerWait(waitCtx, id, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
+	var exitCode int64
+	select {
+	case err := <-wait.Error:
+		if err != nil {
+			return OneShotResult{}, fmt.Errorf("compute: build step wait: %w", err)
+		}
+	case st := <-wait.Result:
+		if st.Error != nil {
+			return OneShotResult{}, fmt.Errorf("compute: build step wait: %s", st.Error.Message)
+		}
+		exitCode = st.StatusCode
+	}
+
+	logs, err := c.cli.ContainerLogs(ctx, id, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true})
+	if err != nil {
+		return OneShotResult{}, fmt.Errorf("compute: build step logs: %w", err)
+	}
+	defer logs.Close()
+	raw, _ := io.ReadAll(io.LimitReader(logs, 1<<20))
+	return OneShotResult{
+		Image:    ref,
+		ExitCode: exitCode,
+		Stdout:   strings.TrimSpace(stripDockerLogHeader(raw)),
+	}, nil
+}
+
 // LabDaemonResult is a long-lived nested container started for lab databases/brokers.
 type LabDaemonResult struct {
 	ContainerID string

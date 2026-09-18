@@ -110,6 +110,25 @@ func TestCloudBuildStoreTheatre(t *testing.T) {
 		t.Fatalf("step status=%#v", step0)
 	}
 
+	workingID := store.NewCbBuildID()
+	workingName := "projects/p/builds/" + workingID
+	ok, err = st.CreateCbBuild(store.CbBuild{
+		Name: workingName, ProjectID: "p", Location: "global", BuildID: workingID,
+		Status: "WORKING", BuildJSON: `{"steps":[{"name":"alpine:3.23"}]}`,
+	})
+	if err != nil || !ok {
+		t.Fatalf("create working: ok=%v err=%v", ok, err)
+	}
+	prog, found, err := st.PutCbBuildProgress(workingName, "FAILURE", "nested engine not configured",
+		store.MarkCbBuildStepsStatus(`{"steps":[{"name":"alpine:3.23"}]}`, "FAILURE"), "2026-01-01T00:00:00Z")
+	if err != nil || !found || prog.Status != "FAILURE" {
+		t.Fatalf("progress: %#v found=%v err=%v", prog, found, err)
+	}
+	blocked, found, err := st.PutCbBuildProgress(name, "FAILURE", "should not overwrite SUCCESS", "", "2026-01-01T00:00:00Z")
+	if err != nil || !found || blocked.Status != "SUCCESS" {
+		t.Fatalf("terminal row must stay SUCCESS: %#v found=%v err=%v", blocked, found, err)
+	}
+
 	trigName := "projects/p/locations/global/triggers/t1"
 	ok, err = st.CreateCbTrigger(store.CbTrigger{
 		Name: trigName, ProjectID: "p", Location: "global", TriggerID: "t1",

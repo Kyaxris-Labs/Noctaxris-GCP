@@ -105,20 +105,14 @@ func TestCloudBuildDeepenCancelRetryTriggerRun(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/builds/"+stepsID, nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	var success map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &success)
-	if success["status"] != "SUCCESS" {
-		t.Fatalf("getBuild=%#v", success)
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["status"] == "SUCCESS" {
+		t.Fatalf("getBuild must not auto-SUCCESS without a runner: %#v", got)
 	}
-	steps, _ := success["steps"].([]any)
+	steps, _ := got["steps"].([]any)
 	if len(steps) != 2 {
 		t.Fatalf("steps=%#v", steps)
-	}
-	for i, s := range steps {
-		sm, _ := s.(map[string]any)
-		if sm["status"] != "SUCCESS" {
-			t.Fatalf("step[%d]=%#v", i, sm)
-		}
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/triggers",

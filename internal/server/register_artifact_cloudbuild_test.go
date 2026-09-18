@@ -82,7 +82,7 @@ func TestArtifactRegistryRepoPackageVersionViaServer(t *testing.T) {
 	}
 }
 
-func TestCloudBuildWorkingThenSuccessAndProjectTriggers(t *testing.T) {
+func TestCloudBuildWorkingAndProjectTriggers(t *testing.T) {
 	srv, cfg := testServer(t)
 	auth := "Bearer " + cfg.RootAccessToken
 	project := cfg.ProjectID
@@ -120,11 +120,8 @@ func TestCloudBuildWorkingThenSuccessAndProjectTriggers(t *testing.T) {
 	}
 	var got map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &got)
-	if got["status"] != "SUCCESS" {
-		t.Fatalf("getBuild status=%#v body=%s", got["status"], rec.Body.String())
-	}
-	if got["finishTime"] == nil || got["finishTime"] == "" {
-		t.Fatalf("expected finishTime on SUCCESS: %#v", got)
+	if got["status"] == "SUCCESS" {
+		t.Fatalf("getBuild must not auto-SUCCESS without a nested engine: %#v", got)
 	}
 
 	trigBody := []byte(`{"id":"cb-trig-1","filename":"cloudbuild.yaml"}`)

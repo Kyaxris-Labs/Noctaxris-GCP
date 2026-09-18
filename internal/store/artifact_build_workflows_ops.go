@@ -37,9 +37,9 @@ func (s *Store) PatchArRepositoryDeepen(name string, description *string, labels
 
 // ArFileTheatre is synthetic Artifact Registry file metadata (no blob bytes).
 type ArFileTheatre struct {
-	Name      string
-	SizeBytes string
-	Owner     string
+	Name       string
+	SizeBytes  string
+	Owner      string
 	CreateTime string
 	UpdateTime string
 }
@@ -133,9 +133,9 @@ func (s *Store) CancelCbBuildDeepen(name string) (CbBuild, bool, error) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	b.Status = "CANCELLED"
-	b.StatusDetail = "lab theatre: build cancelled"
+	b.StatusDetail = "build cancelled"
 	b.FinishTime = now
-	b.BuildJSON = markCbBuildStepsStatus(b.BuildJSON, "CANCELLED")
+	b.BuildJSON = MarkCbBuildStepsStatus(b.BuildJSON, "CANCELLED")
 	_, err = s.db.Exec(
 		`UPDATE cb_builds SET status = ?, status_detail = ?, finish_time = ?, build_json = ? WHERE name = ?`,
 		b.Status, b.StatusDetail, b.FinishTime, b.BuildJSON, name,
