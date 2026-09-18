@@ -8,7 +8,7 @@ Lab Identity Toolkit REST for email/password auth, password-reset OOB codes, adm
 
 ## Wire protocol
 
-Client methods (no Bearer required; emulator-shaped):
+Client methods (emulator-shaped; identifier lookup still needs admin Bearer):
 
 | Method | Path |
 |--------|------|
@@ -22,6 +22,8 @@ Client methods (no Bearer required; emulator-shaped):
 | `POST` | `/identitytoolkit.googleapis.com/v1/accounts:resetPassword` |
 
 Client `accounts:update` and `accounts:delete` require a valid lab `idToken`. When `localId` is also sent, it must match the token `user_id`/`sub`. Missing `idToken` returns `401` `MISSING_ID_TOKEN`; invalid or mismatched token returns `400` `INVALID_ID_TOKEN`.
+
+Client `accounts:lookup` with only `idToken` is the public getAccountInfo path: the lab JWT is parsed and that uid is returned. Firebase client "Get user data" sends `idToken` and nothing else. `email[]`, `localId[]`, `phoneNumber[]`, and `federatedUserId[]` are admin identifier queries. They need Bearer plus `firebaseauth.users.get` or `firebaseauth.users.list`, or root. No admin principal returns `401` `MISSING_ID_TOKEN`. A Bearer principal without those permissions returns `403`. Identifier queries do not return `userRecord` on deny.
 
 Admin (Bearer required):
 
@@ -63,7 +65,8 @@ Admin calls still need `Authorization: Bearer <token>`.
 
 ## Emulator limits
 
-- Client Identity Toolkit methods do not require Bearer (emulator-shaped)
+- Client Identity Toolkit methods skip middleware Bearer (emulator-shaped)
+- Client `accounts:lookup` with `idToken` only is public self-lookup; `email[]` / `localId[]` / phone / federated need admin Bearer as above
 - Client `accounts:update` / `accounts:delete` require lab `idToken` matching `localId` when provided; admin project CRUD remains Bearer-only
 - Custom tokens and id tokens are unsigned lab JWTs (`alg: none`); not production credentials
 - `sendOobCode` returns a lab `oobCode` only (no email delivery)

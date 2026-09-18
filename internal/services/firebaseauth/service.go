@@ -20,6 +20,7 @@ import (
 type Service struct {
 	Store          *store.Store
 	Authz          *authz.Evaluator
+	Authn          *authn.Authenticator // optional; admin lookup on the public client path
 	DefaultProject string
 }
 
@@ -137,14 +138,14 @@ func userRecord(u *store.FirebaseUser, idToken string) map[string]any {
 func mintIDToken(u *store.FirebaseUser) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
 	claims := map[string]any{
-		"user_id":     u.LocalID,
-		"sub":         u.LocalID,
-		"email":       u.Email,
-		"firebase":    map[string]any{"sign_in_provider": "password"},
-		"iat":         time.Now().Unix(),
-		"exp":         time.Now().Add(time.Hour).Unix(),
-		"aud":         u.ProjectID,
-		"iss":         "https://securetoken.google.com/" + u.ProjectID,
+		"user_id":  u.LocalID,
+		"sub":      u.LocalID,
+		"email":    u.Email,
+		"firebase": map[string]any{"sign_in_provider": "password"},
+		"iat":      time.Now().Unix(),
+		"exp":      time.Now().Add(time.Hour).Unix(),
+		"aud":      u.ProjectID,
+		"iss":      "https://securetoken.google.com/" + u.ProjectID,
 	}
 	if u.CustomAttributes != "" && u.CustomAttributes != "{}" {
 		var custom map[string]any
@@ -216,6 +217,39 @@ func requireClientIDToken(w http.ResponseWriter, idToken, localID string) (uid s
 		return "", false
 	}
 	return uid, true
+}
+
+func principalAuthenticated(p authn.Principal) bool {
+	return p.IsRoot || strings.TrimSpace(p.Email) != ""
+}
+
+func lookupAdminIdentifiers(localIDs, emails, phones []string, federated []json.RawMessage) bool {
+	return len(localIDs) > 0 || len(emails) > 0 || len(phones) > 0 || len(federated) > 0
+}
+
+// principalForLookup uses wrapOptional's principal when present. Public Identity
+// Toolkit paths skip middleware Bearer, so admin identifier queries fall back to Authn.
+func (s *Service) principalForLookup(r *http.Request, p authn.Principal) authn.Principal {
+	if principalAuthenticated(p) {
+		return p
+	}
+	if s.Authn == nil {
+		return p
+	}
+	ap, err := s.Authn.AuthenticateRequest(r)
+	if err != nil {
+		return p
+	}
+	return ap
+}
+
+func (s *Service) requireLookupAdmin(p authn.Principal, project string) error {
+	if err := s.require(p, "firebaseauth.users.get", project); err == nil {
+		return nil
+	} else if err != errDenied {
+		return err
+	}
+	return s.require(p, "firebaseauth.users.list", project)
 }
 
 func mintCustomToken(projectID, uid string, claims map[string]any) string {
@@ -321,18 +355,36 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request, _ authn.Princip
 	writeJSON(w, http.StatusOK, userRecord(u, token))
 }
 
-func (s *Service) lookup(w http.ResponseWriter, r *http.Request, _ authn.Principal) {
+func (s *Service) lookup(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	var body struct {
-		LocalID         []string `json:"localId"`
-		Email           []string `json:"email"`
-		IDToken         string   `json:"idToken"`
-		TargetProjectID string   `json:"targetProjectId"`
+		LocalID         []string          `json:"localId"`
+		Email           []string          `json:"email"`
+		IDToken         string            `json:"idToken"`
+		TargetProjectID string            `json:"targetProjectId"`
+		PhoneNumber     []string          `json:"phoneNumber"`
+		FederatedUserID []json.RawMessage `json:"federatedUserId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")
 		return
 	}
 	project := s.projectFromBody(r, body.TargetProjectID)
+	adminQuery := lookupAdminIdentifiers(body.LocalID, body.Email, body.PhoneNumber, body.FederatedUserID)
+	if adminQuery {
+		p = s.principalForLookup(r, p)
+		if !principalAuthenticated(p) {
+			gcperrors.Unauthenticated(w, "MISSING_ID_TOKEN")
+			return
+		}
+		if err := s.requireLookupAdmin(p, project); err != nil {
+			writeAuthz(w, err)
+			return
+		}
+	} else if body.IDToken == "" {
+		gcperrors.Unauthenticated(w, "MISSING_ID_TOKEN")
+		return
+	}
+
 	users := []map[string]any{}
 	if body.IDToken != "" {
 		claims, err := parseLabJWT(body.IDToken)
@@ -340,10 +392,7 @@ func (s *Service) lookup(w http.ResponseWriter, r *http.Request, _ authn.Princip
 			gcperrors.InvalidArgument(w, "invalid idToken")
 			return
 		}
-		uid, _ := claims["user_id"].(string)
-		if uid == "" {
-			uid, _ = claims["sub"].(string)
-		}
+		uid := uidFromClaims(claims)
 		if uid != "" {
 			u, ok, err := s.Store.GetFirebaseUserByLocalID(uid)
 			if err != nil {
@@ -354,6 +403,10 @@ func (s *Service) lookup(w http.ResponseWriter, r *http.Request, _ authn.Princip
 				users = append(users, userRecord(u, ""))
 			}
 		}
+	}
+	if !adminQuery {
+		writeJSON(w, http.StatusOK, map[string]any{"users": users})
+		return
 	}
 	for _, id := range body.LocalID {
 		u, ok, err := s.Store.GetFirebaseUserByLocalID(id)
@@ -462,7 +515,7 @@ func (s *Service) resetPassword(w http.ResponseWriter, r *http.Request, _ authn.
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"email":   u.Email,
+		"email":       u.Email,
 		"requestType": "PASSWORD_RESET",
 	})
 }
@@ -954,4 +1007,3 @@ func (s *Service) patchTenant(w http.ResponseWriter, r *http.Request, p authn.Pr
 	}
 	writeJSON(w, http.StatusOK, tenantJSON(t))
 }
-

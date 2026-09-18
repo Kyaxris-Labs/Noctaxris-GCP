@@ -25,7 +25,7 @@ func (s *Server) registerAnalytics() {
 	bq.Mount(s.mux, principalFrom)
 
 	fa := &firebaseauth.Service{
-		Store: s.store, Authz: s.authz, DefaultProject: s.cfg.ProjectID,
+		Store: s.store, Authz: s.authz, Authn: s.authn, DefaultProject: s.cfg.ProjectID,
 	}
 	fa.Mount(s.mux, principalFrom)
 
