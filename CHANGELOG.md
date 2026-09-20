@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.2.0
+
+Minor after 1.1.1: nested Cloud Build step execution and private-pool `NO_PUBLIC_EGRESS`, IAM Credentials VPC-SC, Identity Toolkit identifier lookup, Binary Authorization on every container image, Go 1.27.1. Docker Hub: `kyaxris/noctaxris-gcp` (`1.2.0`, `1.2`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
 ### Toolchain
 
 - Go 1.27.1. Digest-pinned `golang:1.27.1-bookworm`, `docker:29-dind`, `busybox:1.37`, and distroless `static-debian12:nonroot`. CI govulncheck `v1.8.0`. Go modules refreshed, including `google.golang.org/grpc` at the GO-2026-6443 patch (`v1.85.0-dev.0.20260825072537`). Nested Engine stays `github.com/moby/moby/client`. Lab alpine pin is `alpine:3.23` (`alpine:3.20` remains allowlisted).
