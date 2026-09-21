@@ -12,6 +12,7 @@ and search, and TagKeys / TagBindings lite.
 | List projects | `GET` | `/v3/projects` |
 | List projects (v1) | `GET` | `/v1/projects` (`projectId`, `projectNumber`, `lifecycleState`, v1 `parent`) |
 | Search projects | `POST` | `/v3/projects:search` |
+| Create project (lab-lite) | `POST` | `/v3/projects` (`projectId`, optional `displayName`, `parent`) |
 | Get project | `GET` | `/v3/projects/{project}` |
 | Patch project | `PATCH` | `/v3/projects/{project}` |
 | Get IAM policy | `POST` | `/v3/projects/{project}:getIamPolicy` |
@@ -41,7 +42,8 @@ and search, and TagKeys / TagBindings lite.
 | Delete tag binding | `DELETE` | `/v3/tagBindings/{tagBinding}` |
 
 Permissions checked (except `testIamPermissions`): `resourcemanager.projects.get`,
-`resourcemanager.projects.list`, `resourcemanager.projects.search`,
+`resourcemanager.projects.list`, `resourcemanager.projects.search`, `resourcemanager.projects.create` (on the
+body `parent`, default `organizations/noctaxris-gcp-org`),
 `resourcemanager.projects.update`, `resourcemanager.projects.getIamPolicy`,
 `resourcemanager.projects.setIamPolicy`, `resourcemanager.organizations.get`,
 `resourcemanager.organizations.getIamPolicy`,
@@ -95,8 +97,14 @@ accepts `parent` plus `tagValueNamespacedName` (or `tagValue` as a namespaced
 string). The lab allocates `tagValues/{id}` and `tagBindings/{id}` without a
 separate TagValues CRUD surface. No effective-tag policy evaluation.
 
-List and search return seeded projects only. Search body field `query` matches
-project id or display name (case-insensitive substring); empty query returns all.
+List and search return stored CRM rows including lab-lite `POST /v3/projects`.
+Search body field `query` matches project id or display name (case-insensitive
+substring); empty query returns all.
+
+`POST /v3/projects` persists a second project id so worker-pool host projects
+are real CRM rows (not path-only). Duplicate `projectId` is `ALREADY_EXISTS`.
+Cloud Build pool create and pooled builds fail closed when that host project
+row is missing.
 
 Patch project updates `displayName` and/or `labels` (`updateMask=displayName`,
 `labels`, or both). The lab returns the Project JSON synchronously rather than
@@ -104,8 +112,8 @@ an LRO Operation.
 
 ## Emulator limits
 
-- No create/delete project; only the seeded default project (and any rows added
-  via store tooling).
+- No delete project and no CRM LRO; create returns Project JSON immediately.
+- No billing account, folder parent on the project row, or numeric `name`.
 - TagValues are not a first-class CRUD API; bindings store namespaced names.
 - Nested folder height/fanout constraints are not enforced beyond parent existence.
 - Project `name` uses `projects/{projectId}` (string id), not a numeric project number.
@@ -113,7 +121,7 @@ an LRO Operation.
 
 ## Deferred depth
 
-- Project create / delete (seeded projects only; no CRM project lifecycle)
+- Project delete and CRM create LRO / billing / folder parent on the project row
 - TagValues first-class CRUD (bindings store namespaced names only)
 - gRPC Projects / Folders / Organizations service registration
 

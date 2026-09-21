@@ -148,6 +148,46 @@ func (s *Store) SearchProjects(query string) ([]Project, error) {
 	return out, rows.Err()
 }
 
+// CreateProject inserts a CRM project row. created=false when the id exists.
+// Lab-lite: no delete, no LRO, no billing account. State defaults to ACTIVE.
+func (s *Store) CreateProject(p Project) (Project, bool, error) {
+	p.ID = strings.TrimSpace(p.ID)
+	if p.ID == "" || p.ID == "-" || strings.ContainsAny(p.ID, "/: \t\n") {
+		return Project{}, false, fmt.Errorf("project id required")
+	}
+	if p.DisplayName == "" {
+		p.DisplayName = p.ID
+	}
+	if p.State == "" {
+		p.State = "ACTIVE"
+	}
+	if p.LabelsJSON == "" {
+		p.LabelsJSON = "{}"
+	}
+	if p.CreatedAt == "" {
+		p.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO projects (id, display_name, state, labels_json, created_at) VALUES (?, ?, ?, ?, ?)`,
+		p.ID, p.DisplayName, p.State, p.LabelsJSON, p.CreatedAt,
+	)
+	if err != nil {
+		return Project{}, false, fmt.Errorf("create project: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Project{}, false, err
+	}
+	if n == 0 {
+		return Project{}, false, nil
+	}
+	got, ok, err := s.GetProject(p.ID)
+	if err != nil || !ok {
+		return Project{}, false, err
+	}
+	return got, true, nil
+}
+
 // UpdateProjectDisplayName sets the project display name.
 func (s *Store) UpdateProjectDisplayName(id, displayName string) (Project, bool, error) {
 	return s.UpdateProject(id, displayName, "", true, false)

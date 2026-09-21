@@ -118,7 +118,15 @@ func (h *Handler) handleListProjectsV1(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleProjectsCollectionPost(w http.ResponseWriter, r *http.Request) {
 	col, action := splitColonAction(r.PathValue("projectsCol"))
-	if col != "projects" || action != "search" {
+	if col != "projects" {
+		gcperrors.InvalidArgument(w, "expected projects or projects:search")
+		return
+	}
+	if action == "" {
+		h.handleCreateProject(w, r)
+		return
+	}
+	if action != "search" {
 		gcperrors.InvalidArgument(w, "expected projects:search")
 		return
 	}
@@ -153,6 +161,55 @@ func (h *Handler) handleProjectsCollectionPost(w http.ResponseWriter, r *http.Re
 		projects = append(projects, projectJSON(p))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
+}
+
+func (h *Handler) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	parent := store.DefaultOrganizationName
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		gcperrors.InvalidArgument(w, "unable to read body")
+		return
+	}
+	var req struct {
+		ProjectID   string `json:"projectId"`
+		DisplayName string `json:"displayName"`
+		Parent      string `json:"parent"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			gcperrors.InvalidArgument(w, "invalid JSON body")
+			return
+		}
+	}
+	if req.ProjectID == "" {
+		req.ProjectID = r.URL.Query().Get("projectId")
+	}
+	if req.Parent != "" {
+		parent = req.Parent
+	}
+	if _, ok := h.require(w, r, "resourcemanager.projects.create", parent); !ok {
+		return
+	}
+	if strings.TrimSpace(req.ProjectID) == "" {
+		gcperrors.InvalidArgument(w, "projectId is required")
+		return
+	}
+	created, ok, err := h.Store.CreateProject(store.Project{
+		ID: req.ProjectID, DisplayName: req.DisplayName, State: "ACTIVE",
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "project id required") {
+			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "project already exists")
+		return
+	}
+	writeJSON(w, http.StatusOK, projectJSON(created))
 }
 
 func (h *Handler) handleGetProject(w http.ResponseWriter, r *http.Request) {

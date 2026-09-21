@@ -31,6 +31,9 @@ func TestCloudBuildWorkerPoolUseOnHostProject(t *testing.T) {
 	if err := st.EnsureRoot(workload, root); err != nil {
 		t.Fatal(err)
 	}
+	if _, created, err := st.CreateProject(store.Project{ID: host, DisplayName: host}); err != nil || !created {
+		t.Fatalf("create host project created=%v err=%v", created, err)
+	}
 	builder := "builder@" + workload + ".iam.gserviceaccount.com"
 	if err := st.CreateServiceAccount(store.ServiceAccount{
 		ProjectID: workload, Email: builder, UniqueID: "builder", DisplayName: "builder",
@@ -117,6 +120,9 @@ func TestCloudBuildRetryWorkerPoolUseOnHostProject(t *testing.T) {
 	root := "root@" + workload + ".iam.gserviceaccount.com"
 	if err := st.EnsureRoot(workload, root); err != nil {
 		t.Fatal(err)
+	}
+	if _, created, err := st.CreateProject(store.Project{ID: host, DisplayName: host}); err != nil || !created {
+		t.Fatalf("create host project created=%v err=%v", created, err)
 	}
 	builder := "builder@" + workload + ".iam.gserviceaccount.com"
 	if err := st.CreateServiceAccount(store.ServiceAccount{
@@ -285,4 +291,60 @@ func opPoolName(t *testing.T, rec *httptest.ResponseRecorder) string {
 		t.Fatalf("missing pool name in %#v", op)
 	}
 	return name
+}
+
+func TestCloudBuildWorkerPoolMissingHostProject(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	workload := "noctaxris-gcp-local"
+	root := "root@" + workload + ".iam.gserviceaccount.com"
+	if err := st.EnsureRoot(workload, root); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	svc := &cloudbuild.Service{Store: st, Authz: &authz.Evaluator{Policies: st, Roles: st}}
+	svc.Mount(mux, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: root, IsRoot: true}, true
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/missing-host/locations/us-central1/workerPools?workerPoolId=pool-a",
+		bytes.NewReader([]byte(`{"displayName":"private"}`)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing host project status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		Error struct {
+			Status string `json:"status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Error.Status != "FAILED_PRECONDITION" {
+		t.Fatalf("error %#v", env)
+	}
+
+	poolName := "projects/missing-host/locations/us-central1/workerPools/stale"
+	if _, created, err := st.CreateCbWorkerPool(store.CbWorkerPool{
+		ProjectID: "missing-host", Location: "us-central1", PoolID: "stale",
+		AnnotationsJSON: `{"NO_PUBLIC_EGRESS":"true"}`, ConfigJSON: `{}`,
+	}); err != nil || !created {
+		t.Fatalf("stale pool created=%v err=%v", created, err)
+	}
+	buildBody := `{"steps":[{"name":"gcr.io/cloud-builders/gcloud"}],"options":{"pool":{"name":"` + poolName + `"}}}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+workload+"/builds", bytes.NewReader([]byte(buildBody)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("build against missing pool project status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }

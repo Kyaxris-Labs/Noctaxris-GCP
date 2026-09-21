@@ -95,9 +95,12 @@ Checked on `projects/{project}`:
 
 `:run` requires `cloudbuild.builds.create`.
 
-Worker pools live in a host project. Create stores `NO_PUBLIC_EGRESS=true` on
-the pool. `createBuild` and `retryBuild` with `options.pool.name` require
-`cloudbuild.workerpools.use` on that host project (not the caller project).
+Worker pools live in a host project that must exist as a CRM row
+(`POST /v3/projects` or store create). Create stores `NO_PUBLIC_EGRESS=true` on
+the pool. Missing host project on pool create or on pooled `createBuild` /
+`retryBuild` is fail closed (`FailedPrecondition`). `createBuild` and
+`retryBuild` with `options.pool.name` require `cloudbuild.workerpools.use` on
+that host project (not the caller project).
 `:retry` copies the original build request (`BuildJSON`); a pooled retry whose
 pool is missing is fail closed (`FailedPrecondition`). Private-pool public
 egress is denied unless `NO_PUBLIC_EGRESS` is explicitly `false`. Default

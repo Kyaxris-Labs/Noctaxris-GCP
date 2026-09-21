@@ -694,6 +694,13 @@ func (s *Service) requireWorkerPoolUse(w http.ResponseWriter, p authn.Principal,
 		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "worker pool not found")
 		return false
 	}
+	if _, pok, err := s.Store.GetProject(pool.ProjectID); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	} else if !pok {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "worker pool host project not found")
+		return false
+	}
 	if err := s.require(p, "cloudbuild.workerpools.use", pool.ProjectID); err != nil {
 		writeAuthzErr(w, err)
 		return false
@@ -743,6 +750,13 @@ func (s *Service) createWorkerPool(w http.ResponseWriter, r *http.Request, p aut
 	location := r.PathValue("location")
 	if err := s.require(p, "cloudbuild.workerpools.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if _, ok, err := s.Store.GetProject(project); err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	} else if !ok {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "project not found")
 		return
 	}
 	poolID := r.URL.Query().Get("workerPoolId")
