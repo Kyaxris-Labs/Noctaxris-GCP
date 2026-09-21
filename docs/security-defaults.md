@@ -77,7 +77,7 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
 - Deny by default.
 - The authenticated root principal bypasses IAM evaluation. This matches lab
   operator convenience in the AWS-shaped sibling product and is intentional.
-  Documented here so CTF authors do not treat root as a normal service account.
+  Documented here so operators do not treat root as a normal service account.
 - Non-root evaluation uses role bindings. `roles/owner` grants all permissions.
   `roles/editor` grants mutators except `*.setIamPolicy` and service-account
   token/signing impersonation (`getAccessToken`, `actAs`, `signBlob`, …).
