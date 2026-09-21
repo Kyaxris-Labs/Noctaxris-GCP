@@ -101,6 +101,24 @@ func ownUsersDoc(path, uid string) bool {
 	return strings.HasSuffix(path, "/documents/users/"+uid)
 }
 
+func (s *Service) authorizeWritePrincipal(p authn.Principal, permission, projectID, path string) error {
+	if isIdentityToolkitUser(p) {
+		if !ownUsersDoc(path, p.Email) {
+			return status.Error(codes.PermissionDenied, "The caller does not have permission.")
+		}
+		return nil
+	}
+	resource := "projects/" + projectID
+	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, resource)
+	if err != nil {
+		return status.Errorf(codes.Internal, "authz: %v", err)
+	}
+	if !ok {
+		return status.Error(codes.PermissionDenied, "The caller does not have permission.")
+	}
+	return nil
+}
+
 func (s *Service) authorizeWrite(ctx context.Context, permission, projectID, path string) error {
 	p, err := s.principal(ctx)
 	if err != nil {
@@ -112,14 +130,7 @@ func (s *Service) authorizeWrite(ctx context.Context, permission, projectID, pat
 		}
 		return status.Error(codes.Unauthenticated, err.Error())
 	}
-	if isIdentityToolkitUser(p) {
-		if !ownUsersDoc(path, p.Email) {
-			return status.Error(codes.PermissionDenied, "The caller does not have permission.")
-		}
-		return nil
-	}
-	_, err = s.require(ctx, permission, projectID)
-	return err
+	return s.authorizeWritePrincipal(p, permission, projectID, path)
 }
 
 func projectFromName(name string) (string, error) {

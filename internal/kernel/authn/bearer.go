@@ -57,6 +57,9 @@ func (a *Authenticator) AuthenticateToken(token string) (Principal, error) {
 		return Principal{Email: email, IsRoot: true}, nil
 	}
 	if a.Tokens == nil {
+		if p, ok := identityToolkitPrincipal(token); ok {
+			return p, nil
+		}
 		return Principal{}, ErrUnauthenticated
 	}
 	now := time.Now().UTC()
@@ -68,9 +71,20 @@ func (a *Authenticator) AuthenticateToken(token string) (Principal, error) {
 		return Principal{}, err
 	}
 	if !ok || email == "" {
+		if p, ok := identityToolkitPrincipal(token); ok {
+			return p, nil
+		}
 		return Principal{}, ErrUnauthenticated
 	}
 	return Principal{Email: email, IsRoot: false}, nil
+}
+
+func identityToolkitPrincipal(token string) (Principal, bool) {
+	uid, ok := LabIdentityToolkitUID(token)
+	if !ok {
+		return Principal{}, false
+	}
+	return Principal{Email: uid, IsRoot: false}, true
 }
 
 // HashToken returns the hex-encoded SHA-256 digest of token.

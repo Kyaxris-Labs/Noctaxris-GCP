@@ -17,6 +17,10 @@ func (s *Server) registerDocsCrypto() {
 		s.grpc = s.newGRPCServer()
 	}
 
+	principalFrom := func(r *http.Request) (authn.Principal, bool) {
+		return PrincipalFromContext(r.Context())
+	}
+
 	fs := &firestore.Service{
 		Store:         s.store,
 		Authn:         s.authn,
@@ -24,10 +28,7 @@ func (s *Server) registerDocsCrypto() {
 		PrincipalFrom: PrincipalFromContext,
 	}
 	firestorepb.RegisterFirestoreServer(s.grpc, fs)
-
-	principalFrom := func(r *http.Request) (authn.Principal, bool) {
-		return PrincipalFromContext(r.Context())
-	}
+	fs.MountREST(s.mux, principalFrom)
 
 	kmsSvc := &kms.Service{Store: s.store, Authz: s.authz}
 	kmsSvc.Mount(s.mux, principalFrom)
