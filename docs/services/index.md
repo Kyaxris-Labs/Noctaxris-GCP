@@ -5,16 +5,16 @@ with honest emulator limits on each page.
 
 | Service | Status | Doc | Protocol |
 |---------|--------|-----|----------|
-| Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects, org seed, folders, tag keys/bindings lite |
+| Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects (including lab-lite create), org seed, folders, tag keys/bindings lite |
 | IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys, WIF pool/provider + STS `/v1/token` (STS unrestricted under VPC-SC), TokenCreator `generateAccessToken` / `signBlob` / `signJwt` (including `iamcredentials.googleapis.com` alias; optional VPC-SC) |
 | Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable |
 | Organization Policy | lab | [orgpolicy.md](orgpolicy.md) | REST v2 policies get/set/list; boolean constraints theatre (SA keys + GCS public IAM) |
 | Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL + XML HMAC List/Get/Put; bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
 | Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST topics/subscriptions/snapshots; dead-letter + exactly-once; push `oidcToken` Bearer JWT (`PUBSUB_EMULATOR_HOST`) |
 | Secret Manager | lab | [secret-manager.md](secret-manager.md) | REST + gRPC; rotation config + lab `:rotateSecret` |
-| Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1; atomic Commit + BatchWrite; Identity Toolkit users write only `users/{uid}` (`FIRESTORE_EMULATOR_HOST`) |
+| Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1 plus REST owner-write `users/{uid}` (`FIRESTORE_EMULATOR_HOST`) |
 | Cloud KMS | lab | [kms.md](kms.md) | REST v1 symmetric + RSA_SIGN_PSS sign/verify; optional VPC-SC on `:decrypt` |
-| Cloud Logging | lab | [logging.md](logging.md) | REST v2 entries, sinks, exclusions/views lite, `resource.type` list filter, lab logs inject |
+| Cloud Logging | lab | [logging.md](logging.md) | REST v2 entries, sinks (`disabled`), view-scoped get, exclusions, `resource.type` list filter, lab logs inject |
 | Cloud Audit Logs | lab (theatre) | [cloud-audit-logs.md](cloud-audit-logs.md) | Env-gated inject + lab clock/BulkSeed; listable `protoPayload` lite via Logging `entries:list` |
 | Security Command Center | lab | [security-command-center.md](security-command-center.md) | Sources/findings CRUD lite; lab InjectFindings (`NOCTAXRIS_GCP_SCC_INJECT`) |
 | Cloud Asset Inventory | lab (theatre) | [cloud-asset-inventory.md](cloud-asset-inventory.md) | searchAllResources / listAssets / exportAssets lite over store resources; feeds + history |
@@ -46,7 +46,7 @@ with honest emulator limits on each page.
 | GKE | lab | [gke.md](gke.md) | Container API v1 clusters CRUD; optional k3s one-shot with nested engine |
 | HTTP(S) load balancing | lab | [load-balancing.md](load-balancing.md) | Global LB metadata + public `/lb/{project}/{rule}/...` GCS dataplane |
 | Cloud CDN | lab | [cloud-cdn.md](cloud-cdn.md) | Distributions CRUD + public `/cdn/{id}/...` edge |
-| Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC cross-perimeter deny on GCS/Pub/Sub/KMS decrypt and IAM Credentials `generateAccessToken` / `signBlob` / `signJwt` (STS unrestricted) |
+| Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC membership deny on GCS/Pub/Sub/KMS decrypt and IAM Credentials (same-project is not a skip; STS unrestricted) |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 Seeded organization: `organizations/noctaxris-gcp-org`.

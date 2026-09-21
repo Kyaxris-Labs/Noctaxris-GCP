@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### VPC Service Controls membership
+
+- Optional enforce no longer treats same-project as an automatic allow. Callers outside the perimeter (unresolved WIF, host/user tokens, a caller project that is not a `resources` member) are denied even when the resource project matches. Perimeter members still allow. Token Creator `request.time` CEL still applies to in-perimeter callers. Operator root skip on IAM Credentials is unchanged. Deny text stays `Request is denied because of VPC Service Controls`. IAM Credentials stays restricted in this emulator.
+
+### Firestore REST owner-write
+
+- HTTP PATCH/POST on `:4588` for `projects/{p}/databases/(default)/documents/users/{uid}` uses the same owner-write ACL as gRPC (signed-in uid may write that document only).
+
+### Logging sinks and views
+
+- Sink `disabled` persists and is omitted from matching. `logging.views.get` is evaluated on the view resource (`roles/logging.viewAccessor`); list of other views can still succeed. Unscoped `entries:list` still applies exclusions; an exact `logName=` filter does not.
+
+### GCS XML HMAC IAM
+
+- After GOOG4 HMAC verifies, XML List/Get/Put evaluate the same bucket/project `storage.objects.*` IAM as JSON, as the HMAC key service account. HMAC still cannot mint OAuth.
+
+### Cloud Resource Manager create
+
+- Lab-lite `POST /v3/projects` persists a second project id. Cloud Build worker-pool create and pooled builds fail closed when the host project row is missing.
+
 ### Cloud Build nested steps
 
 - Nested steps mint a lab Bearer for the build `serviceAccount` (email or `projects/.../serviceAccounts/EMAIL`; otherwise `{project}-compute@developer.gserviceaccount.com`) and set `CLOUDSDK_AUTH_ACCESS_TOKEN` on the step env. The hash lands in `access_tokens` like IAM `generateAccessToken`. Operator root `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is not injected.
