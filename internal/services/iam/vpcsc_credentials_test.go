@@ -259,3 +259,69 @@ func TestVPCSCCredentialsSignBlobAndSignJwtEnforced(t *testing.T) {
 		t.Fatalf("same-project WIF signJwt status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestVPCSCCredentialsHostUserSameProjectDenies(t *testing.T) {
+	f := setupVPCSCCredentials(t)
+	email := "player@example.com"
+	f.grantTokenCreator(t, email)
+	f.who = authn.Principal{Email: email, IsRoot: false}
+	assertVPCSCDenied(t, f.generateAccessToken(false), "host user generateAccessToken")
+	assertVPCSCDenied(t, f.signBlob(), "host user signBlob")
+}
+
+func TestVPCSCCredentialsSameProjectMemberSAAllows(t *testing.T) {
+	f := setupVPCSCCredentials(t)
+	caller := seedServiceAccount(t, f.st, f.project, "in-perim")
+	f.grantTokenCreator(t, caller)
+	f.who = authn.Principal{Email: caller, IsRoot: false}
+	rec := f.generateAccessToken(false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("same-project member SA generateAccessToken status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVPCSCCredentialsTokenCreatorTimeCELInPerimeter(t *testing.T) {
+	f := setupVPCSCCredentials(t)
+	caller := seedServiceAccount(t, f.st, f.project, "timed")
+	pol := authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/iam.serviceAccountTokenCreator",
+			Members: []string{"serviceAccount:" + caller},
+			Condition: &authz.Expr{
+				Expression: `request.time < timestamp("2021-01-01T00:00:00Z")`,
+			},
+		}},
+	}
+	if err := f.st.PutIAMPolicyJSON("projects/"+f.project+"/serviceAccounts/"+f.target, pol); err != nil {
+		t.Fatal(err)
+	}
+	eval := &authz.Evaluator{Policies: f.st, Roles: f.st}
+	eval.Now = func() time.Time { return time.Date(2020, 6, 1, 0, 0, 0, 0, time.UTC) }
+	mux := http.NewServeMux()
+	h := &iam.Handler{
+		Store: f.st,
+		Authz: eval,
+		Principal: func(*http.Request) (authn.Principal, bool) {
+			return authn.Principal{Email: caller, IsRoot: false}, true
+		},
+	}
+	h.Mount(mux)
+	body := `{"scope":["https://www.googleapis.com/auth/cloud-platform"]}`
+	path := "/v1/projects/-/serviceAccounts/" + f.target + ":generateAccessToken"
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("in-window member Token Creator status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	eval.Now = func() time.Time { return time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC) }
+	req = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expired request.time must deny status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), vpcscPerimeterDenied) {
+		t.Fatalf("expired CEL should be IAM deny, not VPC-SC: %s", rec.Body.String())
+	}
+}

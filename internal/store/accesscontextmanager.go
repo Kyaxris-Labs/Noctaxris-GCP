@@ -435,11 +435,12 @@ type perimeterConfig struct {
 }
 
 // VPCSCDenyCrossPerimeter returns ErrVPCSCPerimeter when optional enforce is on and
-// fromProject/toProject sit across an active perimeter that restricts service.
-// Same-project calls allow when both sides resolve. An empty fromProject is outside
-// the perimeter (not treated as toProject). Dry-run-only perimeters
-// (spec + useExplicitDryRunSpec) participate only when enforce is enabled.
-// Invalid status/spec JSON denies while enforce is on.
+// the caller is not a member of a perimeter that restricts service for the resource.
+// Same-project is not a skip: an unresolved or non-member caller is outside even when
+// fromProject equals toProject. Perimeter members (fromProject listed in resources)
+// still allow. An empty fromProject is outside (not treated as toProject).
+// Dry-run-only perimeters (spec + useExplicitDryRunSpec) participate only when
+// enforce is enabled. Invalid status/spec JSON denies while enforce is on.
 func (s *Store) VPCSCDenyCrossPerimeter(fromProject, toProject, service string) error {
 	if !VPCSCEnforceEnabled() {
 		return nil
@@ -448,9 +449,6 @@ func (s *Store) VPCSCDenyCrossPerimeter(fromProject, toProject, service string) 
 	toProject = strings.TrimSpace(toProject)
 	service = strings.TrimSpace(service)
 	if toProject == "" || service == "" {
-		return nil
-	}
-	if fromProject != "" && projectRefsMatch(fromProject, toProject) {
 		return nil
 	}
 	if err := s.ensureACM(); err != nil {

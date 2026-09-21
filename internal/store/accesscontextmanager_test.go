@@ -123,6 +123,10 @@ func TestVPCSCDenyCrossPerimeterEnforce(t *testing.T) {
 	if !errors.Is(err, store.ErrVPCSCPerimeter) {
 		t.Fatalf("empty fromProject must deny when dest is inside: %v", err)
 	}
+	err = st.VPCSCDenyCrossPerimeter("other-proj", "proj-a", "pubsub.googleapis.com")
+	if !errors.Is(err, store.ErrVPCSCPerimeter) {
+		t.Fatalf("caller project not in perimeter members must deny even if evaluating dest project: %v", err)
+	}
 }
 
 func TestVPCSCDryRunEnforceOptional(t *testing.T) {
@@ -183,6 +187,10 @@ func TestVPCSCDenyCrossPerimeterBadJSON(t *testing.T) {
 	err := st.VPCSCDenyCrossPerimeter("proj-a", "proj-b", "cloudkms.googleapis.com")
 	if !errors.Is(err, store.ErrVPCSCPerimeter) {
 		t.Fatalf("bad status JSON must deny: %v", err)
+	}
+	err = st.VPCSCDenyCrossPerimeter("proj-a", "proj-a", "cloudkms.googleapis.com")
+	if !errors.Is(err, store.ErrVPCSCPerimeter) {
+		t.Fatalf("bad status JSON must deny same-project callers: %v", err)
 	}
 }
 

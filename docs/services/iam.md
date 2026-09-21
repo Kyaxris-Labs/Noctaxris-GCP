@@ -119,9 +119,13 @@ and `signJwt` also check VPC Service Controls for
 `iamcredentials.googleapis.com` after TokenCreator allow and before minting.
 Caller project is the SA email project, or the WIF pool project for
 `wif:{providerId}:{subject}`. A caller that cannot be placed sits outside the
-perimeter, not the target SA project. Operator root skips the check. Deny
-message is `Request is denied because of VPC Service Controls`. STS
-`POST /v1/token` is not perimeter-restricted. See
+perimeter, not the target SA project. Same-project does not skip membership:
+host/user tokens and unresolved WIF are denied even when the target SA is in
+the default project. Perimeter members still allow; Token Creator
+`request.time` CEL still applies to those callers. Operator root skips the
+check. Deny message is `Request is denied because of VPC Service Controls`.
+Official IAM Credentials is often not VPC-SC restricted; this emulator still
+enforces it. STS `POST /v1/token` is not perimeter-restricted. See
 [access-context-manager.md](access-context-manager.md).
 
 IAM Conditions on Token Creator bindings evaluate `request.time` against the

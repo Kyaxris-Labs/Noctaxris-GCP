@@ -74,7 +74,8 @@ When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, `:decrypt` also checks VPC Service
 Controls for `cloudkms.googleapis.com`. The caller project is the SA email
 project, or the WIF pool project for `wif:{providerId}:{subject}`. A caller
 that cannot be placed (including a WIF principal with no matching provider) is
-outside the perimeter, not treated as the key project. Operator root does not
+outside the perimeter, not treated as the key project. Same-project is not a
+skip; perimeter members in the key project still allow. Operator root does not
 skip decrypt. Encrypt is not perimeter-restricted. STS is not
 perimeter-restricted. See
 [access-context-manager.md](access-context-manager.md).

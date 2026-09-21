@@ -1,12 +1,16 @@
 # Access Context Manager (VPC Service Controls lite)
 
 Lab Access Context Manager REST for access policies and service perimeters.
-Optional enforce (`NOCTAXRIS_GCP_VPCSC_ENFORCE=1`) denies cross-perimeter GCS
+Optional enforce (`NOCTAXRIS_GCP_VPCSC_ENFORCE=1`) denies GCS
 object upload/copy, Pub/Sub publish (including GCS notification fanout), Cloud
 KMS `:decrypt`, and IAM Credentials `generateAccessToken` / `signBlob` /
-`signJwt` when a perimeter restricts `storage.googleapis.com` /
-`pubsub.googleapis.com` / `cloudkms.googleapis.com` /
-`iamcredentials.googleapis.com`. STS is not perimeter-restricted.
+`signJwt` when a perimeter restricts those APIs and the caller is not a
+perimeter member. Same-project is not a skip: unresolved WIF, host/user tokens,
+and other callers whose project is not listed in `resources` are outside even
+when the resource project matches. Perimeter members in that project still
+allow (IAM and Token Creator `request.time` CEL still apply). STS is not
+perimeter-restricted. Official IAM Credentials is often not VPC-SC
+restricted; this emulator still enforces it.
 
 ## Status
 
@@ -47,6 +51,9 @@ Lab `resources` accept `projects/{projectId}` and CRM v1 `projects/{number}`
 
 Set `NOCTAXRIS_GCP_VPCSC_ENFORCE=1` (or `true`). Then:
 
+- Perimeter membership is project-in-`resources` lite. An empty caller project
+  (unresolved WIF, host/user email) is outside. Matching resource and caller
+  project ids do not skip the check. Members whose project is listed still allow.
 - Cross-project GCS copy and rewrite compare bucket project ids when a
   perimeter covers one side only and lists `storage.googleapis.com`
 - GCS object upload denies when the caller project and bucket project sit across
@@ -91,7 +98,8 @@ auto-seeded; enable when gating creates).
 ## Emulator limits
 
 - No access levels, ingress/egress policies evaluation, or bridge perimeters
-- No network / VPC context; enforce is project-membership lite only
+- No network / VPC context; enforce is project-membership lite (not identity
+  access levels). Same-project callers still need to be members.
 - Create/patch/delete return immediate done Operations (no long-running worker)
 - No `servicePerimeters:commit` dry-run commit RPC
 

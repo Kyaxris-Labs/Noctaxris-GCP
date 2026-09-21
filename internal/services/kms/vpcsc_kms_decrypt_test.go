@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -176,6 +177,18 @@ func TestVPCSCKmsDecryptWIFOtherProjectDenies(t *testing.T) {
 	rec := f.decrypt()
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-project WIF decrypt status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVPCSCKmsDecryptHostUserDenies(t *testing.T) {
+	f := setupVPCSCKms(t, []string{"projects/noctaxris-gcp-local"})
+	f.who = authn.Principal{Email: "player@example.com", IsRoot: true}
+	rec := f.decrypt()
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("host user decrypt status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Request is denied because of VPC Service Controls") {
+		t.Fatalf("want VPC-SC message, got %s", rec.Body.String())
 	}
 }
 
