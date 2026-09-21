@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS log_sinks (
   destination TEXT NOT NULL DEFAULT '',
   filter TEXT NOT NULL DEFAULT '',
   writer_identity TEXT NOT NULL DEFAULT '',
+  disabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (project_id, sink_id)

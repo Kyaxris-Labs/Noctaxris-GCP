@@ -51,13 +51,17 @@ Body fields used: `resourceNames` (or deprecated `projectIds`), `filter`, `pageS
 
 `entries:tail` is **one-shot**: returns currently matching entries (same filter subset as list). No streaming / long-poll.
 
+Unscoped `entries:list` (no exact `logName=`) applies enabled exclusions and can omit those log names. An exact `logName="projects/.../logs/..."` filter does not apply exclusions.
+
 ### Copy
 
 `entries:copy` returns a completed LRO (`done: true`) with destination/filter echoed. No bytes are exported.
 
 ### Sinks
 
-Store `name`, `destination`, `filter`, theatre `writerIdentity`, timestamps. No real export to GCS/BigQuery/Pub/Sub.
+Store `name`, `destination`, `filter`, `disabled`, theatre `writerIdentity`, timestamps.
+A sink with `disabled: true` is persisted and listed but is omitted from matching
+(no real export to GCS/BigQuery/Pub/Sub either way). `_Required` still cannot be patched or deleted.
 
 ### Filter subset
 
@@ -90,6 +94,12 @@ Checked on `projects/{project}`:
 - `logging.logs.delete`
 - `logging.logs.list`
 - `logging.sinks.create|get|list|update|delete`
+- `logging.views.list` on `projects/{project}`
+- `logging.views.get` on the view resource
+  `projects/{project}/locations/{location}/buckets/{bucket}/views/{view}`
+  (`roles/logging.viewAccessor` grants get/list; project inheritance still
+  applies). Missing `views.get` on that view denies get while `views.list` of
+  other views can still succeed.
 
 ## Emulator limits
 

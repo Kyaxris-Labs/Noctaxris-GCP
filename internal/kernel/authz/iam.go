@@ -308,6 +308,8 @@ func (e *Evaluator) roleGrants(role, permission string) (bool, error) {
 		return permission == "cloudfunctions.functions.invoke", nil
 	case "roles/cloudbuild.workerPoolUser":
 		return permission == "cloudbuild.workerpools.use" || permission == "cloudbuild.workerpools.get", nil
+	case "roles/logging.viewAccessor":
+		return permission == "logging.views.get" || permission == "logging.views.list", nil
 	default:
 		if isCustomRoleName(role) {
 			if e == nil || e.Roles == nil {

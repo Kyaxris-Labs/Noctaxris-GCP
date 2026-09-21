@@ -186,11 +186,11 @@ func (s *Service) createView(w http.ResponseWriter, r *http.Request, p authn.Pri
 
 func (s *Service) getView(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
-	if err := s.require(p, "logging.views.get", project); err != nil {
+	name := "projects/" + project + "/locations/" + r.PathValue("location") + "/buckets/" + r.PathValue("bucket") + "/views/" + r.PathValue("view")
+	if err := s.requireOn(p, "logging.views.get", name); err != nil {
 		writeAuthz(w, err)
 		return
 	}
-	name := "projects/" + project + "/locations/" + r.PathValue("location") + "/buckets/" + r.PathValue("bucket") + "/views/" + r.PathValue("view")
 	v, ok, err := s.Store.GetLogView(name)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())

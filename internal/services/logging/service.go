@@ -70,7 +70,11 @@ func (s *Service) wrap(principalFrom principalFunc, h handlerFunc) http.HandlerF
 }
 
 func (s *Service) require(p authn.Principal, permission, projectID string) error {
-	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, "projects/"+projectID)
+	return s.requireOn(p, permission, "projects/"+projectID)
+}
+
+func (s *Service) requireOn(p authn.Principal, permission, resource string) error {
+	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, resource)
 	if err != nil {
 		return err
 	}
@@ -363,10 +367,11 @@ func (s *Service) createSink(w http.ResponseWriter, r *http.Request, p authn.Pri
 	var body struct {
 		Destination string `json:"destination"`
 		Filter      string `json:"filter"`
+		Disabled    bool   `json:"disabled"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	sk, created, err := s.Store.CreateLogSink(store.LogSink{
-		ProjectID: project, SinkID: sinkID, Destination: body.Destination, Filter: body.Filter,
+		ProjectID: project, SinkID: sinkID, Destination: body.Destination, Filter: body.Filter, Disabled: body.Disabled,
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -441,16 +446,20 @@ func (s *Service) updateSink(w http.ResponseWriter, r *http.Request, p authn.Pri
 	var body struct {
 		Destination *string `json:"destination"`
 		Filter      *string `json:"filter"`
+		Disabled    *bool   `json:"disabled"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	dest, filter := existing.Destination, existing.Filter
+	dest, filter, disabled := existing.Destination, existing.Filter, existing.Disabled
 	if body.Destination != nil {
 		dest = *body.Destination
 	}
 	if body.Filter != nil {
 		filter = *body.Filter
 	}
-	sk, ok, err := s.Store.UpdateLogSink(name, dest, filter)
+	if body.Disabled != nil {
+		disabled = *body.Disabled
+	}
+	sk, ok, err := s.Store.UpdateLogSink(name, dest, filter, disabled)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -491,6 +500,7 @@ func sinkResource(sk *store.LogSink) map[string]any {
 		"name":           sk.Name,
 		"destination":    sk.Destination,
 		"filter":         sk.Filter,
+		"disabled":       sk.Disabled,
 		"writerIdentity": sk.WriterIdentity,
 		"createTime":     sk.CreatedAt,
 		"updateTime":     sk.UpdatedAt,

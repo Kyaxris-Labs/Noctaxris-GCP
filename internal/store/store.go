@@ -176,6 +176,7 @@ func (s *Store) ensureDataColumns() error {
 		`ALTER TABLE wif_providers ADD COLUMN allowed_audiences_json TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE gce_instances ADD COLUMN numeric_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE lb_backend_services ADD COLUMN security_policy TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE log_sinks ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range alters {
 		if _, err := s.db.Exec(stmt); err != nil {

@@ -160,7 +160,7 @@ func TestLogEntriesWriteList(t *testing.T) {
 	if err != nil || !ok || gotSink.Destination != "storage.googleapis.com/b" {
 		t.Fatalf("get sink %#v ok=%v err=%v", gotSink, ok, err)
 	}
-	updated, ok, err := st.UpdateLogSink(sk.Name, "storage.googleapis.com/b2", "severity=INFO")
+	updated, ok, err := st.UpdateLogSink(sk.Name, "storage.googleapis.com/b2", "severity=INFO", false)
 	if err != nil || !ok || updated.Filter != "severity=INFO" {
 		t.Fatalf("update sink %#v ok=%v err=%v", updated, ok, err)
 	}

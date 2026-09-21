@@ -191,6 +191,7 @@ type LogSink struct {
 	Destination    string
 	Filter         string
 	WriterIdentity string
+	Disabled       bool
 	CreatedAt      string
 	UpdatedAt      string
 }
@@ -211,11 +212,15 @@ func (s *Store) CreateLogSink(sink LogSink) (*LogSink, bool, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	sink.CreatedAt = now
 	sink.UpdatedAt = now
+	disabled := 0
+	if sink.Disabled {
+		disabled = 1
+	}
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO log_sinks
-		 (name, project_id, sink_id, destination, filter, writer_identity, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		sink.Name, sink.ProjectID, sink.SinkID, sink.Destination, sink.Filter, sink.WriterIdentity, now, now,
+		 (name, project_id, sink_id, destination, filter, writer_identity, disabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sink.Name, sink.ProjectID, sink.SinkID, sink.Destination, sink.Filter, sink.WriterIdentity, disabled, now, now,
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("create log sink: %w", err)
@@ -233,23 +238,25 @@ func (s *Store) CreateLogSink(sink LogSink) (*LogSink, bool, error) {
 // GetLogSink loads a sink by resource name.
 func (s *Store) GetLogSink(name string) (*LogSink, bool, error) {
 	var sk LogSink
+	var disabled int
 	err := s.db.QueryRow(
-		`SELECT name, project_id, sink_id, destination, filter, writer_identity, created_at, updated_at
+		`SELECT name, project_id, sink_id, destination, filter, writer_identity, disabled, created_at, updated_at
 		 FROM log_sinks WHERE name = ?`, name,
-	).Scan(&sk.Name, &sk.ProjectID, &sk.SinkID, &sk.Destination, &sk.Filter, &sk.WriterIdentity, &sk.CreatedAt, &sk.UpdatedAt)
+	).Scan(&sk.Name, &sk.ProjectID, &sk.SinkID, &sk.Destination, &sk.Filter, &sk.WriterIdentity, &disabled, &sk.CreatedAt, &sk.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("get log sink: %w", err)
 	}
+	sk.Disabled = disabled != 0
 	return &sk, true, nil
 }
 
 // ListLogSinks lists sinks under a project.
 func (s *Store) ListLogSinks(projectID string) ([]LogSink, error) {
 	rows, err := s.db.Query(
-		`SELECT name, project_id, sink_id, destination, filter, writer_identity, created_at, updated_at
+		`SELECT name, project_id, sink_id, destination, filter, writer_identity, disabled, created_at, updated_at
 		 FROM log_sinks WHERE project_id = ? ORDER BY sink_id`,
 		projectID,
 	)
@@ -260,20 +267,26 @@ func (s *Store) ListLogSinks(projectID string) ([]LogSink, error) {
 	var out []LogSink
 	for rows.Next() {
 		var sk LogSink
-		if err := rows.Scan(&sk.Name, &sk.ProjectID, &sk.SinkID, &sk.Destination, &sk.Filter, &sk.WriterIdentity, &sk.CreatedAt, &sk.UpdatedAt); err != nil {
+		var disabled int
+		if err := rows.Scan(&sk.Name, &sk.ProjectID, &sk.SinkID, &sk.Destination, &sk.Filter, &sk.WriterIdentity, &disabled, &sk.CreatedAt, &sk.UpdatedAt); err != nil {
 			return nil, err
 		}
+		sk.Disabled = disabled != 0
 		out = append(out, sk)
 	}
 	return out, rows.Err()
 }
 
-// UpdateLogSink replaces destination and filter for an existing sink.
-func (s *Store) UpdateLogSink(name, destination, filter string) (*LogSink, bool, error) {
+// UpdateLogSink replaces destination, filter, and disabled for an existing sink.
+func (s *Store) UpdateLogSink(name, destination, filter string, disabled bool) (*LogSink, bool, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	dis := 0
+	if disabled {
+		dis = 1
+	}
 	res, err := s.db.Exec(
-		`UPDATE log_sinks SET destination = ?, filter = ?, updated_at = ? WHERE name = ?`,
-		destination, filter, now, name,
+		`UPDATE log_sinks SET destination = ?, filter = ?, disabled = ?, updated_at = ? WHERE name = ?`,
+		destination, filter, dis, now, name,
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("update log sink: %w", err)
@@ -299,4 +312,74 @@ func (s *Store) DeleteLogSink(name string) (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// MatchingLogSinks returns sinks that would apply to entry. Disabled sinks are
+// omitted. Filter matching is the lab subset (empty filter, severity=, severity>=).
+func (s *Store) MatchingLogSinks(projectID string, entry LogEntry) ([]LogSink, error) {
+	list, err := s.ListLogSinks(projectID)
+	if err != nil {
+		return nil, err
+	}
+	var out []LogSink
+	for i := range list {
+		if list[i].Disabled {
+			continue
+		}
+		if !logSinkFilterMatches(list[i].Filter, entry) {
+			continue
+		}
+		out = append(out, list[i])
+	}
+	return out, nil
+}
+
+func logSinkFilterMatches(filter string, entry LogEntry) bool {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return true
+	}
+	low := strings.ToLower(filter)
+	sev := strings.ToUpper(strings.TrimSpace(entry.Severity))
+	if i := strings.Index(low, "severity>="); i >= 0 {
+		want := severityToken(filter[i+len("severity>="):])
+		return severityRank(sev) >= severityRank(want)
+	}
+	if i := strings.Index(low, "severity="); i >= 0 {
+		want := severityToken(filter[i+len("severity="):])
+		return sev == strings.ToUpper(want)
+	}
+	return true
+}
+
+func severityToken(rest string) string {
+	rest = strings.TrimSpace(rest)
+	rest = strings.Trim(rest, `"`)
+	if i := strings.IndexAny(rest, " \t"); i > 0 {
+		rest = rest[:i]
+	}
+	return strings.TrimSpace(rest)
+}
+
+func severityRank(sev string) int {
+	switch strings.ToUpper(strings.TrimSpace(sev)) {
+	case "DEBUG":
+		return 1
+	case "INFO":
+		return 2
+	case "NOTICE":
+		return 3
+	case "WARNING":
+		return 4
+	case "ERROR":
+		return 5
+	case "CRITICAL":
+		return 6
+	case "ALERT":
+		return 7
+	case "EMERGENCY":
+		return 8
+	default:
+		return 0
+	}
 }

@@ -253,6 +253,31 @@ func TestTokenCreatorGrantsGetAccessToken(t *testing.T) {
 	}
 }
 
+func TestLoggingViewAccessorRole(t *testing.T) {
+	view := "projects/noctaxris-gcp-local/locations/global/buckets/_Default/views/v-a"
+	email := "reader@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			view: mustPolicy(t, "roles/logging.viewAccessor", "serviceAccount:"+email),
+		},
+	}
+	ok, err := e.Evaluate(email, false, "logging.views.get", view)
+	if err != nil || !ok {
+		t.Fatalf("viewAccessor get: ok=%v err=%v", ok, err)
+	}
+	ok, err = e.Evaluate(email, false, "logging.views.list", view)
+	if err != nil || !ok {
+		t.Fatalf("viewAccessor list: ok=%v err=%v", ok, err)
+	}
+	ok, err = e.Evaluate(email, false, "logging.sinks.get", view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("viewAccessor must not grant sinks.get")
+	}
+}
+
 func TestViewerAndEditorDenyGetAccessToken(t *testing.T) {
 	resource := "projects/noctaxris-gcp-local"
 	for _, role := range []string{"roles/viewer", "roles/editor"} {
