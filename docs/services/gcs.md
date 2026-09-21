@@ -98,8 +98,10 @@ returned by `:generateSignedUrl`.
 JSON HMAC key CRUD (`kind=storage#hmacKey` / `storage#hmacKeysMetadata`) returns
 `accessId` and `secret` once on create. XML List/Get/Put under `/storage/xml/`
 require header `Authorization: GOOG4-HMAC-SHA256 Credential=...` plus `x-goog-date`.
-Signature skew uses wall clock. The HMAC principal (`hmac:{accessId}`) authenticates
-the XML API only and cannot mint OAuth tokens or call IAM.
+Signature skew uses wall clock. After HMAC verifies, XML List/Get/Put evaluate
+the same `storage.objects.list` / `get` / `create` IAM as JSON (bucket IAM
+resource or project, fail closed) as the HMAC key's service account. HMAC
+Authorization cannot mint OAuth tokens or call IAM.
 
 Host `storage.googleapis.com` rewrites onto `/storage/xml/...` on the shared listener.
 

@@ -45,11 +45,65 @@ func (h *Handler) requireXMLHMAC(w http.ResponseWriter, r *http.Request) (authn.
 	return authn.Principal{Email: "hmac:" + accessID, IsRoot: false}, true
 }
 
+// authorizeHMACStorage evaluates JSON-equivalent storage IAM as the HMAC key's
+// service account (never Handler.Principal, never root). Fail closed.
+func (h *Handler) authorizeHMACStorage(w http.ResponseWriter, hmacPrincipal authn.Principal, permission, bucketName string) bool {
+	accessID, ok := strings.CutPrefix(hmacPrincipal.Email, "hmac:")
+	if !ok || strings.TrimSpace(accessID) == "" {
+		gcperrors.PermissionDenied(w, "")
+		return false
+	}
+	k, found, err := h.Store.GetHMACKey(accessID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	}
+	if !found {
+		gcperrors.PermissionDenied(w, "")
+		return false
+	}
+	email := strings.TrimSpace(k.ServiceAccountEmail)
+	if email == "" {
+		gcperrors.PermissionDenied(w, "")
+		return false
+	}
+	b, ok, err := h.Store.GetBucket(bucketName)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	}
+	if !ok {
+		gcperrors.NotFound(w, "bucket not found")
+		return false
+	}
+	var resources []string
+	if b.Name != "" {
+		resources = append(resources, store.BucketIAMResource(b.Name))
+	}
+	if b.ProjectID != "" {
+		resources = append(resources, projectResource(b.ProjectID))
+	}
+	allowed, err := h.Authz.EvaluateAny(email, false, permission, resources...)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	}
+	if !allowed {
+		gcperrors.PermissionDenied(w, "")
+		return false
+	}
+	return true
+}
+
 func (h *Handler) xmlListBucket(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireXMLHMAC(w, r); !ok {
+	hmacP, ok := h.requireXMLHMAC(w, r)
+	if !ok {
 		return
 	}
 	bucket := r.PathValue("bucket")
+	if !h.authorizeHMACStorage(w, hmacP, "storage.objects.list", bucket) {
+		return
+	}
 	if _, ok, err := h.Store.GetBucket(bucket); err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -94,10 +148,14 @@ func (h *Handler) xmlListBucket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) xmlGetObject(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireXMLHMAC(w, r); !ok {
+	hmacP, ok := h.requireXMLHMAC(w, r)
+	if !ok {
 		return
 	}
 	bucket := r.PathValue("bucket")
+	if !h.authorizeHMACStorage(w, hmacP, "storage.objects.get", bucket) {
+		return
+	}
 	object := r.PathValue("object")
 	var gen int64
 	if g := r.URL.Query().Get("generation"); g != "" {
@@ -129,10 +187,14 @@ func (h *Handler) xmlGetObject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) xmlPutObject(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireXMLHMAC(w, r); !ok {
+	hmacP, ok := h.requireXMLHMAC(w, r)
+	if !ok {
 		return
 	}
 	bucket := r.PathValue("bucket")
+	if !h.authorizeHMACStorage(w, hmacP, "storage.objects.create", bucket) {
+		return
+	}
 	object := r.PathValue("object")
 	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
 	if err != nil {
@@ -169,9 +231,9 @@ func (h *Handler) createHMACKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"kind":    "storage#hmacKey",
+		"kind":     "storage#hmacKey",
 		"metadata": hmacMeta(k, false),
-		"secret":  k.Secret,
+		"secret":   k.Secret,
 	})
 }
 

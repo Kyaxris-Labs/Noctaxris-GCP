@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
 func TestGCSXMLHMACListGetPutAndGenerations(t *testing.T) {
-	mux, _, project := openGCS(t)
+	mux, st, project := openGCS(t)
 	host := "127.0.0.1:4588"
 
 	create := httptest.NewRequest(http.MethodPost, "/storage/v1/b?project="+project, strings.NewReader(`{"name":"hmac-xml","location":"US"}`))
@@ -40,6 +41,20 @@ func TestGCSXMLHMACListGetPutAndGenerations(t *testing.T) {
 	accessID, _ := meta["accessId"].(string)
 	if secret == "" || accessID == "" {
 		t.Fatalf("hmac create %#v", created)
+	}
+	app := "app@" + project + ".iam.gserviceaccount.com"
+	if err := st.CreateServiceAccount(store.ServiceAccount{
+		ProjectID: project, Email: app, UniqueID: "app", DisplayName: "app",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutIAMPolicyJSON("projects/"+project, authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/storage.objectAdmin",
+			Members: []string{"serviceAccount:" + app},
+		}},
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	putPath := "/storage/xml/hmac-xml/finance/q1.csv"
