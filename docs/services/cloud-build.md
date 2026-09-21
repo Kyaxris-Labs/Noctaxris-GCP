@@ -9,13 +9,38 @@ SUCCESS by itself.
 
 | Mode | When | Behavior |
 |------|------|----------|
-| Nested | `NOCTAXRIS_GCP_DOCKER_HOST` set (Compose default) and step images pass `AllowImagePull` | `compute.Client.RunBuildStep` on TLS DinD. Host `docker.sock` / `unix://` / `npipe://` refused. |
+| Nested | `NOCTAXRIS_GCP_DOCKER_HOST` set (Compose default) and step images pass `AllowImagePull` | `compute.Client.RunBuildStep` on TLS DinD. Host `docker.sock` / `unix://` / `npipe://` refused. ExtraHosts `host.docker.internal:host-gateway` when `NOCTAXRIS_GCP_INJECT_HOST_GATEWAY=1` (Compose default). |
 | Missing engine | `NOCTAXRIS_GCP_DOCKER_HOST` empty and no test-injected runner | Status stays `WORKING` with `statusDetail` `nested engine not configured`. Never `SUCCESS`. Cancel still works. |
-| Private pool `NO_PUBLIC_EGRESS` | `options.pool.name` set (default annotation `true` on pool create) | Step `args` / `env` / `script` http(s) URLs go through `httpegress.Validate`. Public WAN URLs fail the build. Loopback `:4588` (in-emulator GCS) is allowed. |
+| Private pool `NO_PUBLIC_EGRESS` | `options.pool.name` set (default annotation `true` on pool create) | Step `args` / `env` / `script` http(s) URLs go through `httpegress.Validate`. Public WAN URLs fail the build. Loopback `:4588` and `host.docker.internal:4588` (in-emulator GCS / IAM Credentials) are allowed. Other ports on `host.docker.internal` are denied. |
 
 Step images must be pinned lab bases (`alpine:3.23` and the other entries in
 `AllowImagePull`) or listed in
 `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST`. Unallowlisted images fail the step.
+
+## Nested step identity
+
+Each nested step runs as the build service account. The runner parses
+`serviceAccount` from the build JSON (email or
+`projects/PROJECT/serviceAccounts/EMAIL`). When that field is empty it uses
+the project default Compute Engine SA
+(`{project}-compute@developer.gserviceaccount.com`). The SA row is ensured,
+then `labtoken.Mint` registers a Bearer in the same `access_tokens` table as
+IAM `generateAccessToken`. That token is set as
+`CLOUDSDK_AUTH_ACCESS_TOKEN` on the step env (overwriting a stale value so
+in-step `iamcredentials` calls authenticate as the builder). Operator root
+`NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is never injected.
+
+When host-gateway inject is on, the step also gets gcloud endpoint overrides
+pointing at `http://host.docker.internal:4588/`
+(`CLOUDSDK_API_ENDPOINT_OVERRIDES_IAMCREDENTIALS`,
+`CLOUDSDK_API_ENDPOINT_OVERRIDES_IAM`, `CLOUDSDK_API_ENDPOINT_OVERRIDES_STORAGE`)
+and `STORAGE_EMULATOR_HOST=host.docker.internal:4588`. IAM Credentials stays
+on the existing mux: `POST /iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{email}:generateAccessToken`
+and `POST /v1/projects/-/serviceAccounts/{email}:generateAccessToken`. Go
+leaves `NOCTAXRIS_GCP_INJECT_HOST_GATEWAY` off so unit tests get nil ExtraHosts.
+Default Compose sets `${NOCTAXRIS_GCP_INJECT_HOST_GATEWAY:-1}`. Overlay
+`compose.lab-host-gateway.yaml` pins `1`. Cloud Run nested one-shot stays
+`NetworkMode: none`.
 
 ## Status
 
@@ -76,7 +101,8 @@ the pool. `createBuild` and `retryBuild` with `options.pool.name` require
 `:retry` copies the original build request (`BuildJSON`); a pooled retry whose
 pool is missing is fail closed (`FailedPrecondition`). Private-pool public
 egress is denied unless `NO_PUBLIC_EGRESS` is explicitly `false`. Default
-httpegress already allows loopback `:4588` and denies the open internet unless
+httpegress already allows loopback `:4588` and `host.docker.internal:4588`,
+and denies the open internet unless
 `NOCTAXRIS_GCP_HTTP_EGRESS=1` plus an exact allowlist.
 
 ## Emulator limits
@@ -84,6 +110,7 @@ httpegress already allows loopback `:4588` and denies the open internet unless
 - Missing nested engine never yields `SUCCESS`
 - Nested step images are allowlisted only (no arbitrary `gcr.io/cloud-builders/*` pull unless listed)
 - Host `docker.sock` is never mounted
+- Nested steps get a minted build-SA `CLOUDSDK_AUTH_ACCESS_TOKEN`, not the operator root token
 - `:run` does not check out SCM; it creates a WORKING build and runs the same step path
 - Logs URL is stored and echoed; there is no live stream
 - Regional create shares the path with Eventarc (body-shape dispatch); list merges both inventories when authorized

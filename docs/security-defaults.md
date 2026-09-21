@@ -38,7 +38,7 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 
 - API requests require `Authorization: Bearer <token>`.
 - Root token comes from `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` and maps to `NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT`.
-- Other tokens are SHA-256 hashed and looked up in `access_tokens` (minted when IAM creates a service account key, `generateAccessToken`, STS exchange, or interservice dispatch via `labtoken.Mint` for Scheduler/Tasks/Eventarc).
+- Other tokens are SHA-256 hashed and looked up in `access_tokens` (minted when IAM creates a service account key, `generateAccessToken`, STS exchange, Cloud Build nested step identity, or interservice dispatch via `labtoken.Mint` for Scheduler/Tasks/Eventarc).
 - Missing or invalid credentials return Google JSON `UNAUTHENTICATED` (HTTP 401).
 - Public paths (Bearer skipped):
   - `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`
@@ -82,7 +82,7 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
   `roles/editor` grants mutators except `*.setIamPolicy` and service-account
   token/signing impersonation (`getAccessToken`, `actAs`, `signBlob`, …).
   `roles/viewer` is read-only metadata (suffix `.get` / `.list` / `.getIamPolicy`
-  / `.search` only — never substring `.get`, so `getAccessToken` is denied).
+  / `.search` only, never substring `.get`, so `getAccessToken` is denied).
   Viewer does **not** grant `secretmanager.versions.access` (needs
   `roles/secretmanager.secretAccessor` or owner).
   `roles/iam.serviceAccountTokenCreator` on a service account grants

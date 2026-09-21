@@ -24,6 +24,7 @@ func (holdRunner) Run(context.Context, store.CbBuild) error { return nil }
 func setupStepExec(t *testing.T) (*store.Store, *http.ServeMux, *cloudbuild.Service) {
 	t.Helper()
 	t.Setenv(compute.EnvDockerHost, "")
+	t.Setenv(compute.EnvInjectHostGateway, "")
 	t.Setenv(httpegress.EnvHTTPEgress, "")
 	t.Setenv(httpegress.EnvHTTPAllowlist, "")
 	dir := t.TempDir()
@@ -132,8 +133,8 @@ func TestMissingEngineGetBuildNotSuccess(t *testing.T) {
 	created := postBuild(t, mux, `{"steps":[{"name":"gcr.io/cloud-builders/gcloud"}]}`)
 	id, _ := created["id"].(string)
 	got := getBuild(t, mux, id)
-	if got["status"] == "SUCCESS" {
-		t.Fatalf("missing engine must not SUCCESS: %#v", got)
+	if got["status"] != "WORKING" {
+		t.Fatalf("missing engine must stay WORKING: %#v", got)
 	}
 	detail, _ := got["statusDetail"].(string)
 	if detail != "nested engine not configured" {

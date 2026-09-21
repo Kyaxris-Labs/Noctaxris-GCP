@@ -11,6 +11,7 @@ import (
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/compute"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -91,6 +92,10 @@ func (r *EngineRunner) Run(ctx context.Context, build store.CbBuild) error {
 		return err
 	}
 	steps := parseBuildSteps(cur.BuildJSON)
+	token, extraHosts, err := r.buildStepIdentity(cur)
+	if err != nil {
+		return r.failBuild(cur, err.Error())
+	}
 	for i, step := range steps {
 		if err := ctx.Err(); err != nil {
 			return r.failBuild(cur, err.Error())
@@ -103,7 +108,8 @@ func (r *EngineRunner) Run(ctx context.Context, build store.CbBuild) error {
 			return nil
 		}
 		cur = live
-		if err := r.runOneStep(ctx, step); err != nil {
+		step = withBuildIdentityEnv(step, token, extraHosts)
+		if err := r.runOneStep(ctx, step, extraHosts); err != nil {
 			cur.BuildJSON = markStepStatusAt(cur.BuildJSON, i, "FAILURE")
 			return r.failBuild(cur, err.Error())
 		}
@@ -118,7 +124,7 @@ func (r *EngineRunner) Run(ctx context.Context, build store.CbBuild) error {
 	return err
 }
 
-func (r *EngineRunner) runOneStep(ctx context.Context, step BuildStep) error {
+func (r *EngineRunner) runOneStep(ctx context.Context, step BuildStep, extraHosts []string) error {
 	if r.ExecuteStep != nil {
 		return r.ExecuteStep(ctx, step)
 	}
@@ -132,10 +138,11 @@ func (r *EngineRunner) runOneStep(ctx context.Context, step BuildStep) error {
 		return fmt.Errorf("nested engine not configured")
 	}
 	res, err := cli.RunBuildStep(ctx, compute.BuildStepRun{
-		Image:  step.Image,
-		Cmd:    step.Args,
-		Env:    step.Env,
-		Script: step.Script,
+		Image:      step.Image,
+		Cmd:        step.Args,
+		Env:        step.Env,
+		Script:     step.Script,
+		ExtraHosts: extraHosts,
 	})
 	if err != nil {
 		return err
@@ -233,6 +240,78 @@ func isActiveBuildStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func (r *EngineRunner) buildStepIdentity(build store.CbBuild) (token string, extraHosts []string, err error) {
+	extraHosts = compute.HostGatewayExtraHosts()
+	if r == nil || r.Store == nil {
+		return "", extraHosts, fmt.Errorf("build service account store required")
+	}
+	email := parseBuildServiceAccountEmail(build.BuildJSON, build.ProjectID)
+	if email == "" {
+		return "", extraHosts, fmt.Errorf("build service account email required")
+	}
+	project := strings.TrimSpace(build.ProjectID)
+	if project == "" {
+		return "", extraHosts, fmt.Errorf("build project required")
+	}
+	if err := r.Store.EnsureServiceAccount(project, email, "cloud build service account"); err != nil {
+		return "", extraHosts, err
+	}
+	tok, _, err := labtoken.Mint(r.Store, email, labtoken.DefaultLifetime)
+	if err != nil {
+		return "", extraHosts, err
+	}
+	return tok, extraHosts, nil
+}
+
+func parseBuildServiceAccountEmail(buildJSON, projectID string) string {
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(buildJSON), &cfg); err == nil && cfg != nil {
+		if email := serviceAccountEmail(stringField(cfg["serviceAccount"])); email != "" {
+			return email
+		}
+	}
+	return labtoken.DefaultComputeSAEmail(projectID)
+}
+
+func serviceAccountEmail(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	const marker = "/serviceAccounts/"
+	if i := strings.LastIndex(raw, marker); i >= 0 {
+		return strings.TrimSpace(raw[i+len(marker):])
+	}
+	return raw
+}
+
+func withBuildIdentityEnv(step BuildStep, token string, extraHosts []string) BuildStep {
+	env := append([]string(nil), step.Env...)
+	if token != "" {
+		env = upsertEnv(env, "CLOUDSDK_AUTH_ACCESS_TOKEN", token)
+	}
+	if len(extraHosts) > 0 {
+		base := "http://host.docker.internal:" + httpegress.LabListenPort + "/"
+		env = upsertEnv(env, "CLOUDSDK_API_ENDPOINT_OVERRIDES_IAMCREDENTIALS", base)
+		env = upsertEnv(env, "CLOUDSDK_API_ENDPOINT_OVERRIDES_IAM", base)
+		env = upsertEnv(env, "CLOUDSDK_API_ENDPOINT_OVERRIDES_STORAGE", base)
+		env = upsertEnv(env, "STORAGE_EMULATOR_HOST", "host.docker.internal:"+httpegress.LabListenPort)
+	}
+	step.Env = env
+	return step
+}
+
+func upsertEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
 }
 
 func parseBuildSteps(buildJSON string) []BuildStep {

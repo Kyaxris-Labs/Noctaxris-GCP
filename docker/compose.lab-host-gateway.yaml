@@ -1,6 +1,6 @@
-# Opt-in ExtraHosts / publish widen for nested→host API labs.
-# Cloud Run nested one-shot uses NetworkMode none (no host-gateway benefit);
-# this overlay is for future nested paths and Desktop publish experiments.
+# Pins ExtraHosts inject for nested Cloud Build (base compose already defaults to 1).
+# Cloud Run nested one-shot uses NetworkMode none (no host-gateway benefit).
+# Optional NOCTAXRIS_GCP_PUBLISH_ADDR=0.0.0.0 for Desktop host-gateway experiments.
 #
 # Usage (from repo root or docker/):
 #   NOCTAXRIS_GCP_PUBLISH_ADDR=0.0.0.0 docker compose -f compose.yaml -f compose.lab-host-gateway.yaml --env-file .env up --build

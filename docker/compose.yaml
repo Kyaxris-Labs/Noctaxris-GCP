@@ -31,9 +31,10 @@ services:
       # Compose operators: fail closed on nested engine/invoke failure (unit tests leave these unset).
       NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED: "1"
       NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED: "1"
-      # Nested ExtraHosts host.docker.internal. Code default is off; set 1 or use
-      # compose.lab-host-gateway.yaml for nested→API labs (Cloud Run one-shot uses NetworkMode none).
-      NOCTAXRIS_GCP_INJECT_HOST_GATEWAY: "${NOCTAXRIS_GCP_INJECT_HOST_GATEWAY:-0}"
+      # Nested Cloud Build ExtraHosts host.docker.internal:host-gateway. Go default is
+      # off (unit tests). Compose defaults to 1 so nested steps can reach :4588.
+      # Cloud Run one-shot stays NetworkMode none. Overlay compose.lab-host-gateway.yaml pins 1.
+      NOCTAXRIS_GCP_INJECT_HOST_GATEWAY: "${NOCTAXRIS_GCP_INJECT_HOST_GATEWAY:-1}"
     volumes:
       - noctaxris-gcp-data:/var/lib/noctaxris-gcp
       - noctaxris-gcp-secrets:/var/lib/noctaxris-gcp-secrets

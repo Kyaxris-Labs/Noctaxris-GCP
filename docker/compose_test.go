@@ -75,6 +75,9 @@ func TestComposeEngineDefaultOn(t *testing.T) {
 	if !strings.Contains(content, `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED: "1"`) {
 		t.Fatal("default compose must set NESTED_INVOKE_FAIL_CLOSED=1")
 	}
+	if !strings.Contains(content, `NOCTAXRIS_GCP_INJECT_HOST_GATEWAY: "${NOCTAXRIS_GCP_INJECT_HOST_GATEWAY:-1}"`) {
+		t.Fatal("default compose must default NOCTAXRIS_GCP_INJECT_HOST_GATEWAY to 1")
+	}
 	if strings.Contains(content, "2376:2376") || strings.Contains(content, `"2376:`) {
 		t.Fatal("engine API must not be published to the host")
 	}

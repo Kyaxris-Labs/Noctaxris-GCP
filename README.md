@@ -242,7 +242,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud Build</td>
-      <td>createBuild nested step execution when the engine is configured; missing engine stays WORKING (never SUCCESS); private pools require <code>cloudbuild.workerpools.use</code> on the host project; <code>NO_PUBLIC_EGRESS</code> via httpegress (WAN deny, in-emulator GCS on <code>:4588</code> allow); shared regional triggers mux with Eventarc.</td>
+      <td>createBuild nested step execution when the engine is configured (build SA <code>CLOUDSDK_AUTH_ACCESS_TOKEN</code>; ExtraHosts <code>host.docker.internal:host-gateway</code> when <code>NOCTAXRIS_GCP_INJECT_HOST_GATEWAY=1</code>, Compose default); missing engine stays WORKING (never SUCCESS); private pools require <code>cloudbuild.workerpools.use</code> on the host project; <code>NO_PUBLIC_EGRESS</code> via httpegress (WAN deny, in-emulator GCS and <code>host.docker.internal:4588</code> allow); shared regional triggers mux with Eventarc.</td>
       <td>SCM webhooks; SLSA/attestations; approvals; live log streaming.</td>
     </tr>
     <tr>

@@ -58,4 +58,23 @@ func TestPrivatePoolNoPublicEgressDeniesWANAllowsLabGCS(t *testing.T) {
 	if ran.Load() != 1 {
 		t.Fatalf("ExecuteStep ran %d times, want 1", ran.Load())
 	}
+
+	nested := `{"steps":[{"name":"alpine:3.23","args":["curl","http://host.docker.internal:4588/iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/x:generateAccessToken"]}],"options":{"pool":{"name":"` + poolName + `"}}}`
+	created = postBuild(t, mux, nested)
+	id, _ = created["id"].(string)
+	got = getBuild(t, mux, id)
+	if got["status"] != "SUCCESS" {
+		t.Fatalf("host.docker.internal:4588 must be allowed: %#v", got)
+	}
+	if ran.Load() != 2 {
+		t.Fatalf("ExecuteStep ran %d times, want 2", ran.Load())
+	}
+
+	badPort := `{"steps":[{"name":"alpine:3.23","args":["curl","http://host.docker.internal:9/x"]}],"options":{"pool":{"name":"` + poolName + `"}}}`
+	created = postBuild(t, mux, badPort)
+	id, _ = created["id"].(string)
+	got = getBuild(t, mux, id)
+	if got["status"] != "FAILURE" {
+		t.Fatalf("host.docker.internal non-lab port must fail: %#v", got)
+	}
 }

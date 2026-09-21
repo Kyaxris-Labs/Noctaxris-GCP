@@ -28,7 +28,7 @@ with honest emulator limits on each page.
 | Cloud Datastore | lab | [datastore.md](datastore.md) | gRPC Datastore v1 (`DATASTORE_EMULATOR_HOST`) |
 | Eventarc | lab | [eventarc.md](eventarc.md) | REST v1 triggers/channels; Pub/Sub and GCS delivery + retry |
 | Artifact Registry | lab | [artifact-registry.md](artifact-registry.md) | REST v1 repos/packages/versions metadata (no blobs) |
-| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild nested step execution + triggers CRUD lite + worker pools (`NO_PUBLIC_EGRESS` via httpegress: WAN deny, `:4588` GCS allow) |
+| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild nested step execution (build SA `CLOUDSDK_AUTH_ACCESS_TOKEN`, ExtraHosts when inject is on) + triggers CRUD lite + worker pools (`NO_PUBLIC_EGRESS` via httpegress: WAN deny, `:4588` and `host.docker.internal:4588` allow) |
 | Workflows | lab | [workflows.md](workflows.md) | REST v1 workflows CRUD + executions SUCCEEDED theatre |
 | Cloud Spanner | lab | [spanner.md](spanner.md) | REST v1 instances/databases; session commit insert + ExecuteSql/Read rows |
 | App Engine | lab | [app-engine.md](app-engine.md) | REST Admin API v1 apps/services/versions (control-plane theatre) |

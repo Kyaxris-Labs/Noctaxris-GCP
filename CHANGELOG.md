@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Cloud Build nested steps
+
+- Nested steps mint a lab Bearer for the build `serviceAccount` (email or `projects/.../serviceAccounts/EMAIL`; otherwise `{project}-compute@developer.gserviceaccount.com`) and set `CLOUDSDK_AUTH_ACCESS_TOKEN` on the step env. The hash lands in `access_tokens` like IAM `generateAccessToken`. Operator root `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is not injected.
+
+### Nested API reachability
+
+- `NOCTAXRIS_GCP_INJECT_HOST_GATEWAY=1` adds ExtraHosts `host.docker.internal:host-gateway` on Cloud Build `RunBuildStep` and sets `CLOUDSDK_API_ENDPOINT_OVERRIDES_IAMCREDENTIALS` / `IAM` / `STORAGE` plus `STORAGE_EMULATOR_HOST` to `host.docker.internal:4588`. Go default is off (nil ExtraHosts). Default Compose uses `${NOCTAXRIS_GCP_INJECT_HOST_GATEWAY:-1}`. Overlay `compose.lab-host-gateway.yaml` still pins `1`. Cloud Run one-shot stays `NetworkMode: none`. Host `docker.sock` stays refused. Missing engine stays `WORKING` with `statusDetail` `nested engine not configured`.
+- httpegress allows `http(s)://host.docker.internal:4588/...` as lab-local (port 4588 only) so private-pool `NO_PUBLIC_EGRESS` can use ExtraHosts URLs for IAM Credentials and GCS.
+
 ## 1.2.0
 
 Minor after 1.1.1: nested Cloud Build step execution and private-pool `NO_PUBLIC_EGRESS`, IAM Credentials VPC-SC, Identity Toolkit identifier lookup, Binary Authorization on every container image, Go 1.27.1. Docker Hub: `kyaxris/noctaxris-gcp` (`1.2.0`, `1.2`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

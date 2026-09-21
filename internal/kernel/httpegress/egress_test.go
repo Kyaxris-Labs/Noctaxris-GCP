@@ -68,6 +68,30 @@ func TestValidateAllowlistPublicHostname(t *testing.T) {
 	}
 }
 
+func TestValidateHostDockerInternalLabPort(t *testing.T) {
+	t.Parallel()
+	ok := []string{
+		"http://host.docker.internal:4588/v1/projects/-/serviceAccounts/sa:generateAccessToken",
+		"https://host.docker.internal:4588/storage/v1/b/scratch/o/out",
+		"http://HOST.DOCKER.INTERNAL:4588/iamcredentials.googleapis.com/v1/x",
+	}
+	for _, ep := range ok {
+		if err := httpegress.Validate(ep); err != nil {
+			t.Fatalf("%s: %v", ep, err)
+		}
+	}
+	for _, ep := range []string{
+		"http://host.docker.internal:9/x",
+		"http://host.docker.internal/v1/x",
+		"https://host.docker.internal/v1/x",
+		"http://host.docker.internal:8443/v1/x",
+	} {
+		if err := httpegress.Validate(ep); err == nil {
+			t.Fatalf("expected reject for %s", ep)
+		}
+	}
+}
+
 func TestClientRejectsRedirects(t *testing.T) {
 	t.Parallel()
 	client := httpegress.Client(0)

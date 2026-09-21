@@ -1,8 +1,9 @@
 // Package httpegress gates lab outbound HTTP (Pub/Sub push, Eventarc, Tasks, Scheduler,
 // STS OIDC JWKS/discovery).
-// Default deny: only the lab HTTP catcher on loopback :4588, or other loopback :4588
-// lab-local URLs. Open-internet delivery requires NOCTAXRIS_GCP_HTTP_EGRESS=1 plus an
-// exact URL allowlist; private/metadata/loopback hosts never pass the allowlist path.
+// Default deny: only the lab HTTP catcher on loopback :4588, other loopback :4588
+// lab-local URLs, and host.docker.internal:4588 (DinD ExtraHosts to the API).
+// Open-internet delivery requires NOCTAXRIS_GCP_HTTP_EGRESS=1 plus an exact URL
+// allowlist; private/metadata/loopback hosts never pass the allowlist path.
 package httpegress
 
 import (
@@ -77,12 +78,21 @@ func IsLabOIDC(u *url.URL, scheme string) bool {
 	return strings.HasPrefix(u.Path, LabOIDCLabWellKnownPrefix)
 }
 
-// IsLabLocal reports loopback delivery to the lab API port (self-invoke theatre).
+// IsLabLocal reports delivery to the lab API port (self-invoke theatre).
+// Loopback :4588 and host.docker.internal:4588 (nested ExtraHosts) are lab-local.
+// Other ports on host.docker.internal are not.
 func IsLabLocal(u *url.URL, scheme string) bool {
-	if !isLoopbackHost(u.Hostname()) {
+	if portOrDefault(u, scheme) != LabListenPort {
 		return false
 	}
-	return portOrDefault(u, scheme) == LabListenPort
+	if isLoopbackHost(u.Hostname()) {
+		return true
+	}
+	return isHostDockerInternal(u.Hostname())
+}
+
+func isHostDockerInternal(host string) bool {
+	return strings.EqualFold(strings.TrimSpace(host), "host.docker.internal")
 }
 
 func egressEnabled() bool {

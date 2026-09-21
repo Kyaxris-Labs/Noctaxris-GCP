@@ -156,16 +156,18 @@ func (c *Client) RunLabOneShot(ctx context.Context, imageRef string) (OneShotRes
 
 // BuildStepRun is one Cloud Build step for nested engine execution.
 type BuildStepRun struct {
-	Image  string
-	Cmd    []string
-	Env    []string
-	Script string
+	Image      string
+	Cmd        []string
+	Env        []string
+	Script     string
+	ExtraHosts []string
 }
 
 // RunBuildStep pulls (if needed) and runs one allowlisted build step.
 // Host docker.sock is never mounted. Network stays the engine default (not
-// "none") so in-emulator GCS on loopback is not blocked at the container net
-// layer; Cloud Build still gates destinations with httpegress.
+// "none") so steps can dial the API. ExtraHosts is applied when non-empty
+// (host.docker.internal:host-gateway). Cloud Build still gates destinations
+// with httpegress.
 func (c *Client) RunBuildStep(ctx context.Context, step BuildStepRun) (OneShotResult, error) {
 	if !c.Enabled() {
 		return OneShotResult{}, fmt.Errorf("compute: engine disabled (NOCTAXRIS_GCP_DOCKER_HOST empty)")
@@ -193,6 +195,10 @@ func (c *Client) RunBuildStep(ctx context.Context, step BuildStepRun) (OneShotRe
 	}
 
 	name := "noctaxris-gcp-cb-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	hostCfg := &container.HostConfig{AutoRemove: false}
+	if len(step.ExtraHosts) > 0 {
+		hostCfg.ExtraHosts = step.ExtraHosts
+	}
 	create, err := c.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Image: ref,
@@ -200,10 +206,8 @@ func (c *Client) RunBuildStep(ctx context.Context, step BuildStepRun) (OneShotRe
 			Env:   step.Env,
 			Tty:   false,
 		},
-		HostConfig: &container.HostConfig{
-			AutoRemove: false,
-		},
-		Name: name,
+		HostConfig: hostCfg,
+		Name:       name,
 	})
 	if err != nil {
 		return OneShotResult{}, fmt.Errorf("compute: build step create: %w", err)
