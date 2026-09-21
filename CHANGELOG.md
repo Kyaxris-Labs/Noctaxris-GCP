@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.3.0
+
+Minor after 1.2.0: Artifact Registry Docker V2, VPC-SC membership, Firestore REST owner-write, logging sink and view IAM, GCS XML HMAC IAM, CRM project create, Cloud Build step identity and named-SA actAs, KMS encrypt/decrypt EvaluateAny. Docker Hub: `kyaxris/noctaxris-gcp` (`1.3.0`, `1.3`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
 ### Artifact Registry Docker V2
 
 - Docker Registry HTTP API V2 on the same `:4588` listener as Artifact Registry REST v1: `GET /v2/`, monolithic blob upload (`POST` + `PUT ?digest=`), blob and manifest `GET`/`HEAD`/`PUT`. Image names may be `project/repo/image`. Blobs are SQLite `BLOB` rows keyed by digest; no host `docker.sock` and no nested engine for pull.
@@ -36,6 +40,10 @@
 
 - `NOCTAXRIS_GCP_INJECT_HOST_GATEWAY=1` adds ExtraHosts `host.docker.internal:host-gateway` on Cloud Build `RunBuildStep` and sets `CLOUDSDK_API_ENDPOINT_OVERRIDES_IAMCREDENTIALS` / `IAM` / `STORAGE` plus `STORAGE_EMULATOR_HOST` to `host.docker.internal:4588`. Go default is off (nil ExtraHosts). Default Compose uses `${NOCTAXRIS_GCP_INJECT_HOST_GATEWAY:-1}`. Overlay `compose.lab-host-gateway.yaml` still pins `1`. Cloud Run one-shot stays `NetworkMode: none`. Host `docker.sock` stays refused. Missing engine stays `WORKING` with `statusDetail` `nested engine not configured`.
 - httpegress allows `http(s)://host.docker.internal:4588/...` as lab-local (port 4588 only) so private-pool `NO_PUBLIC_EGRESS` can use ExtraHosts URLs for IAM Credentials and GCS.
+
+### KMS IAM
+
+- `:encrypt`, `:decrypt`, and `cryptoKeys.get` use `EvaluateAny` on the crypto key resource and the parent project. A key IAM binding is enough. List and create stay project-scoped.
 
 ## 1.2.0
 
