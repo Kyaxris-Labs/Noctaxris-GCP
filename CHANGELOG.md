@@ -30,6 +30,7 @@
 ### Cloud Build nested steps
 
 - Nested steps mint a lab Bearer for the build `serviceAccount` (email or `projects/.../serviceAccounts/EMAIL`; otherwise `{project}-compute@developer.gserviceaccount.com`) and set `CLOUDSDK_AUTH_ACCESS_TOKEN` on the step env. The hash lands in `access_tokens` like IAM `generateAccessToken`. Operator root `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is not injected.
+- `createBuild` and `retryBuild` with a named `serviceAccount` require `iam.serviceAccounts.actAs` on that account (or the parent project). An omitted `serviceAccount` is not gated. `cloudbuild.builds.create` alone is not enough.
 
 ### Nested API reachability
 

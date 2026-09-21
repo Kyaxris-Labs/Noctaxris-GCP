@@ -95,6 +95,10 @@ Checked on `projects/{project}`:
 
 `:run` requires `cloudbuild.builds.create`.
 
+`createBuild` and `retryBuild` with a named `serviceAccount` also require
+`iam.serviceAccounts.actAs` on that service account (or the parent project).
+An omitted `serviceAccount` is not gated.
+
 Worker pools live in a host project that must exist as a CRM row
 (`POST /v3/projects` or store create). Create stores `NO_PUBLIC_EGRESS=true` on
 the pool. Missing host project on pool create or on pooled `createBuild` /

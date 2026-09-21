@@ -136,6 +136,9 @@ func (s *Service) createBuild(w http.ResponseWriter, r *http.Request, p authn.Pr
 	if !s.requireWorkerPoolUse(w, p, body) {
 		return
 	}
+	if !s.requireBuildServiceAccountActAs(w, p, project, body) {
+		return
+	}
 	buildID := store.NewCbBuildID()
 	name := buildName(project, location, buildID)
 	body["steps"] = ensureStepStatus(body["steps"], "WORKING")
@@ -311,6 +314,9 @@ func (s *Service) retryBuild(w http.ResponseWriter, r *http.Request, p authn.Pri
 		cfg = map[string]any{}
 	}
 	if !s.requireWorkerPoolUse(w, p, cfg) {
+		return
+	}
+	if !s.requireBuildServiceAccountActAs(w, p, project, cfg) {
 		return
 	}
 	retryLoc := src.Location
@@ -703,6 +709,27 @@ func (s *Service) requireWorkerPoolUse(w http.ResponseWriter, p authn.Principal,
 	}
 	if err := s.require(p, "cloudbuild.workerpools.use", pool.ProjectID); err != nil {
 		writeAuthzErr(w, err)
+		return false
+	}
+	return true
+}
+
+// requireBuildServiceAccountActAs enforces iam.serviceAccounts.actAs when the
+// request names a serviceAccount. An omitted serviceAccount uses the default
+// compute SA at runtime and is not gated here.
+func (s *Service) requireBuildServiceAccountActAs(w http.ResponseWriter, p authn.Principal, project string, body map[string]any) bool {
+	email := serviceAccountEmail(stringField(body["serviceAccount"]))
+	if email == "" {
+		return true
+	}
+	saRes := fmt.Sprintf("projects/%s/serviceAccounts/%s", project, email)
+	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, "iam.serviceAccounts.actAs", saRes, "projects/"+project)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	}
+	if !ok {
+		gcperrors.PermissionDenied(w, "")
 		return false
 	}
 	return true
