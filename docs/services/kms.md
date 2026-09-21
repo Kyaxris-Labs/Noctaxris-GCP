@@ -67,8 +67,10 @@ Destroying a version sets state `DESTROYED`. Later crypto ops return `FAILED_PRE
 Checked on `projects/{project}`:
 
 - `cloudkms.keyRings.create|get|list`
-- `cloudkms.cryptoKeys.create|get|list|update|getIamPolicy|setIamPolicy`
-- `cloudkms.cryptoKeyVersions.get|list|useToEncrypt|useToDecrypt|useToSign|viewPublicKey|destroy|restore`
+- `cloudkms.cryptoKeys.create|list|update|getIamPolicy|setIamPolicy`
+- `cloudkms.cryptoKeyVersions.get|list|useToSign|viewPublicKey|destroy|restore`
+
+`cryptoKeys.get`, `:encrypt`, and `:decrypt` use `EvaluateAny` on the crypto key resource and the project, so a key IAM binding (for example `cloudkms.cryptoKeyVersions.useToDecrypt`) is enough. List and create stay project-scoped.
 
 When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, `:decrypt` also checks VPC Service
 Controls for `cloudkms.googleapis.com`. The caller project is the SA email

@@ -58,7 +58,11 @@ func (s *Service) wrap(principalFrom principalFunc, h handlerFunc) http.HandlerF
 }
 
 func (s *Service) require(p authn.Principal, permission, projectID string) error {
-	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, "projects/"+projectID)
+	return s.requireAny(p, permission, "projects/"+projectID)
+}
+
+func (s *Service) requireAny(p authn.Principal, permission string, resources ...string) error {
+	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, permission, resources...)
 	if err != nil {
 		return err
 	}
@@ -66,6 +70,10 @@ func (s *Service) require(p authn.Principal, permission, projectID string) error
 		return errDenied
 	}
 	return nil
+}
+
+func cryptoKeyName(project, location, keyRing, cryptoKey string) string {
+	return fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
 }
 
 var errDenied = fmt.Errorf("permission denied")
@@ -342,11 +350,11 @@ func cryptoKeyResource(name, purpose, algorithm, labelsJSON, createTime, primary
 }
 
 func (s *Service) getCryptoKey(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing, cryptoKey string) {
-	if err := s.require(p, "cloudkms.cryptoKeys.get", project); err != nil {
+	name := cryptoKeyName(project, location, keyRing, cryptoKey)
+	if err := s.requireAny(p, "cloudkms.cryptoKeys.get", name, "projects/"+project); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
-	name := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
 	k, ok, err := s.Store.GetKMSCryptoKey(name)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -487,11 +495,11 @@ func (s *Service) setIamPolicy(w http.ResponseWriter, r *http.Request, p authn.P
 }
 
 func (s *Service) encrypt(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
-	if err := s.require(p, "cloudkms.cryptoKeyVersions.useToEncrypt", project); err != nil {
+	keyName := cryptoKeyName(project, location, keyRing, cryptoKey)
+	if err := s.requireAny(p, "cloudkms.cryptoKeyVersions.useToEncrypt", keyName, "projects/"+project); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
-	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
 	k, ok, err := s.Store.GetKMSCryptoKey(keyName)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -550,7 +558,8 @@ func (s *Service) encrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 }
 
 func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
-	if err := s.require(p, "cloudkms.cryptoKeyVersions.useToDecrypt", project); err != nil {
+	keyName := cryptoKeyName(project, location, keyRing, cryptoKey)
+	if err := s.requireAny(p, "cloudkms.cryptoKeyVersions.useToDecrypt", keyName, "projects/"+project); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -567,7 +576,6 @@ func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
 	k, ok, err := s.Store.GetKMSCryptoKey(keyName)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())

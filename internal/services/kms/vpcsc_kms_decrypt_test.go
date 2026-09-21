@@ -201,3 +201,42 @@ func TestVPCSCKmsDecryptProjectNumberPerimeter(t *testing.T) {
 		t.Fatalf("number-perimeter decrypt status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestKmsDecryptHonorsCryptoKeyIAM(t *testing.T) {
+	f := setupVPCSCKms(t, []string{"projects/noctaxris-gcp-local"})
+	email := "signer@noctaxris-gcp-local.iam.gserviceaccount.com"
+	if err := f.st.EnsureServiceAccount(f.project, email, "signer"); err != nil {
+		t.Fatal(err)
+	}
+	keyName := "projects/" + f.project + "/locations/" + kms.DefaultLocation + "/keyRings/vpc-ring/cryptoKeys/vpc-key"
+	if err := f.st.PutIAMPolicyJSON(keyName, authz.Policy{
+		Etag: "ACAB",
+		Bindings: []authz.Binding{{
+			Role:    "roles/editor",
+			Members: []string{"serviceAccount:" + email},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.who = authn.Principal{Email: email, IsRoot: false}
+	rec := f.decrypt()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("key IAM decrypt status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestKmsDecryptWithoutKeyOrProjectIAMDenies(t *testing.T) {
+	f := setupVPCSCKms(t, []string{"projects/noctaxris-gcp-local"})
+	email := "signer@noctaxris-gcp-local.iam.gserviceaccount.com"
+	if err := f.st.EnsureServiceAccount(f.project, email, "signer"); err != nil {
+		t.Fatal(err)
+	}
+	f.who = authn.Principal{Email: email, IsRoot: false}
+	rec := f.decrypt()
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing IAM decrypt status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "Request is denied because of VPC Service Controls") {
+		t.Fatalf("want IAM deny, got VPC-SC: %s", rec.Body.String())
+	}
+}
