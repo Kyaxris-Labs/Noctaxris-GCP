@@ -43,6 +43,30 @@ CREATE TABLE IF NOT EXISTS ar_versions (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ar_registry_blobs (
+  digest TEXT PRIMARY KEY,
+  data BLOB NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ar_registry_manifests (
+  name TEXT NOT NULL,
+  reference TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  media_type TEXT NOT NULL DEFAULT 'application/vnd.docker.distribution.manifest.v2+json',
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (name, reference)
+);
+
+CREATE TABLE IF NOT EXISTS ar_registry_blob_links (
+  digest TEXT NOT NULL,
+  image_name TEXT NOT NULL,
+  PRIMARY KEY (digest, image_name)
+);
+
 CREATE TABLE IF NOT EXISTS cb_builds (
   name TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,

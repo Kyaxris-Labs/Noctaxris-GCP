@@ -253,8 +253,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     <tr>
       <td rowspan="1" align="center" valign="middle">Registry</td>
       <td>Artifact Registry</td>
-      <td>REST v1 repos/packages/versions metadata.</td>
-      <td>Blob storage / docker pull plane.</td>
+      <td>REST v1 repos/packages/versions; Docker Registry HTTP API V2 on <code>:4588</code> (SQLite blobs, no host <code>docker.sock</code>).</td>
+      <td>Vulnerability scanning; garbage collection; chunked <code>PATCH</code> uploads.</td>
     </tr>
     <tr>
       <td rowspan="1" align="center" valign="middle">Policy</td>

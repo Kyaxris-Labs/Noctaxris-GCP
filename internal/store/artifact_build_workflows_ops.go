@@ -35,7 +35,7 @@ func (s *Store) PatchArRepositoryDeepen(name string, description *string, labels
 	return cur, true, nil
 }
 
-// ArFileTheatre is synthetic Artifact Registry file metadata (no blob bytes).
+// ArFileTheatre is Artifact Registry file metadata. sizeBytes is "0" until a registry blob exists for the digest.
 type ArFileTheatre struct {
 	Name       string
 	SizeBytes  string
@@ -45,28 +45,62 @@ type ArFileTheatre struct {
 }
 
 // ListArFilesTheatreDeepen synthesizes file rows from package versions under a repository.
+// sizeBytes is the stored blob length when VersionID (or a linked digest) exists in ar_registry_blobs; otherwise "0".
 func (s *Store) ListArFilesTheatreDeepen(repositoryName string) ([]ArFileTheatre, error) {
 	pkgs, err := s.ListArPackages(repositoryName)
 	if err != nil {
 		return nil, err
 	}
 	var out []ArFileTheatre
+	seen := map[string]struct{}{}
 	for _, pkg := range pkgs {
 		vers, err := s.ListArVersions(pkg.Name)
 		if err != nil {
 			return nil, err
 		}
 		for _, v := range vers {
-			// URL-safe-ish file id from version id (colon → %3A theatre).
 			fileID := strings.ReplaceAll(v.VersionID, ":", "%3A") + ".lab"
+			size := "0"
+			if sz, ok, err := s.ArRegistryBlobSize(v.VersionID); err != nil {
+				return nil, err
+			} else if ok {
+				size = strconv.FormatInt(sz, 10)
+			}
+			name := repositoryName + "/files/" + fileID
+			seen[v.VersionID] = struct{}{}
 			out = append(out, ArFileTheatre{
-				Name:       repositoryName + "/files/" + fileID,
-				SizeBytes:  "0",
+				Name:       name,
+				SizeBytes:  size,
 				Owner:      v.Name,
 				CreateTime: v.CreatedAt,
 				UpdateTime: v.UpdatedAt,
 			})
 		}
+	}
+	repo, ok, err := s.GetArRepository(repositoryName)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return out, nil
+	}
+	links, err := s.ListArRegistryBlobLinksForRepo(repo.ProjectID, repo.RepositoryID)
+	if err != nil {
+		return nil, err
+	}
+	for _, link := range links {
+		if _, dup := seen[link.Digest]; dup {
+			continue
+		}
+		seen[link.Digest] = struct{}{}
+		fileID := strings.ReplaceAll(link.Digest, ":", "%3A")
+		out = append(out, ArFileTheatre{
+			Name:       repositoryName + "/files/" + fileID,
+			SizeBytes:  strconv.FormatInt(link.SizeBytes, 10),
+			Owner:      link.ImageName,
+			CreateTime: link.CreatedAt,
+			UpdateTime: link.CreatedAt,
+		})
 	}
 	return out, nil
 }

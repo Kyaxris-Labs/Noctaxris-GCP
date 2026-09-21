@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Artifact Registry Docker V2
+
+- Docker Registry HTTP API V2 on the same `:4588` listener as Artifact Registry REST v1: `GET /v2/`, monolithic blob upload (`POST` + `PUT ?digest=`), blob and manifest `GET`/`HEAD`/`PUT`. Image names may be `project/repo/image`. Blobs are SQLite `BLOB` rows keyed by digest; no host `docker.sock` and no nested engine for pull.
+- Bearer matches Artifact Registry REST. Root skips IAM. Pull uses `artifactregistry.repositories.downloadArtifacts` or `artifactregistry.dockerimages.get`. Push uses `artifactregistry.repositories.uploadArtifacts` or `artifactregistry.dockerimages.create`. Missing Bearer is `401` with `WWW-Authenticate: Bearer`. Denied is `403`. Manifest PUT upserts v1 package/version metadata so `listFiles` `sizeBytes` is the stored blob length when the digest exists.
+
 ### VPC Service Controls membership
 
 - Optional enforce no longer treats same-project as an automatic allow. Callers outside the perimeter (unresolved WIF, host/user tokens, a caller project that is not a `resources` member) are denied even when the resource project matches. Perimeter members still allow. Token Creator `request.time` CEL still applies to in-perimeter callers. Operator root skip on IAM Credentials is unchanged. Deny text stays `Request is denied because of VPC Service Controls`. IAM Credentials stays restricted in this emulator.

@@ -206,6 +206,34 @@ func (s *Store) ensureDataColumns() error {
 )`); err != nil {
 		return fmt.Errorf("migrate pubsub snapshots: %w", err)
 	}
+	registryTables := []string{
+		`CREATE TABLE IF NOT EXISTS ar_registry_blobs (
+  digest TEXT PRIMARY KEY,
+  data BLOB NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+)`,
+		`CREATE TABLE IF NOT EXISTS ar_registry_manifests (
+  name TEXT NOT NULL,
+  reference TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  media_type TEXT NOT NULL DEFAULT 'application/vnd.docker.distribution.manifest.v2+json',
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (name, reference)
+)`,
+		`CREATE TABLE IF NOT EXISTS ar_registry_blob_links (
+  digest TEXT NOT NULL,
+  image_name TEXT NOT NULL,
+  PRIMARY KEY (digest, image_name)
+)`,
+	}
+	for _, stmt := range registryTables {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("migrate artifact registry v2 tables: %w", err)
+		}
+	}
 	return nil
 }
 

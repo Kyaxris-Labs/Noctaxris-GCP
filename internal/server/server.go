@@ -22,6 +22,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/tlsutil"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/artifactregistry"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/version"
 	"golang.org/x/net/http2"
@@ -212,6 +213,10 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		p, err := s.authn.AuthenticateRequest(r)
 		if err != nil {
 			if errors.Is(err, authn.ErrUnauthenticated) {
+				if artifactregistry.IsRegistryV2Path(r.URL.Path) {
+					w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+					w.Header().Set("WWW-Authenticate", "Bearer")
+				}
 				gcperrors.Unauthenticated(w, "")
 				return
 			}

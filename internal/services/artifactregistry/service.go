@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -15,16 +16,20 @@ import (
 // DefaultLocation is the lab default Artifact Registry location.
 const DefaultLocation = "us-central1"
 
-// Service serves Artifact Registry REST v1 (repos / packages / versions metadata).
+// Service serves Artifact Registry REST v1 and Docker Registry HTTP API V2.
 type Service struct {
-	Store *store.Store
-	Authz *authz.Evaluator
+	Store     *store.Store
+	Authz     *authz.Evaluator
+	uploadsMu sync.Mutex
+	uploads   map[string]*registryUpload
 }
 
 type principalFunc func(*http.Request) (authn.Principal, bool)
 
-// Mount registers Artifact Registry v1 REST routes.
+// Mount registers Artifact Registry v1 REST routes and Docker Registry HTTP API V2 on the same mux.
 // Colon methods are parsed from wildcard path segments via splitColonAction.
+// Registry V2 uses GET/POST/PUT /v2/{name...} because ServeMux {name...} may only be the final path element.
+// GET patterns also match HEAD (ServeMux rule); explicit HEAD routes conflict with Logging GET /v2/projects/....
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/repositories", s.wrap(principalFrom, s.listRepositories))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/repositories", s.wrap(principalFrom, s.createRepository))
@@ -46,6 +51,8 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/repositories/{repository}/packages/{package}/versions", s.wrap(principalFrom, s.createVersion))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/repositories/{repository}/packages/{package}/versions/{version}", s.wrap(principalFrom, s.getVersion))
 	mux.HandleFunc("DELETE /v1/projects/{project}/locations/{location}/repositories/{repository}/packages/{package}/versions/{version}", s.wrap(principalFrom, s.deleteVersion))
+
+	s.mountRegistryV2(mux, principalFrom)
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -70,6 +77,19 @@ func (s *Service) require(p authn.Principal, permission, projectID string) error
 		return errDenied
 	}
 	return nil
+}
+
+func (s *Service) requireAny(p authn.Principal, projectID string, perms ...string) error {
+	for _, perm := range perms {
+		ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, perm, "projects/"+projectID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	}
+	return errDenied
 }
 
 var errDenied = fmt.Errorf("permission denied")
