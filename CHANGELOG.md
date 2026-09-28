@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.4.1
+
+Patch after 1.4.0: Container Analysis resource URI matching treats gcloud `@sha256-<hex>` filters as equal to stored `@sha256:<hex>` forms (with https/bare normalization). Docker Hub: `kyaxris/noctaxris-gcp` (`1.4.1`, `1.4`, `1`, `latest`).
+
 ## 1.4.0
 
 Minor after 1.3.0: Cloud Run Knative Serving v1 for `gcloud run`, Container Analysis filters and vulnerabilitySummary for `gcloud artifacts`, GCS `mediaLink` so `gcloud storage cat` works. Docker Hub: `kyaxris/noctaxris-gcp` (`1.4.0`, `1.4`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
