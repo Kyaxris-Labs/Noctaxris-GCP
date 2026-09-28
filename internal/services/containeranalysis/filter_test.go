@@ -125,15 +125,15 @@ func TestContainerAnalysisBuildVulnerabilityCounts(t *testing.T) {
 		total, _ := c["totalCount"].(string)
 		fixable, _ := c["fixableCount"].(string)
 		switch {
-		case uri == "img:1" && sev == "HIGH" && total == "1" && fixable == "1":
+		case uri == "https://img:1" && sev == "HIGH" && total == "1" && fixable == "1":
 			sawHigh = true
-		case uri == "img:1" && sev == "LOW" && total == "1" && fixable == "0":
+		case uri == "https://img:1" && sev == "LOW" && total == "1" && fixable == "0":
 			sawLow = true
-		case uri == "img:1" && sev == "SEVERITY_UNSPECIFIED" && total == "2" && fixable == "1":
+		case uri == "https://img:1" && sev == "SEVERITY_UNSPECIFIED" && total == "2" && fixable == "1":
 			sawTotal1 = true
-		case uri == "img:2" && sev == "CRITICAL" && total == "1":
+		case uri == "https://img:2" && sev == "CRITICAL" && total == "1":
 			sawCrit = true
-		case uri == "img:2" && sev == "SEVERITY_UNSPECIFIED" && total == "1":
+		case uri == "https://img:2" && sev == "SEVERITY_UNSPECIFIED" && total == "1":
 			sawTotal2 = true
 		}
 	}

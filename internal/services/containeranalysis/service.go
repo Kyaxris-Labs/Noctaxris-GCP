@@ -81,20 +81,46 @@ func occurrenceJSON(o store.ContainerOccurrence) map[string]any {
 	if body == nil {
 		body = map[string]any{}
 	}
+	// Emit the Artifact Registry / gcloud attach form so
+	// `gcloud artifacts docker images list --show-occurrences` can key
+	// metadata by https://…@sha256-<hex> (see containeranalysis_util.py).
+	uri := gcloudArtifactsResourceURI(o.ResourceURI)
 	out := map[string]any{
 		"name":        o.Name,
-		"resourceUri": o.ResourceURI,
+		"resourceUri": uri,
 		"kind":        o.Kind,
 		"noteName":    o.NoteName,
 		"createTime":  o.CreatedAt,
 	}
 	for k, v := range body {
-		if k == "name" {
+		if k == "name" || k == "resourceUri" || k == "resourceUrl" {
 			continue
 		}
 		out[k] = v
 	}
 	return out
+}
+
+// gcloudArtifactsResourceURI rewrites a stored resource URI into the form
+// gcloud uses when attaching occurrences to AR docker image list rows:
+// https-prefixed and @sha256:<hex> converted to @sha256-<hex>.
+func gcloudArtifactsResourceURI(uri string) string {
+	uri = strings.TrimSpace(uri)
+	if uri == "" {
+		return uri
+	}
+	bare := uri
+	lower := strings.ToLower(bare)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		bare = bare[len("https://"):]
+	case strings.HasPrefix(lower, "http://"):
+		bare = bare[len("http://"):]
+	}
+	if i := strings.Index(bare, "@sha256:"); i >= 0 {
+		bare = bare[:i] + "@sha256-" + bare[i+len("@sha256:"):]
+	}
+	return "https://" + bare
 }
 
 func parsePageParams(r *http.Request) (pageSize, offset int, err error) {
@@ -331,7 +357,7 @@ func buildVulnerabilityCounts(list []store.ContainerOccurrence) []map[string]any
 
 func countRow(uri, severity string, total, fixable int64) map[string]any {
 	return map[string]any{
-		"resourceUri":   uri,
+		"resourceUri":   gcloudArtifactsResourceURI(uri),
 		"severity":      severity,
 		"totalCount":    strconv.FormatInt(total, 10),
 		"fixableCount": strconv.FormatInt(fixable, 10),

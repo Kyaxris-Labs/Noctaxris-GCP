@@ -216,6 +216,58 @@ func TestContainerAnalysisLocationScopedRoutes(t *testing.T) {
 	}
 }
 
+func TestContainerAnalysisListEmitsGcloudArtifactsResourceURI(t *testing.T) {
+	mux, _, project := caMux(t)
+	stored := "us-central1-docker.pkg.dev/" + project + "/repo/app@sha256:deadbeef"
+	want := "https://us-central1-docker.pkg.dev/" + project + "/repo/app@sha256-deadbeef"
+	postOccurrence(t, mux, project, "att-digest", `{"resourceUri":"`+stored+`","kind":"ATTESTATION"}`)
+	postOccurrence(t, mux, project, "vuln-digest", `{"resourceUri":"`+stored+`","kind":"VULNERABILITY","vulnerability":{"severity":"HIGH"}}`)
+
+	out, code := listOccurrences(t, mux, "/v1/projects/"+project+"/occurrences?filter="+url.QueryEscape(`kind="ATTESTATION"`))
+	if code != http.StatusOK {
+		t.Fatalf("status=%d", code)
+	}
+	occs, _ := out["occurrences"].([]any)
+	if len(occs) != 1 {
+		t.Fatalf("want 1 got %#v", out)
+	}
+	m, _ := occs[0].(map[string]any)
+	if m["resourceUri"] != want {
+		t.Fatalf("resourceUri=%v want %s", m["resourceUri"], want)
+	}
+
+	filter := `resourceUrl="us-central1-docker.pkg.dev/` + project + `/repo/app@sha256-deadbeef"`
+	out, code = listOccurrences(t, mux, "/v1/projects/"+project+"/occurrences?filter="+url.QueryEscape(filter))
+	if code != http.StatusOK {
+		t.Fatalf("filter status=%d", code)
+	}
+	if occs, _ := out["occurrences"].([]any); len(occs) != 2 {
+		t.Fatalf("hyphen filter should match colon store %#v", out)
+	}
+
+	sumReq := httptest.NewRequest(http.MethodGet, "/v1/projects/"+project+"/occurrences:vulnerabilitySummary", nil)
+	sumRec := httptest.NewRecorder()
+	mux.ServeHTTP(sumRec, sumReq)
+	if sumRec.Code != http.StatusOK {
+		t.Fatalf("summary status=%d body=%s", sumRec.Code, sumRec.Body.String())
+	}
+	var sum map[string]any
+	if err := json.Unmarshal(sumRec.Body.Bytes(), &sum); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range sum["counts"].([]any) {
+		row, _ := c.(map[string]any)
+		if row["resourceUri"] == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("summary resourceUri not rewritten %#v", sum)
+	}
+}
+
 func TestContainerAnalysisBinaryAuthzExactResourceURI(t *testing.T) {
 	_, st, project := caMux(t)
 	img := "us-docker.pkg.dev/" + project + "/apps/web:1"

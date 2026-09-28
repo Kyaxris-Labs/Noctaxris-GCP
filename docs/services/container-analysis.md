@@ -32,12 +32,18 @@ ignored for storage).
 Query `filter` supports:
 
 - `kind="…"` (spaces around `=` optional)
-- `resourceUrl="…"` / `resourceUri="…"` (equality; bare and `https://` forms match each other)
+- `resourceUrl="…"` / `resourceUri="…"` (equality; bare and `https://` forms match each other;
+  `@sha256-<hex>` matches stored `@sha256:<hex>`)
 - `noteId="…"` (last segment of `noteName`, or full name)
 - `has_prefix(resourceUrl,"…")` / `has_prefix(resourceUri,"…")`
 - `AND` / `OR` / parentheses
 
 Empty filter returns all project occurrences.
+
+List and vulnerabilitySummary responses rewrite `resourceUri` to the Artifact Registry /
+gcloud attach form: `https://` prefix and `@sha256:<hex>` → `@sha256-<hex>`. That lets
+`gcloud artifacts docker images list --show-occurrences` key metadata onto image rows.
+Stored values (and Binary Authorization admit) keep the original URI.
 
 ### Pagination
 
