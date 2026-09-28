@@ -201,6 +201,7 @@ gcloud config set api_endpoint_overrides/sqladmin http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/container http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/certificatemanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/containeranalysis http://127.0.0.1:4588/
 # Filestore: filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/" (lab /file/v1/ path prefix)
 # Managed Kafka / LB / CDN: REST on :4588 (see docs/services/)
 gcloud projects describe noctaxris-gcp-local --format=json

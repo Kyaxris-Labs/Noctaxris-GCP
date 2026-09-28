@@ -19,6 +19,7 @@ with honest emulator limits on each page.
 | Security Command Center | lab | [security-command-center.md](security-command-center.md) | Sources/findings CRUD lite; lab InjectFindings (`NOCTAXRIS_GCP_SCC_INJECT`) |
 | Cloud Asset Inventory | lab (theatre) | [cloud-asset-inventory.md](cloud-asset-inventory.md) | searchAllResources / listAssets / exportAssets lite over store resources; feeds + history |
 | Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke`; Binary Authorization admit; IMDS metadata |
+| Container Analysis | lab | [container-analysis.md](container-analysis.md) | REST v1 occurrences list/create/get, filter + pagination, vulnerabilitySummary; BinAuth exact URI admit |
 | Cloud Functions | lab | [cloud-functions.md](cloud-functions.md) | REST Functions v2, upload/download URL + source accept, IAM, `:invoke` stub |
 | Cloud Scheduler | lab | [cloud-scheduler.md](cloud-scheduler.md) | REST v1 jobs, 5-field cron next-run, pause/resume, OIDC audience |
 | Cloud Tasks | lab | [cloud-tasks.md](cloud-tasks.md) | REST v2 queues/tasks, rate limits, retry, App Engine fields, `:run` |
@@ -220,6 +221,7 @@ gcloud config set api_endpoint_overrides/sqladmin http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/container http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/certificatemanager http://127.0.0.1:4588/
 gcloud config set api_endpoint_overrides/aiplatform http://127.0.0.1:4588/
+gcloud config set api_endpoint_overrides/containeranalysis http://127.0.0.1:4588/
 # Filestore lab paths are under /file/v1/. Use filestore_custom_endpoint = "http://127.0.0.1:4588/file/v1/"
 # (see tests/terraform/README.md for BaseUrl prefix skip; create returns completed Operation)
 # (bare api_endpoint_overrides/file to :4588/ alone misses the /file prefix)
