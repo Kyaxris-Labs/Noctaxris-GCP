@@ -1,8 +1,9 @@
 # Cloud Run
 
-Lab Cloud Run Admin API v2 REST for services, revisions, and jobs. Service
-create/update returns a completed Operation (`done: true` + `response`); GET
-returns the service. Terraform:
+Lab Cloud Run Admin API v2 REST for services, revisions, and jobs, plus a
+Knative Serving v1 facade over the same store (for `gcloud run`). Service
+create/update on v2 returns a completed Operation (`done: true` + `response`);
+GET returns the service. Terraform:
 `cloud_run_v2_custom_endpoint = "http://127.0.0.1:4588/v2/"` (see
 `tests/terraform/stacks/lab-run`).
 
@@ -19,12 +20,15 @@ returns the service. Terraform:
 ## Status
 
 **lab** — services CRUD with traffic metadata, jobs CRUD theatre, revision list,
-service IAM get/set, `:invoke` mock with status/delay theatre and opt-in nested
-DinD one-shot (`NOCTAXRIS_GCP_DOCKER_HOST`).
+service IAM get/set, Knative Serving v1 list/get/create/replace/delete,
+`:invoke` mock with status/delay theatre and opt-in nested DinD one-shot
+(`NOCTAXRIS_GCP_DOCKER_HOST`).
 
 ## Wire protocol
 
 REST on the shared listener (`http://127.0.0.1:4588`).
+
+### Admin API v2
 
 | Method | Path |
 |--------|------|
@@ -40,6 +44,29 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 | `GET` | `/v2/projects/{p}/locations/{loc}/jobs` |
 | `GET`/`PATCH`/`DELETE` | `/v2/projects/{p}/locations/{loc}/jobs/{job}` |
 | `GET` | `/computeMetadata/v1` and `/computeMetadata/v1/...` (`Metadata-Flavor: Google`) |
+
+### Knative Serving v1
+
+Namespace is the project id. Location comes from the request `Host`: a leading
+`{region}-` prefix when present (for example `us-central1-run.googleapis.com` or
+`us-central1-127.0.0.1`), otherwise `us-central1`. Responses use Knative
+envelopes (`apiVersion` / `kind` `Service` / `ServiceList` / `Revision` /
+`RevisionList`). Conditions use status `True` / `False`. Revision names are the
+short form (`{service}-{generation}`). `template.serviceAccount` maps to
+`spec.template.spec.serviceAccountName`.
+
+| Method | Path |
+|--------|------|
+| `GET` / `POST` | `/apis/serving.knative.dev/v1/namespaces/{project}/services` |
+| `GET` / `PUT` / `DELETE` | `/apis/serving.knative.dev/v1/namespaces/{project}/services/{name}` |
+| `GET` | `/apis/serving.knative.dev/v1/namespaces/{project}/revisions` (`labelSelector=serving.knative.dev/service=ID`) |
+| `GET` / `DELETE` | `/apis/serving.knative.dev/v1/namespaces/{project}/revisions/{name}` |
+| `GET` | `/apis/serving.knative.dev/v1/namespaces/{project}/configurations` and `.../configurations/{name}` (read-only Service mirrors) |
+| `GET` | `/apis/serving.knative.dev/v1/namespaces/{project}/routes` and `.../routes/{name}` (read-only Service mirrors) |
+
+When using `gcloud config set api_endpoint_overrides/run http://127.0.0.1:4588/`,
+gcloud may send `Host: us-central1-127.0.0.1`. Point that host at loopback
+(hosts file or cloud-hosts TLS) so the region prefix resolves.
 
 Create/patch may include `traffic` (percent allocation to latest/revision). Optional lab fields:
 
@@ -73,21 +100,32 @@ Related REST (same listener):
 
 | Method | Path |
 |--------|------|
-| `GET` / `POST` | `/v1/projects/{p}/occurrences` (Container Analysis) |
+| `GET` / `POST` | `/v1/projects/{p}/occurrences` (Container Analysis; see [container-analysis.md](container-analysis.md)) |
 | `GET` | `/v1/projects/{p}/occurrences/{id}` |
+| `GET` | `/v1/projects/{p}/occurrences:vulnerabilitySummary` |
 | `GET` / `PUT` | `/v1/projects/{p}/policy` (Binary Authorization) |
+
+Point gcloud Artifact Analysis clients at the lab with
+`api_endpoint_overrides/containeranalysis` (or
+`CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINERANALYSIS`). List filters may match
+bare and `https://` `resourceUrl` forms; Binary Authorization admit still
+requires an exact stored `resourceUri`.
 
 ## Authz
 
 Checked on `projects/{project}` for control-plane actions:
 
 - `run.services.create|get|list|update|delete|getIamPolicy|setIamPolicy`
+- `run.revisions.get|list|delete` (Knative revision paths; viewer gets get/list)
 - `run.jobs.create|get|list|update|delete`
 
 `:invoke` uses `EvaluateAny` on the **service resource** and the project
 (`run.routes.invoke`). A non-root principal with only
 `roles/run.invoker` on the service IAM policy can invoke; without a project or
 service Invoker binding, invoke is denied. Root still bypasses.
+
+Knative create/replace runs the same Binary Authorization `admitTemplate` check
+as Admin API v2.
 
 ## Emulator limits
 
@@ -105,21 +143,26 @@ service Invoker binding, invoke is denied. Root still bypasses.
 
 - Traffic percent enforcement beyond stored metadata
 - Official gRPC `run.googleapis.com` surface
+- Knative Domains and Jobs v1
 
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/services/cloudrun/ ./internal/compute/ ./internal/kernel/authz/ ./internal/server/ -run 'CloudRun|MockInvoker|RunAndFunctionsInvoker|BinaryAuthorization' -count=1
+go test ./internal/services/cloudrun/ ./internal/compute/ ./internal/kernel/authz/ ./internal/server/ -run 'CloudRun|Knative|MockInvoker|RunAndFunctionsInvoker|BinaryAuthorization' -count=1
 TOKEN=$NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN
 # Mock path (labResponseBody skips nested even if DOCKER_HOST is set):
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/services?serviceId=demo" \
   -d '{"template":{"containers":[{"image":"demo"}],"labResponseBody":"{\"ok\":true}","labStatusCode":200},"traffic":[{"type":"TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST","percent":100}]}'
+curl -s -H "Authorization: Bearer $TOKEN" -H "Host: us-central1-127.0.0.1" \
+  "http://127.0.0.1:4588/apis/serving.knative.dev/v1/namespaces/noctaxris-gcp-local/services"
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/services/demo:setIamPolicy" \
   -d '{"policy":{"bindings":[{"role":"roles/run.invoker","members":["serviceAccount:invoker@example.com"]}],"etag":"ACAB"}}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   -X POST "http://127.0.0.1:4588/v2/projects/noctaxris-gcp-local/locations/us-central1/services/demo:invoke" \
   -d '{}'
+# gcloud (after api_endpoint_overrides/run + Host quirk hosts/cloud-hosts):
+# gcloud run services list --project=noctaxris-gcp-local --region=us-central1
 # Nested path: default compose.yaml engine + service without labResponseBody; see docs/configuration.md
 ```

@@ -518,6 +518,8 @@ func viewerGrants(permission string) bool {
 		"logging.logs.list",
 		"run.services.get",
 		"run.services.list",
+		"run.revisions.get",
+		"run.revisions.list",
 		"cloudfunctions.functions.get",
 		"cloudfunctions.functions.list",
 		"cloudscheduler.jobs.get",

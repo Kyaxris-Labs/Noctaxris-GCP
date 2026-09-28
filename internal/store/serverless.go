@@ -444,6 +444,94 @@ func (s *Store) ListRunRevisions(serviceName string) ([]RunRevision, error) {
 	return out, rows.Err()
 }
 
+// GetRunRevision loads a revision by full resource name.
+func (s *Store) GetRunRevision(name string) (RunRevision, bool, error) {
+	var r RunRevision
+	err := s.db.QueryRow(
+		`SELECT name, service_name, generation, template_json, created_at
+		 FROM run_revisions WHERE name = ?`, name,
+	).Scan(&r.Name, &r.ServiceName, &r.Generation, &r.TemplateJSON, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return RunRevision{}, false, nil
+	}
+	if err != nil {
+		return RunRevision{}, false, fmt.Errorf("get run revision: %w", err)
+	}
+	return r, true, nil
+}
+
+// GetRunRevisionByShortName finds a revision by Knative short name under project/location.
+func (s *Store) GetRunRevisionByShortName(projectID, location, shortName string) (RunRevision, bool, error) {
+	if shortName == "" {
+		return RunRevision{}, false, nil
+	}
+	suffix := "/revisions/" + shortName
+	rows, err := s.db.Query(
+		`SELECT r.name, r.service_name, r.generation, r.template_json, r.created_at
+		 FROM run_revisions r
+		 INNER JOIN run_services s ON s.name = r.service_name
+		 WHERE s.project_id = ? AND s.location = ? AND (
+		   r.name = ? OR r.name LIKE '%' || ?
+		 )
+		 ORDER BY r.generation DESC LIMIT 1`,
+		projectID, location, shortName, suffix,
+	)
+	if err != nil {
+		return RunRevision{}, false, fmt.Errorf("get run revision by short name: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return RunRevision{}, false, rows.Err()
+	}
+	var r RunRevision
+	if err := rows.Scan(&r.Name, &r.ServiceName, &r.Generation, &r.TemplateJSON, &r.CreatedAt); err != nil {
+		return RunRevision{}, false, err
+	}
+	return r, true, rows.Err()
+}
+
+// ListRunRevisionsByProject lists revisions under project/location.
+// When serviceID is non-empty, only revisions for that service id are returned.
+func (s *Store) ListRunRevisionsByProject(projectID, location, serviceID string) ([]RunRevision, error) {
+	query := `SELECT r.name, r.service_name, r.generation, r.template_json, r.created_at
+		 FROM run_revisions r
+		 INNER JOIN run_services s ON s.name = r.service_name
+		 WHERE s.project_id = ? AND s.location = ?`
+	args := []any{projectID, location}
+	if serviceID != "" {
+		query += ` AND s.service_id = ?`
+		args = append(args, serviceID)
+	}
+	query += ` ORDER BY r.generation DESC`
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list run revisions by project: %w", err)
+	}
+	defer rows.Close()
+	var out []RunRevision
+	for rows.Next() {
+		var r RunRevision
+		if err := rows.Scan(&r.Name, &r.ServiceName, &r.Generation, &r.TemplateJSON, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteRunRevision removes a revision by full name.
+func (s *Store) DeleteRunRevision(name string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM run_revisions WHERE name = ?`, name)
+	if err != nil {
+		return false, fmt.Errorf("delete run revision: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // RecordRunInvoke stores the last invoke payload for a service.
 func (s *Store) RecordRunInvoke(name, invokeJSON string) error {
 	_, err := s.db.Exec(`UPDATE run_services SET last_invoke_json = ? WHERE name = ?`, invokeJSON, name)

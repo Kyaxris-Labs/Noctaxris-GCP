@@ -53,6 +53,8 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v2/projects/{project}/locations/{location}/jobs/{job}", s.wrap(principalFrom, s.getJob))
 	mux.HandleFunc("PATCH /v2/projects/{project}/locations/{location}/jobs/{job}", s.wrap(principalFrom, s.patchJob))
 	mux.HandleFunc("DELETE /v2/projects/{project}/locations/{location}/jobs/{job}", s.wrap(principalFrom, s.deleteJob))
+
+	s.mountKnative(mux, principalFrom)
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
