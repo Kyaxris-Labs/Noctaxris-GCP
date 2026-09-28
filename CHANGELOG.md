@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.4.0
+
+Minor after 1.3.0: Cloud Run Knative Serving v1 for `gcloud run`, Container Analysis filters and vulnerabilitySummary for `gcloud artifacts`, GCS `mediaLink` so `gcloud storage cat` works. Docker Hub: `kyaxris/noctaxris-gcp` (`1.4.0`, `1.4`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+### Cloud Run Knative Serving v1
+
+- Knative facade at `/apis/serving.knative.dev/v1` over the Admin API v2 store: services CRUD, revisions list/get/delete with `labelSelector`, read-only Configuration and Route mirrors. Region from Host (`us-central1-127.0.0.1` / `us-central1-run.googleapis.com`). Viewer gains `run.revisions.get` / `run.revisions.list`.
+
+### Container Analysis
+
+- Richer `ListOccurrences` filters (`kind`, spaced `resourceUrl`/`resourceUri`, AND/OR, https vs bare URI, `has_prefix`, `noteId`), `occurrences:vulnerabilitySummary`, pagination, location-scoped aliases. Document `api_endpoint_overrides/containeranalysis`. Binary Authorization still admits on exact `resourceUri`.
+
+### GCS
+
+- Object JSON includes `mediaLink` and `selfLink`. `GET /download/storage/v1/b/{bucket}/o/{object}` serves media. Media responses set `Content-Length` and `x-goog-hash` so `gcloud storage cat` works with `api_endpoint_overrides/storage`.
+
 ## 1.3.0
 
 Minor after 1.2.0: Artifact Registry Docker V2, VPC-SC membership, Firestore REST owner-write, logging sink and view IAM, GCS XML HMAC IAM, CRM project create, Cloud Build step identity and named-SA actAs, KMS encrypt/decrypt EvaluateAny. Docker Hub: `kyaxris/noctaxris-gcp` (`1.3.0`, `1.3`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
