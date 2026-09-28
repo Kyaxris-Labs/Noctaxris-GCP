@@ -54,7 +54,8 @@ func TestArtifactRegistryRepoPackageVersionViaServer(t *testing.T) {
 	}
 	var ver map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &ver)
-	wantVer := wantRepo + "/packages/hello/versions/sha256:abc"
+	// AR stores sha256-<hex>; create with sha256: must normalize the name.
+	wantVer := wantRepo + "/packages/hello/versions/sha256-abc"
 	if ver["name"] != wantVer {
 		t.Fatalf("version = %#v", ver)
 	}

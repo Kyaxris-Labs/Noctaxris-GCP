@@ -604,6 +604,7 @@ func (s *Service) createVersion(w http.ResponseWriter, r *http.Request, p authn.
 		gcperrors.InvalidArgument(w, "versionId is required")
 		return
 	}
+	verID = normalizeVersionID(verID)
 	desc, _ := body["description"].(string)
 	tagsJSON := "[]"
 	if tags, ok := body["relatedTags"]; ok {
