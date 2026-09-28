@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.4.2
+
+Patch after 1.4.1: Container Analysis list/summary responses emit gcloud Artifact Registry
+attach URIs (`https://…@sha256-<hex>`) so `gcloud artifacts docker images list
+--show-occurrences` nests ATTESTATION / PACKAGE_VULNERABILITY on image rows. Artifact
+Registry `GetVersion` accepts `sha256:<hex>` path segments as aliases of stored
+`sha256-<hex>` ids (unblocks `gcloud artifacts docker images describe` /
+`vulnerabilities list`). Docker Hub: `kyaxris/noctaxris-gcp` (`1.4.2`, `1.4`, `1`,
+`latest`).
+
 ## 1.4.1
 
 Patch after 1.4.0: Container Analysis resource URI matching treats gcloud `@sha256-<hex>` filters as equal to stored `@sha256:<hex>` forms (with https/bare normalization). Docker Hub: `kyaxris/noctaxris-gcp` (`1.4.1`, `1.4`, `1`, `latest`).
