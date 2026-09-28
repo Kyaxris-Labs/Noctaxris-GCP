@@ -23,7 +23,7 @@ Noctaxris-GCP (`127.0.0.1:4588` by default).
 | Upload | `POST /upload/storage/v1/b/{bucket}/o` (`uploadType=media`, `multipart`, `resumable`) |
 | Resumable | Initiate returns `Location`; `PUT` that URI completes a lab single-chunk upload; `DELETE` cancels |
 | Media PUT (lab) | `PUT /upload/storage/v1/b/{bucket}/o?uploadType=media&name=` (signed URL uploads) |
-| Download | `GET .../o/{object}?alt=media` |
+| Download | `GET .../o/{object}?alt=media`; object JSON includes `mediaLink` / `selfLink` (`GET /download/storage/v1/b/{bucket}/o/{object}?generation=&alt=media`) |
 | V4 signed URL | `POST .../o/{object}:generateSignedUrl` + verify query signature on GET/PUT |
 | HMAC keys | `POST` / `GET` / `DELETE /storage/v1/projects/{project}/hmacKeys[/{accessId}]` (`storage.hmacKeys.*`) |
 | XML API | `GET` / `PUT /storage/xml/{bucket}[/{object}]` with `Authorization: GOOG4-HMAC-SHA256`; list supports `?versions=true` |
@@ -154,6 +154,12 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: text/plain" \
   --data-binary 'hello' \
   "$EP/upload/storage/v1/b/lab-bucket/o?uploadType=media&name=hello.txt"
+
+# Object get JSON includes mediaLink (gcloud storage cat follows it):
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  "$EP/storage/v1/b/lab-bucket/o/hello.txt" | jq -r .mediaLink
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  "$EP/storage/v1/b/lab-bucket/o/hello.txt?alt=media"
 
 SIGNED=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"method":"GET","expires":600,"alt":"media"}' \

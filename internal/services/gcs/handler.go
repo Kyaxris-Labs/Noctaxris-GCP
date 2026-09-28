@@ -47,6 +47,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /storage/v1/b/{bucket}/notificationConfigs/{notification}", h.deleteNotification)
 	mux.HandleFunc("GET /storage/v1/b/{bucket}/o", h.listObjects)
 	mux.HandleFunc("GET /storage/v1/b/{bucket}/o/{object...}", h.getOrDownloadObject)
+	mux.HandleFunc("GET /download/storage/v1/b/{bucket}/o/{object...}", h.getOrDownloadObject)
 	mux.HandleFunc("PATCH /storage/v1/b/{bucket}/o/{object...}", h.patchObject)
 	mux.HandleFunc("DELETE /storage/v1/b/{bucket}/o/{object...}", h.deleteObject)
 	mux.HandleFunc("POST /storage/v1/b/{bucket}/o/{object...}", h.postObjectAction)
@@ -653,7 +654,7 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(result.Items))
 	for i := range result.Items {
-		items = append(items, objectJSON(&result.Items[i]))
+		items = append(items, objectJSON(r, &result.Items[i]))
 	}
 	resp := map[string]any{"kind": "storage#objects", "items": items}
 	if len(result.Prefixes) > 0 {
@@ -712,19 +713,17 @@ func (h *Handler) getOrDownloadObject(w http.ResponseWriter, r *http.Request) {
 		gcperrors.NotFound(w, "object not found")
 		return
 	}
-	if r.URL.Query().Get("alt") == "media" {
+	serveMedia := r.URL.Query().Get("alt") == "media" || strings.HasPrefix(r.URL.Path, "/download/")
+	if serveMedia {
 		data, err := h.Store.ReadObjectBytes(obj)
 		if err != nil {
 			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", obj.ContentType)
-		w.Header().Set("X-Goog-Generation", strconv.FormatInt(obj.Generation, 10))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
+		writeObjectMedia(w, obj, data)
 		return
 	}
-	writeJSON(w, http.StatusOK, objectJSON(obj))
+	writeJSON(w, http.StatusOK, objectJSON(r, obj))
 }
 
 func (h *Handler) patchObject(w http.ResponseWriter, r *http.Request) {
@@ -782,7 +781,7 @@ func (h *Handler) patchObject(w http.ResponseWriter, r *http.Request) {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, objectJSON(obj))
+	writeJSON(w, http.StatusOK, objectJSON(r, obj))
 }
 
 func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request) {
@@ -1007,7 +1006,7 @@ func (h *Handler) composeObject(w http.ResponseWriter, r *http.Request, dest str
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, objectJSON(obj))
+	writeJSON(w, http.StatusOK, objectJSON(r, obj))
 }
 
 func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, srcObject, dstBucket, dstObject string) {
@@ -1071,7 +1070,7 @@ func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, srcObject, 
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, objectJSON(obj))
+	writeJSON(w, http.StatusOK, objectJSON(r, obj))
 }
 
 func (h *Handler) rewriteObject(w http.ResponseWriter, r *http.Request, srcObject, dstBucket, dstObject string) {
@@ -1140,7 +1139,7 @@ func (h *Handler) rewriteObject(w http.ResponseWriter, r *http.Request, srcObjec
 		"totalBytesRewritten": strconv.FormatInt(obj.Size, 10),
 		"objectSize":          strconv.FormatInt(obj.Size, 10),
 		"done":                true,
-		"resource":            objectJSON(obj),
+		"resource":            objectJSON(r, obj),
 	})
 }
 
@@ -1267,7 +1266,7 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, objectJSON(obj))
+	writeJSON(w, http.StatusOK, objectJSON(r, obj))
 }
 
 func (h *Handler) initiateResumable(w http.ResponseWriter, r *http.Request, bucket, name string) {
@@ -1355,7 +1354,7 @@ func (h *Handler) putResumableUpload(w http.ResponseWriter, r *http.Request) {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, objectJSON(obj))
+	writeJSON(w, http.StatusOK, objectJSON(r, obj))
 }
 
 func (h *Handler) putMediaUpload(w http.ResponseWriter, r *http.Request, bucket string) {
@@ -1397,7 +1396,7 @@ func (h *Handler) putMediaUpload(w http.ResponseWriter, r *http.Request, bucket 
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, objectJSON(obj))
+	writeJSON(w, http.StatusOK, objectJSON(r, obj))
 }
 
 func (h *Handler) deleteResumableUpload(w http.ResponseWriter, r *http.Request) {
@@ -1491,14 +1490,18 @@ func parseRetentionPeriod(raw json.RawMessage) (int64, error) {
 	return n, nil
 }
 
-func objectJSON(o *store.ObjectMeta) map[string]any {
+func objectJSON(r *http.Request, o *store.ObjectMeta) map[string]any {
 	meta := o.Metadata
 	if meta == nil {
 		meta = map[string]string{}
 	}
+	escaped := url.PathEscape(o.Name)
+	scheme, host := objectAPIBase(r)
 	out := map[string]any{
 		"kind":           "storage#object",
 		"id":             o.Bucket + "/" + o.Name + "/" + strconv.FormatInt(o.Generation, 10),
+		"selfLink":       "/storage/v1/b/" + o.Bucket + "/o/" + escaped,
+		"mediaLink":      fmt.Sprintf("%s://%s/download/storage/v1/b/%s/o/%s?generation=%d&alt=media", scheme, host, o.Bucket, escaped, o.Generation),
 		"name":           o.Name,
 		"bucket":         o.Bucket,
 		"generation":     strconv.FormatInt(o.Generation, 10),
@@ -1525,6 +1528,46 @@ func objectJSON(o *store.ObjectMeta) map[string]any {
 		out["contentLanguage"] = o.ContentLanguage
 	}
 	return out
+}
+
+// labDefaultAPIHost is the default JSON API host when the request has no Host.
+const labDefaultAPIHost = "127.0.0.1:4588"
+
+func objectAPIBase(r *http.Request) (scheme, host string) {
+	scheme = "http"
+	host = labDefaultAPIHost
+	if r == nil {
+		return scheme, host
+	}
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if h := strings.TrimSpace(r.Host); h != "" {
+		host = h
+	}
+	return scheme, host
+}
+
+func writeObjectMedia(w http.ResponseWriter, obj *store.ObjectMeta, data []byte) {
+	ct := obj.ContentType
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("X-Goog-Generation", strconv.FormatInt(obj.Generation, 10))
+	var hashes []string
+	if obj.CRC32C != "" {
+		hashes = append(hashes, "crc32c="+obj.CRC32C)
+	}
+	if obj.MD5Hash != "" {
+		hashes = append(hashes, "md5="+obj.MD5Hash)
+	}
+	if len(hashes) > 0 {
+		w.Header().Set("x-goog-hash", strings.Join(hashes, ","))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func iamPolicyHasPublicMembers(policy authz.Policy) bool {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -506,6 +507,124 @@ func TestGCSNotificationConfigsAuthzDeny(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGCSMediaLinkAndDownloadAlias(t *testing.T) {
+	mux, _, project := openGCS(t)
+	host := "127.0.0.1:4588"
+
+	create := httptest.NewRequest(http.MethodPost, "/storage/v1/b?project="+project, strings.NewReader(`{"name":"media-h","location":"US"}`))
+	create.Header.Set("Content-Type", "application/json")
+	create.Host = host
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, create)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create bucket: %d %s", rec.Code, rec.Body.String())
+	}
+
+	payload := "gcloud-cat-payload"
+	up := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/media-h/o?uploadType=media&name=dir/nested.txt", strings.NewReader(payload))
+	up.Header.Set("Content-Type", "text/plain")
+	up.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, up)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
+	}
+	var uploaded map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &uploaded); err != nil {
+		t.Fatal(err)
+	}
+	mediaLink, _ := uploaded["mediaLink"].(string)
+	if mediaLink == "" || !strings.Contains(mediaLink, "/download/storage/v1/") {
+		t.Fatalf("upload mediaLink = %q", mediaLink)
+	}
+	if !strings.Contains(mediaLink, "dir%2Fnested.txt") {
+		t.Fatalf("expected path-escaped object name in mediaLink, got %q", mediaLink)
+	}
+	if !strings.HasPrefix(mediaLink, "http://"+host+"/") {
+		t.Fatalf("mediaLink host = %q", mediaLink)
+	}
+	selfLink, _ := uploaded["selfLink"].(string)
+	if selfLink != "/storage/v1/b/media-h/o/dir%2Fnested.txt" {
+		t.Fatalf("selfLink = %q", selfLink)
+	}
+	gen, _ := uploaded["generation"].(string)
+	md5Hash, _ := uploaded["md5Hash"].(string)
+	crc32c, _ := uploaded["crc32c"].(string)
+
+	meta := httptest.NewRequest(http.MethodGet, "/storage/v1/b/media-h/o/dir/nested.txt", nil)
+	meta.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, meta)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get metadata: %d %s", rec.Code, rec.Body.String())
+	}
+	var metaObj map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &metaObj); err != nil {
+		t.Fatal(err)
+	}
+	metaLink, _ := metaObj["mediaLink"].(string)
+	if metaLink == "" || !strings.Contains(metaLink, "/download/storage/v1/") {
+		t.Fatalf("get mediaLink = %q", metaLink)
+	}
+	if !strings.Contains(metaLink, "generation="+gen) || !strings.Contains(metaLink, "alt=media") {
+		t.Fatalf("mediaLink missing generation/alt: %q", metaLink)
+	}
+
+	alt := httptest.NewRequest(http.MethodGet, "/storage/v1/b/media-h/o/dir/nested.txt?alt=media", nil)
+	alt.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, alt)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("alt=media: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != payload {
+		t.Fatalf("alt=media body = %q", got)
+	}
+	if rec.Header().Get("Content-Length") != strconv.Itoa(len(payload)) {
+		t.Fatalf("alt=media Content-Length = %q", rec.Header().Get("Content-Length"))
+	}
+	if rec.Header().Get("Content-Type") != "text/plain" {
+		t.Fatalf("alt=media Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	wantHash := "crc32c=" + crc32c + ",md5=" + md5Hash
+	if got := rec.Header().Get("x-goog-hash"); got != wantHash {
+		t.Fatalf("alt=media x-goog-hash = %q want %q", got, wantHash)
+	}
+
+	dlPath := "/download/storage/v1/b/media-h/o/dir%2Fnested.txt?generation=" + gen + "&alt=media"
+	dl := httptest.NewRequest(http.MethodGet, dlPath, nil)
+	dl.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, dl)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download alias: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != payload {
+		t.Fatalf("download alias body = %q", got)
+	}
+	if rec.Header().Get("Content-Length") != strconv.Itoa(len(payload)) {
+		t.Fatalf("download Content-Length = %q", rec.Header().Get("Content-Length"))
+	}
+	if got := rec.Header().Get("x-goog-hash"); got != wantHash {
+		t.Fatalf("download x-goog-hash = %q want %q", got, wantHash)
+	}
+
+	u, err := url.Parse(metaLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaLink := httptest.NewRequest(http.MethodGet, u.RequestURI(), nil)
+	viaLink.Host = host
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, viaLink)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("via mediaLink: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != payload {
+		t.Fatalf("via mediaLink body = %q", got)
 	}
 }
 
