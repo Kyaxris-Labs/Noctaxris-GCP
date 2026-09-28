@@ -97,12 +97,15 @@ func normalizeResourceURI(uri string) string {
 	lower := strings.ToLower(uri)
 	switch {
 	case strings.HasPrefix(lower, "https://"):
-		return uri[len("https://"):]
+		uri = uri[len("https://"):]
 	case strings.HasPrefix(lower, "http://"):
-		return uri[len("http://"):]
-	default:
-		return uri
+		uri = uri[len("http://"):]
 	}
+	// gcloud artifacts often uses @sha256-<hex>; Grafeas/CA stores @sha256:<hex>.
+	if i := strings.Index(uri, "@sha256-"); i >= 0 {
+		uri = uri[:i] + "@sha256:" + uri[i+len("@sha256-"):]
+	}
+	return uri
 }
 
 // parseOccurrenceFilter parses a Container Analysis / Grafeas-style filter.

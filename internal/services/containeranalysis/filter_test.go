@@ -72,6 +72,19 @@ func TestContainerAnalysisParseOccurrenceFilterHasPrefixAndNoteID(t *testing.T) 
 	}
 }
 
+func TestContainerAnalysisParseOccurrenceFilterSha256Hyphen(t *testing.T) {
+	f, err := parseOccurrenceFilter(`resourceUrl="us-central1-docker.pkg.dev/p/r/app@sha256-deadbeef"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.match(store.ContainerOccurrence{ResourceURI: "us-central1-docker.pkg.dev/p/r/app@sha256:deadbeef"}) {
+		t.Fatal("gcloud sha256- filter should match stored sha256: URI")
+	}
+	if !f.match(store.ContainerOccurrence{ResourceURI: "https://us-central1-docker.pkg.dev/p/r/app@sha256:deadbeef"}) {
+		t.Fatal("hyphen filter should also match https stored URI")
+	}
+}
+
 func TestContainerAnalysisParseOccurrenceFilterEmpty(t *testing.T) {
 	f, err := parseOccurrenceFilter("  ")
 	if err != nil {
