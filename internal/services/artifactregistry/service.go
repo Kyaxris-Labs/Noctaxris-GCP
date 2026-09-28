@@ -124,7 +124,17 @@ func packageName(repo, pkgID string) string {
 }
 
 func versionName(pkg, verID string) string {
-	return pkg + "/versions/" + verID
+	return pkg + "/versions/" + normalizeVersionID(verID)
+}
+
+// normalizeVersionID maps client digest forms to the AR stored version id.
+// Artifact Registry names use sha256-<hex>; gcloud describe / vulnerabilities
+// list request sha256:<hex> in the versions/{version} path segment.
+func normalizeVersionID(verID string) string {
+	if strings.HasPrefix(verID, "sha256:") {
+		return "sha256-" + verID[len("sha256:"):]
+	}
+	return verID
 }
 
 func (s *Service) createRepository(w http.ResponseWriter, r *http.Request, p authn.Principal) {

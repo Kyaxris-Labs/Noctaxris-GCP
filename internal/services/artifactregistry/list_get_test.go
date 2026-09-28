@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -102,5 +103,67 @@ func TestArtifactRegistryListGetPackageVersion(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get version: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestArtifactRegistryGetVersionAcceptsSha256Colon(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureRoot("noctaxris-gcp-local", "root@noctaxris-gcp-local.iam.gserviceaccount.com"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	svc := &artifactregistry.Service{Store: st, Authz: &authz.Evaluator{Policies: st}}
+	svc.Mount(mux, func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "root@noctaxris-gcp-local.iam.gserviceaccount.com", IsRoot: true}, true
+	})
+	loc := artifactregistry.DefaultLocation
+	base := "/v1/projects/noctaxris-gcp-local/locations/" + loc + "/repositories"
+
+	req := httptest.NewRequest(http.MethodPost, base+"?repositoryId=digest-repo",
+		bytes.NewReader([]byte(`{"format":"DOCKER"}`)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create repo: %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, base+"/digest-repo/packages?packageId=app",
+		bytes.NewReader([]byte(`{"displayName":"app"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create pkg: %d %s", rec.Code, rec.Body.String())
+	}
+	digestHyphen := "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	req = httptest.NewRequest(http.MethodPost, base+"/digest-repo/packages/app/versions?versionId="+digestHyphen,
+		bytes.NewReader([]byte(`{"description":"build","metadata":{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create version: %d %s", rec.Code, rec.Body.String())
+	}
+
+	digestColon := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	req = httptest.NewRequest(http.MethodGet, base+"/digest-repo/packages/app/versions/"+digestColon, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get version by colon digest: %d %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := got["name"].(string)
+	if !strings.HasSuffix(name, "/versions/"+digestHyphen) {
+		t.Fatalf("name=%q want suffix %s", name, digestHyphen)
 	}
 }
