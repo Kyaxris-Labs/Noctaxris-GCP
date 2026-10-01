@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.4.3
+
+Patch after 1.4.2: GCS path labels, Identity Toolkit HS256 id tokens, actAs on dispatch SA mint, Secret Manager and KMS role maps, compute metadata Host gate. Docker Hub: `kyaxris/noctaxris-gcp` (`1.4.3`, `1.4`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
 - GCS: bucket names must be a single DNS-style label; object paths stay under the data-root `gcs/` tree (`JoinUnderRoot`).
 - Identity Toolkit: id tokens are HS256-signed with the process key; unsigned (`alg: none`) tokens are rejected for verify and Bearer use.
 - Cloud Scheduler, Cloud Tasks, and Eventarc: naming a dispatch service account requires `iam.serviceAccounts.actAs` on create/update/`run` (Eventarc on create).
