@@ -72,6 +72,11 @@ Checked on `projects/{project}`:
 
 `cryptoKeys.get`, `:encrypt`, and `:decrypt` use `EvaluateAny` on the crypto key resource and the project, so a key IAM binding (for example `cloudkms.cryptoKeyVersions.useToDecrypt`) is enough. List and create stay project-scoped.
 
+Predefined roles: `roles/cloudkms.viewer` is get/list only;
+`roles/cloudkms.admin` manages keys without encrypt/decrypt/sign;
+`roles/cloudkms.cryptoKeyEncrypterDecrypter` (and encrypter/decrypter) grant
+the matching crypto ops.
+
 When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, `:decrypt` also checks VPC Service
 Controls for `cloudkms.googleapis.com`. The caller project is the SA email
 project, or the WIF pool project for `wif:{providerId}:{subject}`. A caller

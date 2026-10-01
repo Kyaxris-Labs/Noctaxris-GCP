@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- GCS: bucket names must be a single DNS-style label; object paths stay under the data-root `gcs/` tree (`JoinUnderRoot`).
+- Identity Toolkit: id tokens are HS256-signed with the process key; unsigned (`alg: none`) tokens are rejected for verify and Bearer use.
+- Cloud Scheduler, Cloud Tasks, and Eventarc: naming a dispatch service account requires `iam.serviceAccounts.actAs` on create/update/`run` (Eventarc on create).
+- Secret Manager / Cloud KMS: predefined roles (`viewer`, `secretAccessor`, `admin`, encrypter/decrypter) map to documented permission sets instead of `{service}.*`.
+- Compute metadata: `.../token` mints only when Host is `metadata.google.internal` / `169.254.169.254` or the peer is link-local; tokens are random (not project-derived).
+
 ## 1.4.2
 
 Patch after 1.4.1: Container Analysis list/summary responses emit gcloud Artifact Registry

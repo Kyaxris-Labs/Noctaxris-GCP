@@ -1,10 +1,10 @@
 # Firebase Auth (Identity Toolkit)
 
-Lab Identity Toolkit REST for email/password auth, password-reset OOB codes, admin user CRUD, custom claims, and unsigned JWT verify.
+Identity Toolkit REST for email/password auth, password-reset OOB codes, admin user CRUD, custom claims, and HS256 id-token verify.
 
 ## Status
 
-**lab** — signUp / signInWithPassword / lookup / update / delete, sendOobCode / resetPassword, admin user CRUD with pagination, setCustomUserClaims, verifyIdToken, unsigned custom tokens.
+Implemented: signUp / signInWithPassword / lookup / update / delete, sendOobCode / resetPassword, admin user CRUD with pagination, setCustomUserClaims, verifyIdToken, custom-token exchange.
 
 ## Wire protocol
 
@@ -44,7 +44,7 @@ Admin (Bearer required):
 
 Password reset: `sendOobCode` with `requestType=PASSWORD_RESET` returns a lab `oobCode` (no email send). `resetPassword` consumes the code and sets `newPassword`.
 
-`setCustomUserClaims` stores `customAttributes` / `claims` JSON on the user. `verifyIdToken` parses unsigned lab JWTs (`alg: none`) and returns `uid` / claims. Custom tokens and id tokens are **unsigned lab JWTs** (empty signature segment). Do not treat them as production credentials.
+`setCustomUserClaims` stores `customAttributes` / `claims` JSON on the user. Id tokens are HS256-signed with the process signing key (`alg: HS256`). `verifyIdToken` and Bearer acceptance require a valid signature; unsigned tokens (`alg: none`) are rejected. Custom tokens remain payload-only for `:signInWithCustomToken` exchange and are not accepted as control-plane Bearers.
 
 v2 tenant CRUD stores `allowPasswordSignup`. `accounts:signUp` with `tenantId` of a locked tenant (`allowPasswordSignup=false`) returns `admin-restricted-operation`. Open tenants accept email/password sign-up.
 
@@ -68,15 +68,15 @@ Admin calls still need `Authorization: Bearer <token>`.
 - Client Identity Toolkit methods skip middleware Bearer (emulator-shaped)
 - Client `accounts:lookup` with `idToken` only is public self-lookup; `email[]` / `localId[]` / phone / federated need admin Bearer as above
 - Client `accounts:update` / `accounts:delete` require lab `idToken` matching `localId` when provided; admin project CRUD remains Bearer-only
-- Custom tokens and id tokens are unsigned lab JWTs (`alg: none`); not production credentials
-- `sendOobCode` returns a lab `oobCode` only (no email delivery)
+- Id tokens use process HS256 keys (not Google public keys); custom tokens are exchange-only
+- `sendOobCode` returns an `oobCode` only (no email delivery)
 - No phone / OAuth / SAML / OIDC providers, MFA, or blocking functions
 
 ## Deferred depth
 
 - Phone / OAuth / SAML / OIDC providers
 - MFA, blocking functions
-- Signed JWTs / real Google public keys
+- Real Google public-key JWT verify
 - Session cookies with real cookies
 
 ## Verification / CLI smoke

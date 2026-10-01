@@ -17,6 +17,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -144,6 +145,11 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 				return
 			}
 		}
+		if email := store.HTTPAuthServiceAccountEmail(job.HTTPTargetJSON); email != "" {
+			if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
+				return
+			}
+		}
 	}
 	created, err := s.Store.CreateSchedulerJob(job)
 	if err != nil {
@@ -259,6 +265,11 @@ func (s *Service) patchJob(w http.ResponseWriter, r *http.Request, p authn.Princ
 				return
 			}
 		}
+		if email := store.HTTPAuthServiceAccountEmail(updated.HTTPTargetJSON); email != "" {
+			if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
+				return
+			}
+		}
 	}
 	if _, err := s.Store.UpdateSchedulerJob(updated); err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -350,6 +361,11 @@ func (s *Service) runJob(w http.ResponseWriter, _ *http.Request, p authn.Princip
 	if !ok {
 		gcperrors.NotFound(w, "Job not found")
 		return
+	}
+	if email := store.HTTPAuthServiceAccountEmail(job.HTTPTargetJSON); email != "" {
+		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
+			return
+		}
 	}
 	s.fire(job)
 	out, _, _ := s.Store.GetSchedulerJob(name)

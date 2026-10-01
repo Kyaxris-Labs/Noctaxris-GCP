@@ -75,6 +75,9 @@ func (s *Store) CreateBucket(name, projectID, location, storageClass string) (*B
 	if name == "" || projectID == "" {
 		return nil, false, fmt.Errorf("bucket name and project required")
 	}
+	if err := ValidateGCSBucketName(name); err != nil {
+		return nil, false, err
+	}
 	if location == "" {
 		location = "US"
 	}
@@ -97,8 +100,7 @@ func (s *Store) CreateBucket(name, projectID, location, storageClass string) (*B
 	if n == 0 {
 		return nil, false, nil
 	}
-	dir := filepath.Join(s.dataRoot, "gcs", name)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := s.mkdirGCSBucket(name); err != nil {
 		return nil, false, fmt.Errorf("create bucket dir: %w", err)
 	}
 	return &Bucket{
@@ -253,7 +255,9 @@ func (s *Store) DeleteBucket(name string) (found bool, err error) {
 	if affected == 0 {
 		return false, nil
 	}
-	_ = os.RemoveAll(filepath.Join(s.dataRoot, "gcs", name))
+	if dir, err := s.gcsBucketDir(name); err == nil {
+		_ = os.RemoveAll(dir)
+	}
 	return true, nil
 }
 
@@ -264,6 +268,10 @@ func (s *Store) PutObjectBytes(bucket, name, contentType string, data []byte) (*
 
 // PutObjectBytesMeta writes object bytes with optional custom metadata.
 func (s *Store) PutObjectBytesMeta(bucket, name, contentType string, data []byte, meta *ObjectMeta) (*ObjectMeta, error) {
+	bucket = strings.TrimSpace(bucket)
+	if err := ValidateGCSBucketName(bucket); err != nil {
+		return nil, err
+	}
 	if _, ok, err := s.GetBucket(bucket); err != nil {
 		return nil, err
 	} else if !ok {
@@ -283,8 +291,15 @@ func (s *Store) PutObjectBytesMeta(bucket, name, contentType string, data []byte
 	if err != nil {
 		return nil, err
 	}
-	rel := filepath.Join(bucket, fmt.Sprintf("%d", nextGen), sanitizeObjectPath(name))
-	abs := filepath.Join(s.dataRoot, "gcs", rel)
+	objSeg := sanitizeObjectPath(name)
+	rel := filepath.Join(bucket, fmt.Sprintf("%d", nextGen), objSeg)
+	abs, err := JoinUnderRoot(s.dataRoot, "gcs", bucket, fmt.Sprintf("%d", nextGen), objSeg)
+	if err != nil {
+		return nil, fmt.Errorf("object path: %w", err)
+	}
+	if err := s.ensureUnderGCSRoot(abs); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
 		return nil, fmt.Errorf("create object dir: %w", err)
 	}
@@ -687,7 +702,9 @@ func (s *Store) DeleteObject(bucket, name string, generation int64) (bool, error
 	if n == 0 {
 		return false, nil
 	}
-	_ = os.Remove(filepath.Join(s.dataRoot, "gcs", o.BlobPath))
+	if abs, err := JoinUnderRoot(s.dataRoot, "gcs", o.BlobPath); err == nil {
+		_ = os.Remove(abs)
+	}
 	go s.DeliverGCSNotifications(GCSEventObjectDelete, o)
 	return true, nil
 }
@@ -748,7 +765,11 @@ func (s *Store) ReadObjectBytes(o *ObjectMeta) ([]byte, error) {
 	if o == nil {
 		return nil, fmt.Errorf("nil object")
 	}
-	return os.ReadFile(filepath.Join(s.dataRoot, "gcs", o.BlobPath))
+	abs, err := JoinUnderRoot(s.dataRoot, "gcs", o.BlobPath)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(abs)
 }
 
 // ListObjectGenerations lists every generation (not just latest) for XML versions=yes.

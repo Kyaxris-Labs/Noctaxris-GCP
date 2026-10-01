@@ -310,6 +310,28 @@ func (e *Evaluator) roleGrants(role, permission string) (bool, error) {
 		return permission == "cloudbuild.workerpools.use" || permission == "cloudbuild.workerpools.get", nil
 	case "roles/logging.viewAccessor":
 		return permission == "logging.views.get" || permission == "logging.views.list", nil
+	case "roles/secretmanager.viewer":
+		return secretmanagerViewerGrants(permission), nil
+	case "roles/secretmanager.secretAccessor":
+		return secretmanagerSecretAccessorGrants(permission), nil
+	case "roles/secretmanager.secretVersionManager":
+		return secretmanagerSecretVersionManagerGrants(permission), nil
+	case "roles/secretmanager.admin":
+		return strings.HasPrefix(permission, "secretmanager."), nil
+	case "roles/cloudkms.viewer":
+		return cloudkmsViewerGrants(permission), nil
+	case "roles/cloudkms.admin":
+		return cloudkmsAdminGrants(permission), nil
+	case "roles/cloudkms.cryptoKeyEncrypterDecrypter":
+		return permission == "cloudkms.cryptoKeyVersions.useToEncrypt" ||
+			permission == "cloudkms.cryptoKeyVersions.useToDecrypt" ||
+			permission == "cloudkms.cryptoKeys.get", nil
+	case "roles/cloudkms.cryptoKeyEncrypter":
+		return permission == "cloudkms.cryptoKeyVersions.useToEncrypt" ||
+			permission == "cloudkms.cryptoKeys.get", nil
+	case "roles/cloudkms.cryptoKeyDecrypter":
+		return permission == "cloudkms.cryptoKeyVersions.useToDecrypt" ||
+			permission == "cloudkms.cryptoKeys.get", nil
 	default:
 		if isCustomRoleName(role) {
 			if e == nil || e.Roles == nil {
@@ -353,9 +375,8 @@ func isCustomRoleName(role string) bool {
 // labPredefinedServicePrefixes is the allowlist for roles/{svc}.* → {svc}.* grants.
 // Services not listed (for example xyz) never over-grant via prefix matching.
 var labPredefinedServicePrefixes = map[string]bool{
-	"storage":              true,
-	"secretmanager":        true,
-	"cloudkms":             true,
+	"storage": true,
+	// secretmanager and cloudkms use explicit role maps above (not {svc}.*).
 	"artifactregistry":     true,
 	"pubsub":               true,
 	"bigquery":             true,
@@ -549,4 +570,76 @@ func viewerGrants(permission string) bool {
 	default:
 		return false
 	}
+}
+
+func secretmanagerViewerGrants(permission string) bool {
+	switch permission {
+	case "secretmanager.secrets.get",
+		"secretmanager.secrets.list",
+		"secretmanager.versions.get",
+		"secretmanager.versions.list",
+		"secretmanager.secrets.getIamPolicy",
+		"secretmanager.locations.get",
+		"secretmanager.locations.list":
+		return true
+	default:
+		return false
+	}
+}
+
+func secretmanagerSecretAccessorGrants(permission string) bool {
+	switch permission {
+	case "secretmanager.versions.access",
+		"secretmanager.versions.get",
+		"secretmanager.versions.list",
+		"secretmanager.secrets.get",
+		"secretmanager.secrets.list":
+		return true
+	default:
+		return false
+	}
+}
+
+func secretmanagerSecretVersionManagerGrants(permission string) bool {
+	switch permission {
+	case "secretmanager.versions.add",
+		"secretmanager.versions.enable",
+		"secretmanager.versions.disable",
+		"secretmanager.versions.destroy",
+		"secretmanager.versions.get",
+		"secretmanager.versions.list",
+		"secretmanager.secrets.get",
+		"secretmanager.secrets.list":
+		return true
+	default:
+		return false
+	}
+}
+
+func cloudkmsViewerGrants(permission string) bool {
+	switch permission {
+	case "cloudkms.keyRings.get",
+		"cloudkms.keyRings.list",
+		"cloudkms.cryptoKeys.get",
+		"cloudkms.cryptoKeys.list",
+		"cloudkms.cryptoKeyVersions.get",
+		"cloudkms.cryptoKeyVersions.list",
+		"cloudkms.cryptoKeys.getIamPolicy",
+		"cloudkms.locations.get",
+		"cloudkms.locations.list":
+		return true
+	default:
+		return false
+	}
+}
+
+// cloudkmsAdminGrants mirrors Cloud KMS Admin: manage keys without cryptographic ops.
+func cloudkmsAdminGrants(permission string) bool {
+	if permission == "cloudkms.cryptoKeyVersions.useToEncrypt" ||
+		permission == "cloudkms.cryptoKeyVersions.useToDecrypt" ||
+		permission == "cloudkms.cryptoKeyVersions.useToSign" ||
+		permission == "cloudkms.cryptoKeyVersions.viewPublicKey" {
+		return false
+	}
+	return strings.HasPrefix(permission, "cloudkms.")
 }

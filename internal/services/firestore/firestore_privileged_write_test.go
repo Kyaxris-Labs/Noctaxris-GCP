@@ -1,18 +1,20 @@
 package firestore_test
 
 import (
-	"encoding/base64"
 	"testing"
 
 	"cloud.google.com/go/firestore/apiv1/firestorepb"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func toolkitJWT(uid string) string {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://securetoken.google.com/noctaxris-gcp-local","user_id":"` + uid + `","sub":"` + uid + `"}`))
-	return header + "." + payload + "."
+	tok, err := authn.MintIdentityToolkitIDToken("noctaxris-gcp-local", uid, uid+"@example.com", nil)
+	if err != nil {
+		panic(err)
+	}
+	return tok
 }
 
 func TestFirestoreOwnUsersDocumentPrivilegedWrite(t *testing.T) {

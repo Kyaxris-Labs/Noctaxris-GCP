@@ -47,11 +47,14 @@ trigger whose destination is that function (see
 Delivery is fire-and-forget (3s timeout for HTTP). On transport error or HTTP
 5xx, the lab retries once. In-process Cloud Functions delivery does not use HTTP.
 
-For HTTP / Cloud Run `:invoke` delivery, the lab mints a registered Bearer
-(`access_tokens`, same registration as IAM `generateAccessToken`) using, in
-order: trigger `serviceAccount`, `destination.cloudRunService.serviceAccount`,
-or `{project}-compute@developer.gserviceaccount.com` (auto-ensured). Fail closed
-(skip deliver + log) when targeting lab `:invoke` with no resolvable SA.
+Create that names trigger `serviceAccount` or
+`destination.cloudRunService.serviceAccount` requires `iam.serviceAccounts.actAs`
+on that account (or the parent project). For HTTP / Cloud Run `:invoke`
+delivery, a registered Bearer is minted (`access_tokens`, same registration as
+IAM `generateAccessToken`) using, in order: trigger `serviceAccount`,
+`destination.cloudRunService.serviceAccount`, or
+`{project}-compute@developer.gserviceaccount.com`. Delivery skips when targeting
+`:invoke` with no resolvable SA.
 
 Channels store `provider`, `pubsubTopic`, and `state` metadata only (no provider handshake).
 
@@ -59,6 +62,7 @@ Channels store `provider`, `pubsubTopic`, and `state` metadata only (no provider
 
 - `eventarc.triggers.create|get|list|delete`
 - `eventarc.channels.create|get|list|delete`
+- `iam.serviceAccounts.actAs` when create names a delivery service account
 
 ## Client configuration
 
@@ -72,9 +76,9 @@ gcloud config set api_endpoint_overrides/eventarc http://127.0.0.1:4588/
   `/v1/projects/{p}/triggers` is Cloud Build on this shared mux. Regional create
   with Eventarc-shaped bodies (`eventFilters` / `destination` / …) stays Eventarc;
   Cloud Build-shaped bodies on the same path go to Cloud Build.
-- HTTP destinations require the lab catcher / loopback `:4588` or
-  `NOCTAXRIS_GCP_HTTP_EGRESS=1` + exact allowlist (see security-defaults);
-  non-allowlisted URIs are rejected at create (fail-closed)
+- HTTP destinations require the catcher / loopback `:4588` or
+  `NOCTAXRIS_GCP_HTTP_EGRESS=1` + exact allowlist;
+  non-allowlisted URIs are rejected at create
 - Lab catcher destinations are recorded in-process (no outbound HTTP); dump with
   `GET /_noctaxris-gcp/http-catcher` (`{"deliveries":[…]}`)
 - Channel provider handshake is not implemented

@@ -226,6 +226,23 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 			return
 		}
 	}
+	actAsEmail := strings.TrimSpace(body.ServiceAccount)
+	if actAsEmail == "" {
+		var destSA struct {
+			CloudRunService *struct {
+				ServiceAccount string `json:"serviceAccount"`
+			} `json:"cloudRunService"`
+		}
+		_ = json.Unmarshal([]byte(destJSON), &destSA)
+		if destSA.CloudRunService != nil {
+			actAsEmail = strings.TrimSpace(destSA.CloudRunService.ServiceAccount)
+		}
+	}
+	if actAsEmail != "" {
+		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, actAsEmail) {
+			return
+		}
+	}
 	t, created, err := s.Store.CreateEventarcTrigger(store.EventarcTrigger{
 		ProjectID: project, Location: location, TriggerID: triggerID,
 		FiltersJSON: filtersJSON, DestinationJSON: destJSON, TransportJSON: transportJSON,
@@ -298,8 +315,6 @@ func (s *Service) deleteTrigger(w http.ResponseWriter, r *http.Request, p authn.
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("{}"))
 }
-
-
 
 func (s *Service) createChannel(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, location := r.PathValue("project"), r.PathValue("location")

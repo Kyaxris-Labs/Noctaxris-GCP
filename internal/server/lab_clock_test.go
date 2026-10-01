@@ -133,6 +133,35 @@ func TestComputeMetadataRequiresFlavor(t *testing.T) {
 	}
 }
 
+func TestComputeMetadataTokenRequiresMetadataHost(t *testing.T) {
+	srv, _ := labForensicsServer(t, false, false)
+	req := httptest.NewRequest(http.MethodGet, "/computeMetadata/v1/instance/service-accounts/default/token", nil)
+	req.Header.Set("Metadata-Flavor", "Google")
+	req.Host = "127.0.0.1:4588"
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("shared API host token status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/computeMetadata/v1/instance/service-accounts/default/token", nil)
+	req.Header.Set("Metadata-Flavor", "Google")
+	req.Host = "metadata.google.internal"
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metadata host token status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := body["access_token"].(string)
+	if tok == "" || strings.HasPrefix(tok, "lab-metadata-") {
+		t.Fatalf("expected random access_token, got %q", tok)
+	}
+}
+
 func TestBulkSeedGCSObjectExfil(t *testing.T) {
 	srv, cfg := labForensicsServer(t, true, false)
 

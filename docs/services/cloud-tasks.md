@@ -26,7 +26,7 @@ Queue body may include `rateLimits`, `retryConfig`, and `appEngineRoutingOverrid
 
 Create task body (Google shape): `{"task":{"httpRequest":{...},"appEngineHttpRequest":{...},"scheduleTime":"..."},"taskId":"..."}`.
 
-`httpRequest.oidcToken` / `oauthToken` (`serviceAccountEmail`, optional `audience` / `scope`) are stored and returned on get. On dispatch to non-catcher URLs, when a SA email is present, the lab mints a registered Bearer (same `access_tokens` registration as IAM `generateAccessToken`) and sets `Authorization: Bearer …`.
+`httpRequest.oidcToken` / `oauthToken` (`serviceAccountEmail`, optional `audience` / `scope`) are stored and returned on get. Create and `:run` that name a service account require `iam.serviceAccounts.actAs` on that account (or the parent project). On dispatch to non-catcher URLs, a registered Bearer is minted (same `access_tokens` registration as IAM `generateAccessToken`) and set as `Authorization: Bearer …`.
 
 App Engine HTTP fields are stored for theatre; remote App Engine routing is not executed. `:run` always increments `dispatchCount` / `responseCount` and attempts HTTP when `httpRequest.url` is set. Failed HTTP targets are ignored.
 
@@ -36,12 +36,13 @@ Checked on `projects/{project}`:
 
 - `cloudtasks.queues.create|get|list|update|delete`
 - `cloudtasks.tasks.create|get|list|delete|run`
+- `iam.serviceAccounts.actAs` when `httpRequest` names a service account for OIDC/OAuth
 
 ## Emulator limits
 
-- `httpRequest.url` must pass the lab HTTP egress gate at create time; dispatch skips silently when blocked
-- Lab catcher URIs (`http://127.0.0.1:4588/_noctaxris-gcp/http-catcher…`) are recorded in-process on dispatch / `:run` (no outbound HTTP); dump with `GET /_noctaxris-gcp/http-catcher`
-- Bearer mint for `oidcToken`/`oauthToken` is lab theatre (registered hash, not Google-signed OIDC); grant Functions invoker when targeting `:invoke`
+- `httpRequest.url` must pass the HTTP egress gate at create time; dispatch skips silently when blocked
+- Catcher URIs (`http://127.0.0.1:4588/_noctaxris-gcp/http-catcher…`) are recorded in-process on dispatch / `:run` (no outbound HTTP); dump with `GET /_noctaxris-gcp/http-catcher`
+- Bearer mint for `oidcToken`/`oauthToken` is a registered hash (not Google-signed OIDC) and requires actAs; grant Functions invoker when targeting `:invoke`
 - No lease timing, rate-limit enforcement, or automatic retries beyond stored metadata
 - App Engine HTTP tasks store routing theatre only (no remote dispatch)
 

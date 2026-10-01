@@ -15,6 +15,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 )
@@ -280,10 +281,10 @@ func (s *Service) createTask(w http.ResponseWriter, r *http.Request, p authn.Pri
 	}
 	var body struct {
 		Task struct {
-			Name                   string          `json:"name"`
-			ScheduleTime           string          `json:"scheduleTime"`
-			HTTPRequest            json.RawMessage `json:"httpRequest"`
-			AppEngineHTTPRequest   json.RawMessage `json:"appEngineHttpRequest"`
+			Name                 string          `json:"name"`
+			ScheduleTime         string          `json:"scheduleTime"`
+			HTTPRequest          json.RawMessage `json:"httpRequest"`
+			AppEngineHTTPRequest json.RawMessage `json:"appEngineHttpRequest"`
 		} `json:"task"`
 		TaskID string `json:"taskId"`
 	}
@@ -311,6 +312,11 @@ func (s *Service) createTask(w http.ResponseWriter, r *http.Request, p authn.Pri
 		if err := json.Unmarshal([]byte(httpJSON), &hr); err == nil && strings.TrimSpace(hr.URL) != "" {
 			if err := httpegress.Validate(hr.URL); err != nil {
 				gcperrors.InvalidArgument(w, err.Error())
+				return
+			}
+		}
+		if email := store.HTTPAuthServiceAccountEmail(httpJSON); email != "" {
+			if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
 				return
 			}
 		}
@@ -441,6 +447,11 @@ func (s *Service) runTaskOrUnknown(w http.ResponseWriter, r *http.Request, p aut
 	if !ok {
 		gcperrors.NotFound(w, "Task not found")
 		return
+	}
+	if email := store.HTTPAuthServiceAccountEmail(task.HTTPRequestJSON); email != "" {
+		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
+			return
+		}
 	}
 	s.dispatchHTTP(task)
 	out, _, _ := s.Store.GetCloudTask(name)

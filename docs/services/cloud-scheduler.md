@@ -24,7 +24,7 @@ Job body fields used: `schedule`, `timeZone`, `httpTarget` (`uri`, `httpMethod`,
 
 `httpTarget.oidcToken` and `oauthToken` (including `serviceAccountEmail` and `audience`) are persisted and returned on get. `oidcToken.audience` is also echoed as `oidcTokenAudience` for convenience. `scheduleTime` is the computed next run (best-effort).
 
-On `:run` / ticker fire to non-catcher URLs, when `oidcToken` or `oauthToken` has `serviceAccountEmail`, the lab mints a registered Bearer via the same `access_tokens` table as IAM `generateAccessToken` and sets `Authorization: Bearer …` (not Google-signed OIDC). The SA row is auto-ensured when missing.
+Create, patch, and `:run` that name `oidcToken` / `oauthToken` `serviceAccountEmail` require `iam.serviceAccounts.actAs` on that account (or the parent project). On `:run` / ticker fire to non-catcher URLs, a registered Bearer is minted via the same `access_tokens` table as IAM `generateAccessToken` and set as `Authorization: Bearer …` (not Google-signed OIDC).
 
 Pub/Sub publish uses the existing store when the topic exists; missing topics fail silently on fire.
 
@@ -33,12 +33,13 @@ Pub/Sub publish uses the existing store when the topic exists; missing topics fa
 Checked on `projects/{project}`:
 
 - `cloudscheduler.jobs.create|get|list|update|delete|run`
+- `iam.serviceAccounts.actAs` when `httpTarget` names a service account for OIDC/OAuth
 
 ## Emulator limits
 
-- HTTP `httpTarget.uri` must pass the lab HTTP egress gate (catcher on loopback `:4588` by default; see security-defaults)
+- HTTP `httpTarget.uri` must pass the HTTP egress gate (catcher on loopback `:4588` by default)
 - Lab catcher URIs (`http://127.0.0.1:4588/_noctaxris-gcp/http-catcher…`) are recorded in-process on `:run` / ticker (no outbound HTTP); dump with `GET /_noctaxris-gcp/http-catcher`
-- Bearer mint for `oidcToken`/`oauthToken` is lab theatre (registered hash, not Google-signed OIDC); grant `roles/run.invoker` / project invoke when targeting Cloud Run `:invoke`
+- Bearer mint for `oidcToken`/`oauthToken` is a registered hash (not Google-signed OIDC) and requires actAs; grant `roles/run.invoker` / project invoke when targeting Cloud Run `:invoke`
 - Cron ticker runs in-process for `* * * * *` and `*/N * * * *` only; other schedules rely on `:run` or stored `scheduleTime`
 - Pub/Sub publish on fire is best-effort; missing topics fail silently
 - App Engine HTTP targets are not implemented

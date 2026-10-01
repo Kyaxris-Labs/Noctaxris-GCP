@@ -1,8 +1,11 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -350,7 +353,16 @@ func (s *Server) handleComputeMetadata(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(email))
 	case strings.HasSuffix(path, "/token"):
-		token := "lab-metadata-" + strings.ReplaceAll(email, "@", "-")
+		if !metadataTokenMintAllowed(r) {
+			gcperrors.PermissionDenied(w, "metadata token mint requires metadata host or link-local peer")
+			return
+		}
+		var nonce [16]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		token := "md-" + hex.EncodeToString(nonce[:])
 		expire := s.authClock().Add(time.Hour)
 		if err := s.store.PutAccessToken(authn.HashToken(token), email, expire); err != nil {
 			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -364,4 +376,25 @@ func (s *Server) handleComputeMetadata(w http.ResponseWriter, r *http.Request) {
 	default:
 		gcperrors.NotFound(w, "metadata path not found")
 	}
+}
+
+// metadataTokenMintAllowed gates token mint to the nested metadata Host or a
+// link-local peer (GCE IMDS shape). Arbitrary callers on the shared API Host are denied.
+func metadataTokenMintAllowed(r *http.Request) bool {
+	host := strings.ToLower(strings.TrimSpace(r.Host))
+	if i := strings.IndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	if host == "metadata.google.internal" || host == "169.254.169.254" {
+		return true
+	}
+	remote := strings.TrimSpace(r.RemoteAddr)
+	if hostPart, _, err := net.SplitHostPort(remote); err == nil {
+		remote = hostPart
+	}
+	ip := net.ParseIP(remote)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLinkLocalUnicast()
 }

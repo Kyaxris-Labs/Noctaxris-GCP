@@ -136,32 +136,27 @@ func userRecord(u *store.FirebaseUser, idToken string) map[string]any {
 }
 
 func mintIDToken(u *store.FirebaseUser) string {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	claims := map[string]any{
-		"user_id":  u.LocalID,
-		"sub":      u.LocalID,
-		"email":    u.Email,
-		"firebase": map[string]any{"sign_in_provider": "password"},
-		"iat":      time.Now().Unix(),
-		"exp":      time.Now().Add(time.Hour).Unix(),
-		"aud":      u.ProjectID,
-		"iss":      "https://securetoken.google.com/" + u.ProjectID,
-	}
+	extra := map[string]any{}
 	if u.CustomAttributes != "" && u.CustomAttributes != "{}" {
 		var custom map[string]any
 		if err := json.Unmarshal([]byte(u.CustomAttributes), &custom); err == nil {
 			for k, v := range custom {
-				claims[k] = v
+				extra[k] = v
 			}
 		}
 	}
-	raw, _ := json.Marshal(claims)
-	payload := base64.RawURLEncoding.EncodeToString(raw)
-	// Unsigned lab JWT (empty signature segment).
-	return header + "." + payload + "."
+	tok, err := authn.MintIdentityToolkitIDToken(u.ProjectID, u.LocalID, u.Email, extra)
+	if err != nil {
+		return ""
+	}
+	return tok
 }
 
 func parseLabJWT(token string) (map[string]any, error) {
+	if claims, ok := authn.VerifyIdentityToolkitIDToken(token); ok {
+		return claims, nil
+	}
+	// Custom tokens (non-securetoken issuer) keep payload-only parse for exchange.
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid token")
@@ -173,6 +168,9 @@ func parseLabJWT(token string) (map[string]any, error) {
 	var claims map[string]any
 	if err := json.Unmarshal(raw, &claims); err != nil {
 		return nil, err
+	}
+	if iss, _ := claims["iss"].(string); strings.HasPrefix(iss, "https://securetoken.google.com/") {
+		return nil, fmt.Errorf("invalid idToken signature")
 	}
 	return claims, nil
 }
@@ -186,15 +184,11 @@ func uidFromClaims(claims map[string]any) string {
 	return uid
 }
 
-// uidFromLabIDToken returns user_id/sub from an unsigned lab idToken (same path as verifyIdToken).
+// uidFromLabIDToken returns user_id/sub from a verified Identity Toolkit idToken.
 func uidFromLabIDToken(idToken string) (string, error) {
-	claims, err := parseLabJWT(idToken)
-	if err != nil {
-		return "", err
-	}
-	uid := uidFromClaims(claims)
-	if uid == "" {
-		return "", fmt.Errorf("idToken missing sub")
+	uid, ok := authn.LabIdentityToolkitUID(idToken)
+	if !ok || uid == "" {
+		return "", fmt.Errorf("invalid idToken")
 	}
 	return uid, nil
 }

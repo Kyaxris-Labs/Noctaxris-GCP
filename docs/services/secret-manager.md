@@ -52,6 +52,11 @@ copied (or `"rotated"` if none). When both rotation fields are set,
 `projects/{project}/secrets/{id}` **or** the project
 `projects/{projectId}` (OR).
 
+Predefined roles map to distinct permission sets: `roles/secretmanager.viewer`
+is metadata get/list only; `roles/secretmanager.secretAccessor` includes
+`secretmanager.versions.access`; `roles/secretmanager.admin` covers
+`secretmanager.*`.
+
 ## Emulator limits
 
 - CMEK name is stored only; encryption always uses the lab master key

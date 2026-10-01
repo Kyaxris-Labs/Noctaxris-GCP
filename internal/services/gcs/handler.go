@@ -148,8 +148,16 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 		gcperrors.InvalidArgument(w, "bucket name is required")
 		return
 	}
+	if err := store.ValidateGCSBucketName(body.Name); err != nil {
+		gcperrors.InvalidArgument(w, "invalid bucket name")
+		return
+	}
 	b, created, err := h.Store.CreateBucket(body.Name, project, body.Location, body.StorageClass)
 	if err != nil {
+		if err == store.ErrInvalidGCSBucketName {
+			gcperrors.InvalidArgument(w, "invalid bucket name")
+			return
+		}
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}

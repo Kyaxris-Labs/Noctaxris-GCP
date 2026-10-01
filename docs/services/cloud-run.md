@@ -92,9 +92,11 @@ also deny. The lab does not verify attestation signatures. Default (no policy,
 or a mode without `ENFORCED`) admits. Occurrence `POST` still requires a Bearer
 principal with `containeranalysis.occurrences.create` (not a public path).
 
-Metadata IMDS is public with `Metadata-Flavor: Google`. Identity is
-`runtime@{project}.iam.gserviceaccount.com`. `.../token` mints a lab Bearer for
-that SA only (wall-clock expiry).
+Metadata IMDS accepts `Metadata-Flavor: Google`. Identity is
+`runtime@{project}.iam.gserviceaccount.com`. Email and account listing are
+available on the shared listener. `.../token` mints a Bearer for that SA only
+when Host is `metadata.google.internal` or `169.254.169.254`, or the peer is
+link-local (wall-clock expiry; token value is random).
 
 Related REST (same listener):
 
@@ -122,7 +124,7 @@ Checked on `projects/{project}` for control-plane actions:
 `:invoke` uses `EvaluateAny` on the **service resource** and the project
 (`run.routes.invoke`). A non-root principal with only
 `roles/run.invoker` on the service IAM policy can invoke; without a project or
-service Invoker binding, invoke is denied. Root still bypasses.
+service Invoker binding, invoke is denied. Root skips IAM evaluation.
 
 Knative create/replace runs the same Binary Authorization `admitTemplate` check
 as Admin API v2.

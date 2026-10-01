@@ -29,7 +29,11 @@ Noctaxris-GCP (`127.0.0.1:4588` by default).
 | XML API | `GET` / `PUT /storage/xml/{bucket}[/{object}]` with `Authorization: GOOG4-HMAC-SHA256`; list supports `?versions=true` |
 | Versioning | Each write creates a new generation; list/get default to latest |
 
-Object bytes live under `$NOCTAXRIS_GCP_DATA_ROOT/gcs/{bucket}/...`. Metadata is in SQLite (`buckets`, `objects`, `gcs_notification_configs`).
+Object bytes live under `$NOCTAXRIS_GCP_DATA_ROOT/gcs/{bucket}/...`. Bucket names
+must be a single DNS-style label (3–63 lowercase chars; no path separators or
+`..`). Paths are resolved with `JoinUnderRoot` so object I/O stays under the
+data-root `gcs/` tree. Metadata is in SQLite (`buckets`, `objects`,
+`gcs_notification_configs`).
 
 ### Pub/Sub notificationConfigs
 
