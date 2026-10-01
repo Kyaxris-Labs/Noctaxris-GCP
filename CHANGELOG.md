@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 1.4.4
+
+Patch after 1.4.3: predefined IAM role maps, Cloud KMS AAD, Managed Kafka container scoping, BigQuery jobs.query table authz, Certificate Manager selfManaged sanitize, Cloud Asset ancestry, Container Analysis note attach, Organization Policy enforce parse, Security Command Center inject gates, Cloud Run invoke body, Logging inject redaction, Identity Toolkit and Firestore owner path, compute metadata link-local mint, Pub/Sub actAs and topic attach, Cloud Build / Eventarc default-SA actAs, Cloud Scheduler topics.publish. Docker Hub: `kyaxris/noctaxris-gcp` (`1.4.4`, `1.4`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- IAM: predefined roles for IAM, Resource Manager, Pub/Sub, BigQuery, Logging, Monitoring, Cloud Run, Cloud Functions, Service Usage, Access Context Manager, Binary Authorization, Cloud Asset, Container Analysis, Cloud Tasks, Organization Policy, Cloud Storage, Artifact Registry, Datastore/Firestore, Spanner, Cloud Scheduler, Eventarc, Cloud Build, Firebase Auth, and Identity Toolkit map to documented permission sets instead of `{service}.*`. Unknown `roles/xyz.*` do not grant permissions. Basic `roles/editor` no longer grants Secret Manager payload access, Cloud KMS cryptographic ops, or Organization Policy create/update/delete.
+- Cloud KMS: encrypt/decrypt honor `additionalAuthenticatedData` (AES-GCM AAD); mismatched or omitted AAD fails decrypt.
+- Managed Kafka: nested Redpanda container names are scoped by project/location/cluster id; reuse checks ownership labels; delete prefers the stored container id.
+- BigQuery: `jobs.query` also requires `bigquery.tables.getData` for reads, `bigquery.tables.list` for INFORMATION_SCHEMA, and `bigquery.tables.create` / `bigquery.datasets.create` for CREATE TABLE.
+- Certificate Manager: non-object `selfManaged` is rejected; top-level and nested PEM private key fields are stripped before persist.
+- Cloud Asset: folder/org inventory walks CRM ancestry instead of unioning every project.
+- Container Analysis: occurrence create requires `containeranalysis.notes.attachOccurrence` on `noteName`.
+- Organization Policy: non-bool `enforce` is rejected; v1 `booleanPolicy.enforced` normalizes to `rules[].enforce`.
+- Security Command Center: lab `InjectFindings` requires Bearer root; auto-create source needs `sources.create`; replace needs `findings.delete`.
+- Cloud Run: default `:invoke` body (and nested engine detail) omit template env.
+- Logging: lab inject redaction covers snake_case `private_key` / `api_key`, `resource` maps, and PEM-shaped `textPayload`.
+- Identity Toolkit: custom tokens are HS256-signed; `signInWithCustomToken` rejects unsigned or invalid tokens. Reserved id-token claims (`user_id`/`sub`/`exp`/…) cannot be overwritten by `customAttributes`. Public `accounts:lookup` and admin `verifyIdToken` accept only verified id tokens. Email-shaped Toolkit localIds authenticate as `user:{uid}` so they do not match `serviceAccount:` IAM bindings.
+- Firestore: Identity Toolkit owner-write allows only `.../documents/users/{uid}` (exact relative path under `/documents/`), not suffix matches.
+- Compute metadata: `.../token` mints only for link-local peers (Host alone on the shared listener is not enough).
+- Pub/Sub: `pushConfig.oidcToken.serviceAccountEmail` requires `iam.serviceAccounts.actAs`; CreateSubscription also requires `pubsub.topics.attachSubscription` on the topic project.
+- Cloud Build / Eventarc: omitted dispatch `serviceAccount` still requires `iam.serviceAccounts.actAs` on the default Compute Engine SA.
+- Cloud Scheduler: `pubsubTarget` create/patch/`run` requires `pubsub.topics.publish` on the topic project.
+
 ## 1.4.3
 
 Patch after 1.4.2: GCS path labels, Identity Toolkit HS256 id tokens, actAs on dispatch SA mint, Secret Manager and KMS role maps, compute metadata Host gate. Docker Hub: `kyaxris/noctaxris-gcp` (`1.4.3`, `1.4`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

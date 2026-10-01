@@ -213,7 +213,8 @@ Create service account fails with `FAILED_PRECONDITION` when
 - Soft-delete has no 30-day purge timer; rows remain until process data is wiped.
 - Key material is a lab credentials JSON (not a PKCS#8 RSA PEM).
 - Custom roles are project-scoped only (no organization custom roles CRUD).
-- Predefined `roles/{svc}.*` grants `{svc}.*` only for an allowlisted set of lab services; unknown services fail closed.
+- Marketed predefined roles (IAM, Resource Manager, Pub/Sub, BigQuery, Logging, Monitoring, Run, Functions, Service Usage, ACM, Binary Authorization, Cloud Asset, Container Analysis, Cloud Tasks, Org Policy, Secret Manager, Cloud KMS, Cloud Storage, Artifact Registry, Datastore/Firestore, Spanner, Cloud Scheduler, Eventarc, Cloud Build, Firebase Auth, Identity Toolkit) use explicit permission sets. Unknown `roles/{svc}.*` fail closed (no residual `{svc}.*` shortcut).
+- Basic `roles/editor` does not grant Secret Manager payload access, Cloud KMS cryptographic ops, Organization Policy mutate, `setIamPolicy`, or service-account impersonation.
 - gRPC `IAM` admin service is not registered yet; use REST.
 
 ## Deferred depth

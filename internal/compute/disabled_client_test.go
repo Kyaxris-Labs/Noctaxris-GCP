@@ -36,7 +36,7 @@ func TestDisabledClientFailClosedPaths(t *testing.T) {
 	if err := c.ExecLabDaemon(ctx, "name", []string{"true"}); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("exec: %v", err)
 	}
-	if _, _, err := c.EnsureRedpanda(ctx, "cluster"); err == nil || !strings.Contains(err.Error(), "disabled") {
+	if _, _, err := c.EnsureRedpanda(ctx, "cluster", RedpandaOwner{Project: "p", Location: "l", ClusterID: "c"}); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("redpanda: %v", err)
 	}
 	if err := c.RemoveRedpanda(ctx, "cluster"); err != nil {

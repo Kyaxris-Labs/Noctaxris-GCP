@@ -68,6 +68,32 @@ func (h *restHandler) require(w http.ResponseWriter, r *http.Request, permission
 	return true
 }
 
+func (h *restHandler) requireActAs(w http.ResponseWriter, r *http.Request, project, email string) bool {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return true
+	}
+	if h.principal == nil {
+		gcperrors.Unauthenticated(w, "")
+		return false
+	}
+	p, ok := h.principal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return false
+	}
+	return restlab.RequireServiceAccountActAs(w, h.svc.Authz, p, project, email)
+}
+
+func (h *restHandler) requireTopicAttach(w http.ResponseWriter, r *http.Request, topic string) bool {
+	topicProject := projectFromResource(topic)
+	if topicProject == "" {
+		gcperrors.InvalidArgument(w, "invalid topic name")
+		return false
+	}
+	return h.require(w, r, "pubsub.topics.attachSubscription", projectResource(topicProject))
+}
+
 func (h *restHandler) checkVPCSCPublish(w http.ResponseWriter, r *http.Request, topicProject string) bool {
 	if h.svc.Store == nil || !store.VPCSCEnforceEnabled() || h.principal == nil {
 		return true
@@ -310,9 +336,15 @@ func (h *restHandler) createOrReplaceSubscription(w http.ResponseWriter, r *http
 		gcperrors.InvalidArgument(w, "invalid subscription body")
 		return
 	}
+	if !h.requireTopicAttach(w, r, body.Topic) {
+		return
+	}
 	push, oidcEmail, oidcAud := parseRESTPushConfig(body.PushConfig)
 	if err := validatePushEndpoint(push); err != nil {
 		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	if !h.requireActAs(w, r, project, oidcEmail) {
 		return
 	}
 	dlTopic := ""
@@ -389,6 +421,9 @@ func (h *restHandler) patchSubscription(w http.ResponseWriter, r *http.Request) 
 		ep, email, aud := parseRESTPushConfig(body.PushConfig)
 		if err := validatePushEndpoint(ep); err != nil {
 			gcperrors.InvalidArgument(w, err.Error())
+			return
+		}
+		if !h.requireActAs(w, r, project, email) {
 			return
 		}
 		push = &ep
@@ -551,6 +586,9 @@ func (h *restHandler) modifyPushConfig(w http.ResponseWriter, r *http.Request) {
 	ep, email, aud := parseRESTPushConfig(body.PushConfig)
 	if err := validatePushEndpoint(ep); err != nil {
 		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	if !h.requireActAs(w, r, project, email) {
 		return
 	}
 	oidc := &store.PubSubOIDCToken{ServiceAccountEmail: email, Audience: aud}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,20 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
+
+func xmlVersionsRequested(q url.Values) bool {
+	if q == nil {
+		return false
+	}
+	if _, ok := q["versions"]; !ok {
+		return false
+	}
+	v := strings.TrimSpace(q.Get("versions"))
+	if v == "" {
+		return true
+	}
+	return strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") || v == "1"
+}
 
 func (h *Handler) requireXMLHMAC(w http.ResponseWriter, r *http.Request) (authn.Principal, bool) {
 	auth := r.Header.Get("Authorization")
@@ -38,7 +53,7 @@ func (h *Handler) requireXMLHMAC(w http.ResponseWriter, r *http.Request) (authn.
 	if googDate == "" {
 		googDate = r.Header.Get("X-Goog-Date")
 	}
-	if err := store.VerifyGOOG4HMACHeader(r.Method, host, r.URL.Path, auth, googDate, secret, time.Time{}); err != nil {
+	if err := store.VerifyGOOG4HMACHeader(r.Method, host, r.URL.Path, auth, googDate, secret, time.Time{}, r.URL.Query()); err != nil {
 		gcperrors.Unauthenticated(w, "invalid HMAC signature: "+err.Error())
 		return authn.Principal{}, false
 	}
@@ -112,7 +127,7 @@ func (h *Handler) xmlListBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := r.URL.Query().Get("prefix")
-	versions := strings.EqualFold(r.URL.Query().Get("versions"), "true") || r.URL.Query().Get("versions") == "yes"
+	versions := xmlVersionsRequested(r.URL.Query())
 	var items []store.ObjectMeta
 	var err error
 	if versions {

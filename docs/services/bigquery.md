@@ -50,7 +50,9 @@ Checked on `projects/{project}`:
 - `bigquery.datasets.create|get|list|delete`
 - `bigquery.tables.create|get|list|delete`
 - `bigquery.tables.updateData` (`insertAll`)
-- `bigquery.tables.getData` (`tabledata.list`)
+- `bigquery.tables.getData` (`tabledata.list` and SELECT/JOIN/GROUP BY/UNION query paths)
+- `bigquery.tables.list` (INFORMATION_SCHEMA.TABLES query path)
+- `bigquery.tables.create` / `bigquery.datasets.create` (CREATE TABLE query path when the dataset is missing)
 - `bigquery.jobs.create` / `bigquery.jobs.get`
 
 ## Emulator limits

@@ -3,6 +3,8 @@ package compute
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -361,8 +363,16 @@ func (c *Client) ExecLabDaemon(ctx context.Context, containerID string, cmd []st
 	return nil
 }
 
+// RedpandaOwner labels bind a nested broker to one Managed Kafka cluster resource.
+type RedpandaOwner struct {
+	Project   string
+	Location  string
+	ClusterID string
+}
+
 // EnsureRedpanda starts or reuses a long-lived Redpanda broker on the nested lab network.
-func (c *Client) EnsureRedpanda(ctx context.Context, containerName string) (bootstrap, containerID string, err error) {
+// Reuse requires matching noctaxris-gcp.project/location/cluster-id labels when owner is set.
+func (c *Client) EnsureRedpanda(ctx context.Context, containerName string, owner RedpandaOwner) (bootstrap, containerID string, err error) {
 	if !c.Enabled() {
 		return "", "", fmt.Errorf("compute: engine disabled (NOCTAXRIS_GCP_DOCKER_HOST empty)")
 	}
@@ -381,8 +391,16 @@ func (c *Client) EnsureRedpanda(ctx context.Context, containerName string) (boot
 		return "", "", err
 	}
 
+	labels := redpandaOwnerLabels(owner)
 	inspect, err := c.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 	if err == nil {
+		var existingLabels map[string]string
+		if inspect.Container.Config != nil {
+			existingLabels = inspect.Container.Config.Labels
+		}
+		if !redpandaLabelsMatch(existingLabels, owner) {
+			return "", "", fmt.Errorf("compute: redpanda container %q owned by another cluster", name)
+		}
 		id := inspect.Container.ID
 		if inspect.Container.State != nil && !inspect.Container.State.Running {
 			if _, err := c.cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
@@ -400,9 +418,7 @@ func (c *Client) EnsureRedpanda(ctx context.Context, containerName string) (boot
 			Image: ref,
 			Cmd:   RedpandaStartCmd(name),
 			Tty:   false,
-			Labels: map[string]string{
-				"noctaxris-gcp.kind": "managedkafka",
-			},
+			Labels: labels,
 			ExposedPorts: network.PortSet{
 				network.MustParsePort("9092/tcp"): struct{}{},
 			},
@@ -487,20 +503,36 @@ func (c *Client) CreateRedpandaTopic(ctx context.Context, containerRef, topic st
 	return nil
 }
 
-// RedpandaContainerNameForCluster returns the stable nested container name for a cluster id.
-func RedpandaContainerNameForCluster(clusterID string) string {
-	safe := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
-			return r
-		default:
-			return '-'
-		}
-	}, strings.TrimSpace(clusterID))
-	if safe == "" {
-		safe = "cluster"
+// RedpandaContainerNameForCluster returns a stable nested container name scoped
+// to project, location, and cluster id (SHA-256 prefix; no cross-tenant collapse).
+func RedpandaContainerNameForCluster(project, location, clusterID string) string {
+	key := strings.TrimSpace(project) + "\x00" + strings.TrimSpace(location) + "\x00" + strings.TrimSpace(clusterID)
+	if strings.TrimSpace(project) == "" || strings.TrimSpace(location) == "" || strings.TrimSpace(clusterID) == "" {
+		key = "invalid\x00" + key
 	}
-	return "noctaxris-gcp-kafka-" + safe
+	sum := sha256.Sum256([]byte(key))
+	return "noctaxris-gcp-kafka-" + hex.EncodeToString(sum[:12])
+}
+
+func redpandaOwnerLabels(owner RedpandaOwner) map[string]string {
+	return map[string]string{
+		"noctaxris-gcp.kind":       "managedkafka",
+		"noctaxris-gcp.project":    strings.TrimSpace(owner.Project),
+		"noctaxris-gcp.location":   strings.TrimSpace(owner.Location),
+		"noctaxris-gcp.cluster-id": strings.TrimSpace(owner.ClusterID),
+	}
+}
+
+func redpandaLabelsMatch(labels map[string]string, owner RedpandaOwner) bool {
+	if strings.TrimSpace(owner.Project) == "" && strings.TrimSpace(owner.Location) == "" && strings.TrimSpace(owner.ClusterID) == "" {
+		return true
+	}
+	if labels == nil {
+		return false
+	}
+	return labels["noctaxris-gcp.project"] == strings.TrimSpace(owner.Project) &&
+		labels["noctaxris-gcp.location"] == strings.TrimSpace(owner.Location) &&
+		labels["noctaxris-gcp.cluster-id"] == strings.TrimSpace(owner.ClusterID)
 }
 
 func (c *Client) ensureLabNetwork(ctx context.Context) error {

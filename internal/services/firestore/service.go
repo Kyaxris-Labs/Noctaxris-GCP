@@ -94,16 +94,40 @@ func (s *Service) require(ctx context.Context, permission, projectID string) (au
 }
 
 func isIdentityToolkitUser(p authn.Principal) bool {
-	return !p.IsRoot && p.Email != "" && !strings.Contains(p.Email, "@")
+	if p.IsRoot || p.Email == "" {
+		return false
+	}
+	if strings.HasPrefix(p.Email, "user:") {
+		return true
+	}
+	return !strings.Contains(p.Email, "@")
 }
 
+func toolkitUID(p authn.Principal) string {
+	if strings.HasPrefix(p.Email, "user:") {
+		return strings.TrimPrefix(p.Email, "user:")
+	}
+	return p.Email
+}
+
+// ownUsersDoc allows only documents whose path under /documents/ is exactly users/{uid}.
+// Suffix containment is rejected so nested collectionIds/documentIds cannot bypass.
 func ownUsersDoc(path, uid string) bool {
-	return strings.HasSuffix(path, "/documents/users/"+uid)
+	uid = strings.TrimSpace(uid)
+	if uid == "" || strings.Contains(uid, "/") {
+		return false
+	}
+	idx := strings.Index(path, "/documents/")
+	if idx < 0 {
+		return false
+	}
+	rel := path[idx+len("/documents/"):]
+	return rel == "users/"+uid
 }
 
 func (s *Service) authorizeWritePrincipal(p authn.Principal, permission, projectID, path string) error {
 	if isIdentityToolkitUser(p) {
-		if !ownUsersDoc(path, p.Email) {
+		if !ownUsersDoc(path, toolkitUID(p)) {
 			return status.Error(codes.PermissionDenied, "The caller does not have permission.")
 		}
 		return nil

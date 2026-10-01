@@ -212,7 +212,7 @@ func TestKmsDecryptHonorsCryptoKeyIAM(t *testing.T) {
 	if err := f.st.PutIAMPolicyJSON(keyName, authz.Policy{
 		Etag: "ACAB",
 		Bindings: []authz.Binding{{
-			Role:    "roles/editor",
+			Role:    "roles/cloudkms.cryptoKeyDecrypter",
 			Members: []string{"serviceAccount:" + email},
 		}},
 	}); err != nil {

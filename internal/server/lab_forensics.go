@@ -354,7 +354,7 @@ func (s *Server) handleComputeMetadata(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(email))
 	case strings.HasSuffix(path, "/token"):
 		if !metadataTokenMintAllowed(r) {
-			gcperrors.PermissionDenied(w, "metadata token mint requires metadata host or link-local peer")
+			gcperrors.PermissionDenied(w, "metadata token mint requires link-local peer")
 			return
 		}
 		var nonce [16]byte
@@ -378,16 +378,9 @@ func (s *Server) handleComputeMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// metadataTokenMintAllowed gates token mint to the nested metadata Host or a
-// link-local peer (GCE IMDS shape). Arbitrary callers on the shared API Host are denied.
+// metadataTokenMintAllowed gates token mint to a link-local peer (GCE IMDS shape).
+// Host alone is not trusted on the shared API listener; clients can set any Host.
 func metadataTokenMintAllowed(r *http.Request) bool {
-	host := strings.ToLower(strings.TrimSpace(r.Host))
-	if i := strings.IndexByte(host, ':'); i >= 0 {
-		host = host[:i]
-	}
-	if host == "metadata.google.internal" || host == "169.254.169.254" {
-		return true
-	}
 	remote := strings.TrimSpace(r.RemoteAddr)
 	if hostPart, _, err := net.SplitHostPort(remote); err == nil {
 		remote = hostPart

@@ -46,7 +46,7 @@ func TestHMACAuthCannotMintOAuthOrIAMCredentials(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			auth, date := store.SignGOOG4HMACHeader(http.MethodPost, tc.host, tc.path,
-				store.LabGCSHMACAccessID, store.LabGCSHMACSecret, time.Now().UTC())
+				store.LabGCSHMACAccessID, store.LabGCSHMACSecret, time.Now().UTC(), nil)
 			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewReader(body))
 			req.Host = tc.host
 			req.Header.Set("Authorization", auth)

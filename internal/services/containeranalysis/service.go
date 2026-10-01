@@ -59,6 +59,27 @@ func (s *Service) require(p authn.Principal, permission, projectID string) error
 	return nil
 }
 
+func (s *Service) requireResource(p authn.Principal, permission, resource string) error {
+	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, resource)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errDenied
+	}
+	return nil
+}
+
+// noteAttachResource returns the note resource name for attachOccurrence.
+// projects/{p}/notes/{id} stays as-is; bare ids attach under the occurrence project parent.
+func noteAttachResource(noteName string) string {
+	noteName = strings.TrimSpace(noteName)
+	if strings.HasPrefix(noteName, "projects/") && strings.Contains(noteName, "/notes/") {
+		return noteName
+	}
+	return noteName
+}
+
 var errDenied = fmt.Errorf("permission denied")
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -260,6 +281,13 @@ func (s *Service) createOccurrence(w http.ResponseWriter, r *http.Request, p aut
 		kind = "ATTESTATION"
 	}
 	note, _ := body["noteName"].(string)
+	note = strings.TrimSpace(note)
+	if note != "" {
+		if err := s.requireResource(p, "containeranalysis.notes.attachOccurrence", noteAttachResource(note)); err != nil {
+			writeAuthzErr(w, err)
+			return
+		}
+	}
 	raw, _ := json.Marshal(body)
 	name := "projects/" + project + "/occurrences/" + id
 	o := store.ContainerOccurrence{

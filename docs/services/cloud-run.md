@@ -79,7 +79,7 @@ Create/patch may include `traffic` (percent allocation to latest/revision). Opti
 | `template.labDelayMs` | Sleep theatre before respond (capped at 5000) |
 | env `RESPONSE_DELAY_MS` | Same as `labDelayMs` |
 
-Otherwise invoke returns `{"ok":true,"service":"...","env":{...}}`. Last invoke stores method, path, query, headers (Authorization omitted), and body.
+Otherwise invoke returns `{"ok":true,"service":"..."}` without template env. Nested engine detail also omits env. Last invoke stores method, path, query, headers (Authorization omitted), and body.
 
 Jobs are control-plane theatre only (template stored; no execution).
 
@@ -95,8 +95,9 @@ principal with `containeranalysis.occurrences.create` (not a public path).
 Metadata IMDS accepts `Metadata-Flavor: Google`. Identity is
 `runtime@{project}.iam.gserviceaccount.com`. Email and account listing are
 available on the shared listener. `.../token` mints a Bearer for that SA only
-when Host is `metadata.google.internal` or `169.254.169.254`, or the peer is
-link-local (wall-clock expiry; token value is random).
+when the TCP peer is link-local (GCE IMDS shape). Host alone on the shared
+listener is not enough (wall-clock expiry; token value is random). Nested step
+identity uses `labtoken.Mint` / `CLOUDSDK_AUTH_ACCESS_TOKEN`, not this route.
 
 Related REST (same listener):
 

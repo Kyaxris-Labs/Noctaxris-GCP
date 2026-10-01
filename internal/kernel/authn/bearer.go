@@ -84,6 +84,10 @@ func identityToolkitPrincipal(token string) (Principal, bool) {
 	if !ok {
 		return Principal{}, false
 	}
+	// Email-shaped localIds must not match serviceAccount: IAM bindings.
+	if strings.Contains(uid, "@") {
+		return Principal{Email: "user:" + uid, IsRoot: false}, true
+	}
 	return Principal{Email: uid, IsRoot: false}, true
 }
 

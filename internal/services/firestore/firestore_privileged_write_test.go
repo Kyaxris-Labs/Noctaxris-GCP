@@ -52,4 +52,18 @@ func TestFirestoreOwnUsersDocumentPrivilegedWrite(t *testing.T) {
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("other user doc want PermissionDenied got %v", err)
 	}
+
+	_, err = client.CreateDocument(authCtx(toolkitJWT("uid-own")), &firestorepb.CreateDocumentRequest{
+		Parent:       parent,
+		CollectionId: "secrets",
+		DocumentId:   "nested/documents/users/uid-own",
+		Document: &firestorepb.Document{
+			Fields: map[string]*firestorepb.Value{
+				"role": {ValueType: &firestorepb.Value_StringValue{StringValue: "admin"}},
+			},
+		},
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("suffix-bypass path want PermissionDenied got %v", err)
+	}
 }

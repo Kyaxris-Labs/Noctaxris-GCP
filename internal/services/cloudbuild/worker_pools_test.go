@@ -11,6 +11,7 @@ import (
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/cloudbuild"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
@@ -126,17 +127,31 @@ func TestCloudBuildRetryWorkerPoolUseOnHostProject(t *testing.T) {
 		t.Fatalf("create host project created=%v err=%v", created, err)
 	}
 	builder := "builder@" + workload + ".iam.gserviceaccount.com"
-	if err := st.CreateServiceAccount(store.ServiceAccount{
-		ProjectID: workload, Email: builder, UniqueID: "builder", DisplayName: "builder",
-	}); err != nil {
-		t.Fatal(err)
+	computeSA := labtoken.DefaultComputeSAEmail(workload)
+	for _, email := range []string{builder, computeSA} {
+		if err := st.CreateServiceAccount(store.ServiceAccount{
+			ProjectID: workload, Email: email, UniqueID: strings.Split(email, "@")[0], DisplayName: email,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := st.CreateCustomRole(workload, "buildOnly", "Build", "", "GA", []string{"cloudbuild.builds.create"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateCustomRole(workload, "actAsOnly", "ActAs", "", "GA", []string{"iam.serviceAccounts.actAs"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PutIAMPolicyJSON("projects/"+workload, authz.Policy{
 		Bindings: []authz.Binding{{
 			Role:    "projects/" + workload + "/roles/buildOnly",
+			Members: []string{"serviceAccount:" + builder},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutIAMPolicyJSON("projects/"+workload+"/serviceAccounts/"+computeSA, authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "projects/" + workload + "/roles/actAsOnly",
 			Members: []string{"serviceAccount:" + builder},
 		}},
 	}); err != nil {

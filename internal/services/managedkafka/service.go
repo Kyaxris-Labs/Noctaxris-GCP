@@ -23,7 +23,7 @@ const DefaultLocation = "us-central1"
 // When nil, Dial(DockerHost, DockerCertPath) is used.
 type NestEngine interface {
 	Enabled() bool
-	EnsureRedpanda(ctx context.Context, containerName string) (bootstrap, containerID string, err error)
+	EnsureRedpanda(ctx context.Context, containerName string, owner compute.RedpandaOwner) (bootstrap, containerID string, err error)
 	RemoveRedpanda(ctx context.Context, containerName string) error
 	CreateRedpandaTopic(ctx context.Context, containerRef, topic string, partitions, replicationFactor int) error
 	Close() error
@@ -197,10 +197,18 @@ func (s *Service) tryNestedRedpanda(ctx context.Context, clusterName, clusterID 
 		defer func() { _ = cli.Close() }()
 	}
 
-	containerName := compute.RedpandaContainerNameForCluster(clusterID)
+	project, location, id := splitClusterName(clusterName)
+	if project == "" {
+		project = strings.TrimSpace(clusterName)
+	}
+	if id == "" {
+		id = clusterID
+	}
+	containerName := compute.RedpandaContainerNameForCluster(project, location, id)
+	owner := compute.RedpandaOwner{Project: project, Location: location, ClusterID: id}
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	bootstrap, containerID, err := cli.EnsureRedpanda(runCtx, containerName)
+	bootstrap, containerID, err := cli.EnsureRedpanda(runCtx, containerName, owner)
 	if err != nil {
 		if compute.NestedEngineFailClosed() {
 			return err
@@ -280,11 +288,11 @@ func (s *Service) deleteCluster(w http.ResponseWriter, r *http.Request, p authn.
 		gcperrors.NotFound(w, "Cluster not found")
 		return
 	}
-	s.removeNestedRedpanda(r.Context(), clusterID, c.ContainerID)
+	s.removeNestedRedpanda(r.Context(), project, location, clusterID, c.ContainerID)
 	writeDoneOperation(w, project, location, "delete-"+clusterID, nil)
 }
 
-func (s *Service) removeNestedRedpanda(ctx context.Context, clusterID, containerID string) {
+func (s *Service) removeNestedRedpanda(ctx context.Context, project, location, clusterID, containerID string) {
 	cli, owned, err := s.nestEngine()
 	if err != nil || cli == nil || !cli.Enabled() {
 		return
@@ -292,9 +300,20 @@ func (s *Service) removeNestedRedpanda(ctx context.Context, clusterID, container
 	if owned {
 		defer func() { _ = cli.Close() }()
 	}
-	name := compute.RedpandaContainerNameForCluster(clusterID)
-	_ = containerID
-	_ = cli.RemoveRedpanda(ctx, name)
+	ref := strings.TrimSpace(containerID)
+	if ref == "" {
+		ref = compute.RedpandaContainerNameForCluster(project, location, clusterID)
+	}
+	_ = cli.RemoveRedpanda(ctx, ref)
+}
+
+func splitClusterName(name string) (project, location, clusterID string) {
+	// projects/{p}/locations/{l}/clusters/{id}
+	parts := strings.Split(strings.TrimSpace(name), "/")
+	if len(parts) == 6 && parts[0] == "projects" && parts[2] == "locations" && parts[4] == "clusters" {
+		return parts[1], parts[3], parts[5]
+	}
+	return "", "", ""
 }
 
 func toClusterJSON(c store.KafkaCluster) map[string]any {

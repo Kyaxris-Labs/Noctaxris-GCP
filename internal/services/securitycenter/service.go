@@ -458,6 +458,10 @@ func (s *Service) injectFindings(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.PermissionDenied(w, "securitycenter InjectFindings is disabled; set NOCTAXRIS_GCP_SCC_INJECT=1")
 		return
 	}
+	if !p.IsRoot {
+		gcperrors.PermissionDenied(w, "securitycenter InjectFindings requires Bearer root")
+		return
+	}
 	defer r.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -489,6 +493,10 @@ func (s *Service) injectFindings(w http.ResponseWriter, r *http.Request, p authn
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	} else if !ok {
+		if err := s.require(p, "securitycenter.sources.create", parent); err != nil {
+			writeAuthzErr(w, err)
+			return
+		}
 		if _, err := s.Store.CreateSCCSource(store.SCCSource{
 			Name: sourceName, Parent: parent, SourceID: sourceID,
 			DisplayName: "Lab inject source", Description: "Created by InjectFindings",
@@ -525,6 +533,10 @@ func (s *Service) injectFindings(w http.ResponseWriter, r *http.Request, p authn
 			return
 		}
 		if !created {
+			if err := s.require(p, "securitycenter.findings.delete", parent); err != nil {
+				writeAuthzErr(w, err)
+				return
+			}
 			// Upsert theatre: replace state/fields via delete+create for inject idempotency lite.
 			_, _ = s.Store.DeleteSCCFinding(f.Name)
 			if _, err := s.Store.CreateSCCFinding(f); err != nil {

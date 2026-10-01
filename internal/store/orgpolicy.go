@@ -101,12 +101,14 @@ func (s *Store) SetOrgPolicy(parent, constraint, specJSON string) (OrgPolicy, er
 	if strings.TrimSpace(specJSON) == "" {
 		specJSON = `{"rules":[{"enforce":false}]}`
 	}
-	if !json.Valid([]byte(specJSON)) {
-		return OrgPolicy{}, fmt.Errorf("spec must be valid JSON")
+	normalized, err := normalizeOrgPolicySpecJSON(specJSON)
+	if err != nil {
+		return OrgPolicy{}, err
 	}
+	specJSON = normalized
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	name := orgPolicyName(parent, constraint)
-	_, err := s.db.Exec(
+	_, err = s.db.Exec(
 		`INSERT INTO org_policies (name, parent, constraint_id, spec_json, etag, updated_at)
 		 VALUES (?, ?, ?, ?, 'ACAB', ?)
 		 ON CONFLICT(parent, constraint_id) DO UPDATE SET
@@ -260,6 +262,77 @@ func booleanSpecEnforced(specJSON string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeOrgPolicySpecJSON rejects non-bool enforce values and normalizes
+// v1 booleanPolicy.enforced into rules[].enforce.
+func normalizeOrgPolicySpecJSON(specJSON string) (string, error) {
+	if !json.Valid([]byte(specJSON)) {
+		return "", fmt.Errorf("spec must be valid JSON")
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(specJSON), &raw); err != nil {
+		return "", fmt.Errorf("spec must be valid JSON")
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	if bp, ok := raw["booleanPolicy"].(map[string]any); ok {
+		enforced, err := coerceBool(bp["enforced"])
+		if err != nil {
+			return "", fmt.Errorf("booleanPolicy.enforced must be a boolean")
+		}
+		raw["rules"] = []any{map[string]any{"enforce": enforced}}
+		delete(raw, "booleanPolicy")
+	}
+	rulesRaw, hasRules := raw["rules"]
+	if !hasRules {
+		raw["rules"] = []any{map[string]any{"enforce": false}}
+	} else {
+		rules, ok := rulesRaw.([]any)
+		if !ok {
+			return "", fmt.Errorf("rules must be an array")
+		}
+		for i, item := range rules {
+			rule, ok := item.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("rules[%d] must be an object", i)
+			}
+			if _, has := rule["enforced"]; has {
+				if _, hasEnforce := rule["enforce"]; !hasEnforce {
+					enforced, err := coerceBool(rule["enforced"])
+					if err != nil {
+						return "", fmt.Errorf("rules[%d].enforced must be a boolean", i)
+					}
+					rule["enforce"] = enforced
+				}
+				delete(rule, "enforced")
+			}
+			if _, has := rule["enforce"]; has {
+				enforced, err := coerceBool(rule["enforce"])
+				if err != nil {
+					return "", fmt.Errorf("rules[%d].enforce must be a boolean", i)
+				}
+				rule["enforce"] = enforced
+			}
+			rules[i] = rule
+		}
+		raw["rules"] = rules
+	}
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func coerceBool(v any) (bool, error) {
+	switch t := v.(type) {
+	case bool:
+		return t, nil
+	default:
+		return false, fmt.Errorf("not a boolean")
+	}
 }
 
 func validOrgPolicyParent(parent string) bool {

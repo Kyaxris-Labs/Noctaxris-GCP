@@ -518,7 +518,8 @@ func (s *Service) encrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 		verName = keyName + "/cryptoKeyVersions/" + version
 	}
 	var body struct {
-		Plaintext string `json:"plaintext"`
+		Plaintext                   string `json:"plaintext"`
+		AdditionalAuthenticatedData string `json:"additionalAuthenticatedData"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")
@@ -527,6 +528,11 @@ func (s *Service) encrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 	plain, err := base64.StdEncoding.DecodeString(body.Plaintext)
 	if err != nil {
 		gcperrors.InvalidArgument(w, "plaintext must be base64")
+		return
+	}
+	aad, err := decodeOptionalAAD(body.AdditionalAuthenticatedData)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "additionalAuthenticatedData must be base64")
 		return
 	}
 	v, ok, err := s.Store.GetKMSKeyVersion(verName)
@@ -547,7 +553,7 @@ func (s *Service) encrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	ct, err := aesGCMEncrypt(material, plain)
+	ct, err := aesGCMEncrypt(material, plain, aad)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -594,7 +600,8 @@ func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 		verName = keyName + "/cryptoKeyVersions/" + version
 	}
 	var body struct {
-		Ciphertext string `json:"ciphertext"`
+		Ciphertext                  string `json:"ciphertext"`
+		AdditionalAuthenticatedData string `json:"additionalAuthenticatedData"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")
@@ -603,6 +610,11 @@ func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 	ct, err := base64.StdEncoding.DecodeString(body.Ciphertext)
 	if err != nil {
 		gcperrors.InvalidArgument(w, "ciphertext must be base64")
+		return
+	}
+	aad, err := decodeOptionalAAD(body.AdditionalAuthenticatedData)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "additionalAuthenticatedData must be base64")
 		return
 	}
 	v, ok, err := s.Store.GetKMSKeyVersion(verName)
@@ -623,7 +635,7 @@ func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	plain, err := aesGCMDecrypt(material, ct)
+	plain, err := aesGCMDecrypt(material, ct, aad)
 	if err != nil {
 		gcperrors.InvalidArgument(w, "decryption failed")
 		return
@@ -885,7 +897,15 @@ func writeAuthzErr(w http.ResponseWriter, err error) {
 	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 }
 
-func aesGCMEncrypt(key, plaintext []byte) ([]byte, error) {
+func decodeOptionalAAD(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	return base64.StdEncoding.DecodeString(raw)
+}
+
+func aesGCMEncrypt(key, plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -898,10 +918,10 @@ func aesGCMEncrypt(key, plaintext []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	return aead.Seal(nonce, nonce, plaintext, nil), nil
+	return aead.Seal(nonce, nonce, plaintext, aad), nil
 }
 
-func aesGCMDecrypt(key, ciphertext []byte) ([]byte, error) {
+func aesGCMDecrypt(key, ciphertext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -914,5 +934,5 @@ func aesGCMDecrypt(key, ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < ns {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
-	return aead.Open(nil, ciphertext[:ns], ciphertext[ns:], nil)
+	return aead.Open(nil, ciphertext[:ns], ciphertext[ns:], aad)
 }

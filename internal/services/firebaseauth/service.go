@@ -1,12 +1,10 @@
 package firebaseauth
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -153,24 +151,9 @@ func mintIDToken(u *store.FirebaseUser) string {
 }
 
 func parseLabJWT(token string) (map[string]any, error) {
-	if claims, ok := authn.VerifyIdentityToolkitIDToken(token); ok {
-		return claims, nil
-	}
-	// Custom tokens (non-securetoken issuer) keep payload-only parse for exchange.
-	parts := strings.Split(token, ".")
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid token")
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, err
-	}
-	var claims map[string]any
-	if err := json.Unmarshal(raw, &claims); err != nil {
-		return nil, err
-	}
-	if iss, _ := claims["iss"].(string); strings.HasPrefix(iss, "https://securetoken.google.com/") {
-		return nil, fmt.Errorf("invalid idToken signature")
+	claims, ok := authn.VerifyIdentityToolkitIDToken(token)
+	if !ok {
+		return nil, fmt.Errorf("invalid idToken")
 	}
 	return claims, nil
 }
@@ -247,21 +230,11 @@ func (s *Service) requireLookupAdmin(p authn.Principal, project string) error {
 }
 
 func mintCustomToken(projectID, uid string, claims map[string]any) string {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	body := map[string]any{
-		"uid": uid,
-		"sub": uid,
-		"iss": "noctaxris-gcp-lab@" + projectID + ".iam.gserviceaccount.com",
-		"aud": "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit",
-		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(time.Hour).Unix(),
+	tok, err := authn.MintIdentityToolkitCustomToken(projectID, uid, claims)
+	if err != nil {
+		return ""
 	}
-	if len(claims) > 0 {
-		body["claims"] = claims
-	}
-	raw, _ := json.Marshal(body)
-	payload := base64.RawURLEncoding.EncodeToString(raw)
-	return header + "." + payload + "."
+	return tok
 }
 
 func (s *Service) signUp(w http.ResponseWriter, r *http.Request, _ authn.Principal) {
@@ -595,34 +568,26 @@ func (s *Service) signInCustomToken(w http.ResponseWriter, r *http.Request, _ au
 		gcperrors.InvalidArgument(w, "invalid JSON body")
 		return
 	}
-	parts := strings.Split(body.Token, ".")
-	if len(parts) < 2 {
+	uid, ok := authn.VerifyIdentityToolkitCustomToken(body.Token)
+	if !ok || uid == "" {
 		gcperrors.InvalidArgument(w, "invalid custom token")
 		return
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		gcperrors.InvalidArgument(w, "invalid custom token payload")
-		return
-	}
-	var claims struct {
-		UID string `json:"uid"`
-	}
-	if err := json.Unmarshal(raw, &claims); err != nil || claims.UID == "" {
-		gcperrors.InvalidArgument(w, "custom token missing uid")
-		return
-	}
 	project := s.projectFromBody(r, body.TargetProjectID)
-	u, ok, err := s.Store.GetFirebaseUserByLocalID(claims.UID)
+	u, found, err := s.Store.GetFirebaseUserByLocalID(uid)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	if !ok {
-		// Auto-provision lab user for custom token uid.
+	if !found {
+		// Auto-provision lab user for verified custom token uid.
+		email := uid + "@lab.invalid"
+		if strings.Contains(uid, "@") {
+			email = uid
+		}
 		u, _, err = s.Store.CreateFirebaseUser(store.FirebaseUser{
-			LocalID: claims.UID, ProjectID: project,
-			Email: claims.UID + "@lab.invalid", PasswordHash: "!",
+			LocalID: uid, ProjectID: project,
+			Email: email, PasswordHash: "!",
 		})
 		if err != nil {
 			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())

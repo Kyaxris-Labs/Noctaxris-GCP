@@ -10,6 +10,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
@@ -238,10 +239,11 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 			actAsEmail = strings.TrimSpace(destSA.CloudRunService.ServiceAccount)
 		}
 	}
-	if actAsEmail != "" {
-		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, actAsEmail) {
-			return
-		}
+	if actAsEmail == "" {
+		actAsEmail = labtoken.DefaultComputeSAEmail(project)
+	}
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, actAsEmail) {
+		return
 	}
 	t, created, err := s.Store.CreateEventarcTrigger(store.EventarcTrigger{
 		ProjectID: project, Location: location, TriggerID: triggerID,

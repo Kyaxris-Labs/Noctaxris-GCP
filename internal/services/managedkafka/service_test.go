@@ -29,7 +29,7 @@ type stubKafkaEngine struct {
 
 func (s *stubKafkaEngine) Enabled() bool { return true }
 
-func (s *stubKafkaEngine) EnsureRedpanda(context.Context, string) (string, string, error) {
+func (s *stubKafkaEngine) EnsureRedpanda(context.Context, string, compute.RedpandaOwner) (string, string, error) {
 	return "", "", s.err
 }
 

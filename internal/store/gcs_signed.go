@@ -182,7 +182,9 @@ func HasV4Signature(query url.Values) bool {
 }
 
 // SignGOOG4HMACHeader builds Authorization + x-goog-date for XML HMAC requests.
-func SignGOOG4HMACHeader(method, host, path, accessID, secret string, now time.Time) (authorization, googDate string) {
+// query is included in the canonical request (Cloud Storage V4). Pass nil when
+// the request has no query string.
+func SignGOOG4HMACHeader(method, host, path, accessID, secret string, now time.Time, query url.Values) (authorization, googDate string) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -195,10 +197,11 @@ func SignGOOG4HMACHeader(method, host, path, accessID, secret string, now time.T
 	canonicalHeaders := "host:" + strings.ToLower(host) + "\n" +
 		"x-goog-content-sha256:UNSIGNED-PAYLOAD\n" +
 		"x-goog-date:" + timestamp + "\n"
+	canonicalQuery := canonicalQueryString(query)
 	canonicalRequest := strings.Join([]string{
 		strings.ToUpper(method),
 		path,
-		"",
+		canonicalQuery,
 		canonicalHeaders,
 		signedHeaders,
 		"UNSIGNED-PAYLOAD",
@@ -216,7 +219,8 @@ func SignGOOG4HMACHeader(method, host, path, accessID, secret string, now time.T
 }
 
 // VerifyGOOG4HMACHeader validates a GOOG4 Authorization header. Skew uses wall now.
-func VerifyGOOG4HMACHeader(method, host, path, authorization, googDate, secret string, now time.Time) error {
+// query must match the request URL query used when the client signed (may be nil).
+func VerifyGOOG4HMACHeader(method, host, path, authorization, googDate, secret string, now time.Time, query url.Values) error {
 	authorization = strings.TrimSpace(authorization)
 	if !strings.HasPrefix(authorization, LabGCSSignAlgo+" ") {
 		return fmt.Errorf("missing GOOG4-HMAC-SHA256 Authorization")
@@ -267,10 +271,11 @@ func VerifyGOOG4HMACHeader(method, host, path, authorization, googDate, secret s
 	canonicalHeaders := "host:" + strings.ToLower(host) + "\n" +
 		"x-goog-content-sha256:UNSIGNED-PAYLOAD\n" +
 		"x-goog-date:" + googDate + "\n"
+	canonicalQuery := canonicalQueryString(query)
 	canonicalRequest := strings.Join([]string{
 		strings.ToUpper(method),
 		path,
-		"",
+		canonicalQuery,
 		canonicalHeaders,
 		signedHeaders,
 		"UNSIGNED-PAYLOAD",

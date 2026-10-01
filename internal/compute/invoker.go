@@ -141,7 +141,6 @@ func (d DockerInvoker) Invoke(ctx context.Context, req InvokeRequest) (InvokeRes
 	body, _ := json.Marshal(map[string]any{
 		"ok":      true,
 		"service": req.ServiceName,
-		"env":     req.Env,
 		"engine": map[string]any{
 			"mode":     "nested",
 			"image":    out.Image,

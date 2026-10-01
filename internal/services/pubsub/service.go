@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -89,6 +90,37 @@ func (s *Service) require(ctx context.Context, permission, resource string) erro
 		return status.Error(codes.PermissionDenied, "permission denied")
 	}
 	return nil
+}
+
+func (s *Service) requireActAs(ctx context.Context, project, email string) error {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil
+	}
+	if s.Principal == nil {
+		return status.Error(codes.Unauthenticated, "gRPC auth resolver not configured")
+	}
+	p, err := s.Principal(ctx)
+	if err != nil {
+		return status.Error(codes.Unauthenticated, "unauthenticated")
+	}
+	saRes := fmt.Sprintf("projects/%s/serviceAccounts/%s", project, email)
+	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, "iam.serviceAccounts.actAs", saRes, "projects/"+project)
+	if err != nil {
+		return status.Errorf(codes.Internal, "%v", err)
+	}
+	if !ok {
+		return status.Error(codes.PermissionDenied, "permission denied")
+	}
+	return nil
+}
+
+func (s *Service) requireTopicAttach(ctx context.Context, topic string) error {
+	topicProject := projectFromResource(topic)
+	if topicProject == "" {
+		return status.Error(codes.InvalidArgument, "invalid topic name")
+	}
+	return s.require(ctx, "pubsub.topics.attachSubscription", projectResource(topicProject))
 }
 
 func projectFromResource(name string) string {
@@ -389,6 +421,9 @@ func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscrip
 	if err := s.require(ctx, "pubsub.subscriptions.create", projectResource(projectID)); err != nil {
 		return nil, err
 	}
+	if err := s.requireTopicAttach(ctx, sub.GetTopic()); err != nil {
+		return nil, err
+	}
 	ack := int(sub.GetAckDeadlineSeconds())
 	push := ""
 	if sub.GetPushConfig() != nil {
@@ -398,6 +433,9 @@ func (s *Service) CreateSubscription(ctx context.Context, sub *pubsubpb.Subscrip
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	oidcEmail, oidcAud := oidcFromPushConfig(sub.GetPushConfig())
+	if err := s.requireActAs(ctx, projectID, oidcEmail); err != nil {
+		return nil, err
+	}
 	dlTopic := ""
 	maxAttempts := 0
 	if dl := sub.GetDeadLetterPolicy(); dl != nil {
@@ -513,6 +551,9 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *pubsubpb.UpdateSu
 			}
 			push = &ep
 			email, aud := oidcFromPushConfig(req.GetSubscription().GetPushConfig())
+			if err := s.requireActAs(ctx, projectID, email); err != nil {
+				return nil, err
+			}
 			oidc = &store.PubSubOIDCToken{ServiceAccountEmail: email, Audience: aud}
 		case "labels":
 			l := req.GetSubscription().GetLabels()
@@ -564,6 +605,9 @@ func (s *Service) ModifyPushConfig(ctx context.Context, req *pubsubpb.ModifyPush
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	email, aud := oidcFromPushConfig(req.GetPushConfig())
+	if err := s.requireActAs(ctx, projectID, email); err != nil {
+		return nil, err
+	}
 	oidc := &store.PubSubOIDCToken{ServiceAccountEmail: email, Audience: aud}
 	if _, err := s.Store.UpdateSubscription(req.GetSubscription(), nil, &ep, nil, nil, nil, nil, oidc); err != nil {
 		if strings.Contains(err.Error(), "not found") {

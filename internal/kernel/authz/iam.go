@@ -278,12 +278,13 @@ func memberIn(members []string, want string) bool {
 
 // roleGrants is a lab-complete role→permission map for seeded IAM roles.
 // roles/owner grants every permission. roles/editor grants mutators except IAM
-// admin / impersonation (aligned with GCP basic roles: no setIamPolicy, no
-// getAccessToken). roles/viewer is read-only metadata (no secret payload access).
+// admin / impersonation, secret payload access, KMS crypto ops, and orgpolicy
+// mutate. roles/viewer is read-only metadata (no secret payload access).
 //
-// Unknown predefined roles (for example roles/xyz.admin) do not grant via a
-// catch-all {svc}.* prefix. Custom project/org roles honor includedPermissions
-// from RoleStore when present; missing custom roles fail closed.
+// Marketed predefined roles use explicit permission sets. The residual
+// {svc}.* prefix allowlist is empty, so unknown roles (for example
+// roles/xyz.admin) fail closed. Custom project/org roles honor
+// includedPermissions from RoleStore when present.
 func (e *Evaluator) roleGrants(role, permission string) (bool, error) {
 	switch role {
 	case "roles/owner":
@@ -351,8 +352,11 @@ func (e *Evaluator) roleGrants(role, permission string) (bool, error) {
 			}
 			return false, nil
 		}
-		// Narrowed lab predefined roles: only allowlisted services get {svc}.* for roles/{svc}.*
-		// Unknown services (roles/xyz.*) fail closed — no catch-all prefix heuristic.
+		// Explicit permission sets for marketed predefined roles.
+		if granted, known := predefinedServiceRoleGrants(role, permission); known {
+			return granted, nil
+		}
+		// Residual {svc}.* allowlist (empty): unknown roles/xyz.* fail closed.
 		if strings.HasPrefix(role, "roles/") {
 			rest := strings.TrimPrefix(role, "roles/")
 			if i := strings.IndexByte(rest, '.'); i > 0 {
@@ -372,35 +376,11 @@ func isCustomRoleName(role string) bool {
 		(strings.HasPrefix(role, "organizations/") && strings.Contains(role, "/roles/"))
 }
 
-// labPredefinedServicePrefixes is the allowlist for roles/{svc}.* → {svc}.* grants.
-// Services not listed (for example xyz) never over-grant via prefix matching.
-var labPredefinedServicePrefixes = map[string]bool{
-	"storage": true,
-	// secretmanager and cloudkms use explicit role maps above (not {svc}.*).
-	"artifactregistry":     true,
-	"pubsub":               true,
-	"bigquery":             true,
-	"logging":              true,
-	"monitoring":           true,
-	"datastore":            true,
-	"firestore":            true,
-	"spanner":              true,
-	"run":                  true,
-	"cloudfunctions":       true,
-	"cloudscheduler":       true,
-	"cloudtasks":           true,
-	"eventarc":             true,
-	"iam":                  true,
-	"resourcemanager":      true,
-	"serviceusage":         true,
-	"accesscontextmanager": true,
-	"cloudasset":           true,
-	"cloudbuild":           true,
-	"containeranalysis":    true,
-	"binaryauthorization":  true,
-	"firebaseauth":         true,
-	"identitytoolkit":      true,
-}
+// labPredefinedServicePrefixes is the residual allowlist for roles/{svc}.* →
+// {svc}.* grants. Marketed lab services use explicit maps in
+// predefinedServiceRoleGrants (and the Secret Manager / Cloud KMS cases above).
+// An empty map means unknown roles/xyz.* fail closed with no prefix shortcut.
+var labPredefinedServicePrefixes = map[string]bool{}
 
 func evalRequestTimeCEL(expr string, now time.Time) bool {
 	expr = strings.TrimSpace(expr)
@@ -470,8 +450,9 @@ func tokenCreatorGrants(permission string) bool {
 	}
 }
 
-// editorGrants mirrors GCP roles/editor: broad mutate except IAM policy admin
-// and service-account token / signing impersonation.
+// editorGrants mirrors GCP roles/editor: broad mutate except IAM policy admin,
+// service-account impersonation, Secret Manager payload access, Cloud KMS
+// cryptographic ops, and Organization Policy mutate.
 func editorGrants(permission string) bool {
 	if permission == "" {
 		return false
@@ -486,7 +467,15 @@ func editorGrants(permission string) bool {
 		"iam.serviceAccounts.signJwt",
 		"iam.serviceAccounts.implicitDelegation",
 		"iam.serviceAccounts.generateAccessToken",
-		"iam.serviceAccounts.generateIdToken":
+		"iam.serviceAccounts.generateIdToken",
+		"secretmanager.versions.access",
+		"cloudkms.cryptoKeyVersions.useToEncrypt",
+		"cloudkms.cryptoKeyVersions.useToDecrypt",
+		"cloudkms.cryptoKeyVersions.useToSign",
+		"cloudkms.cryptoKeyVersions.viewPublicKey",
+		"orgpolicy.policies.create",
+		"orgpolicy.policies.update",
+		"orgpolicy.policies.delete":
 		return false
 	default:
 		return true

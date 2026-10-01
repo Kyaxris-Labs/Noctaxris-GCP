@@ -581,10 +581,10 @@ func (s *Service) invoke(w http.ResponseWriter, r *http.Request, p authn.Princip
 	env := envFromTemplateJSON(svc.TemplateJSON)
 	respBody := []byte(svc.LabResponseBody)
 	if len(respBody) == 0 {
+		// Default invoke body must not echo template env (Invoker ≠ getter).
 		defaultJSON, _ := json.Marshal(map[string]any{
 			"ok":      true,
 			"service": name,
-			"env":     env,
 		})
 		respBody = defaultJSON
 	}

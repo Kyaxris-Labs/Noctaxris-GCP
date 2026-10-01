@@ -133,24 +133,26 @@ func TestComputeMetadataRequiresFlavor(t *testing.T) {
 	}
 }
 
-func TestComputeMetadataTokenRequiresMetadataHost(t *testing.T) {
+func TestComputeMetadataTokenRequiresLinkLocalPeer(t *testing.T) {
 	srv, _ := labForensicsServer(t, false, false)
 	req := httptest.NewRequest(http.MethodGet, "/computeMetadata/v1/instance/service-accounts/default/token", nil)
 	req.Header.Set("Metadata-Flavor", "Google")
-	req.Host = "127.0.0.1:4588"
+	req.Host = "metadata.google.internal"
+	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("shared API host token status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("Host spoof without link-local peer status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/computeMetadata/v1/instance/service-accounts/default/token", nil)
 	req.Header.Set("Metadata-Flavor", "Google")
-	req.Host = "metadata.google.internal"
+	req.Host = "127.0.0.1:4588"
+	req.RemoteAddr = "169.254.1.2:4567"
 	rec = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("metadata host token status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("link-local peer token status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {

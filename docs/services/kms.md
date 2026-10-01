@@ -4,7 +4,7 @@ Lab-complete Cloud KMS v1 REST for symmetric encrypt/decrypt and SOFTWARE RSA si
 
 ## Status
 
-**lab** — key rings; crypto keys (`ENCRYPT_DECRYPT`, `ASYMMETRIC_SIGN` with `RSA_SIGN_PSS_2048_SHA256`); version list/get; encrypt/decrypt (AES-GCM); asymmetricSign + GetPublicKey; UpdateCryptoKey (labels); destroy/restore version; cryptoKey getIamPolicy/setIamPolicy.
+**lab** — key rings; crypto keys (`ENCRYPT_DECRYPT`, `ASYMMETRIC_SIGN` with `RSA_SIGN_PSS_2048_SHA256`); version list/get; encrypt/decrypt (AES-GCM with optional `additionalAuthenticatedData`); asymmetricSign + GetPublicKey; UpdateCryptoKey (labels); destroy/restore version; cryptoKey getIamPolicy/setIamPolicy.
 
 ## Location
 

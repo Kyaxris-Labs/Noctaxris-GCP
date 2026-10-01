@@ -35,6 +35,9 @@ Boolean policy body:
 {
   "name": "projects/noctaxris-gcp-local/policies/iam.disableServiceAccountKeyCreation",
   "spec": { "rules": [{ "enforce": true }] }
+
+`enforce` must be a JSON boolean. String or numeric values are rejected.
+v1-shaped `booleanPolicy.enforced` is accepted and stored as `rules[].enforce`.
 }
 ```
 
@@ -43,7 +46,10 @@ Boolean policy body:
 (lab Google-managed default for these constraints).
 
 Permissions: `orgpolicy.policies.list|get|create|update|delete`,
-`orgpolicy.constraints.list` on the parent resource. `roles/owner` covers all.
+`orgpolicy.constraints.list` on the parent resource. `roles/owner` and
+`roles/orgpolicy.policyAdmin` cover mutate; `roles/orgpolicy.policyViewer` is
+get/list only. Basic `roles/editor` does not create, update, or delete
+policies.
 
 ## Emulator limits
 

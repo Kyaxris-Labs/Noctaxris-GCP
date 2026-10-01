@@ -49,7 +49,7 @@ func TestGCSXMLHMACObjectGetDeniedWithoutIAM(t *testing.T) {
 	}
 
 	putPath := "/storage/xml/hmac-deny/secret.txt"
-	auth, date := store.SignGOOG4HMACHeader(http.MethodPut, host, putPath, accessID, secret, time.Now().UTC())
+	auth, date := store.SignGOOG4HMACHeader(http.MethodPut, host, putPath, accessID, secret, time.Now().UTC(), nil)
 	put := httptest.NewRequest(http.MethodPut, putPath, strings.NewReader("nope"))
 	put.Host = host
 	put.Header.Set("Authorization", auth)
@@ -70,7 +70,7 @@ func TestGCSXMLHMACObjectGetDeniedWithoutIAM(t *testing.T) {
 	}
 
 	getPath := putPath
-	auth, date = store.SignGOOG4HMACHeader(http.MethodGet, host, getPath, accessID, secret, time.Now().UTC())
+	auth, date = store.SignGOOG4HMACHeader(http.MethodGet, host, getPath, accessID, secret, time.Now().UTC(), nil)
 	get := httptest.NewRequest(http.MethodGet, getPath, nil)
 	get.Host = host
 	get.Header.Set("Authorization", auth)

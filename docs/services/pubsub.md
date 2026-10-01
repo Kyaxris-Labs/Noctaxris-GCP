@@ -42,11 +42,13 @@ attempts (HTTP error or non-2xx) increment the same `delivery_attempts` counter 
 Pull; when `deadLetterPolicy` is set and attempts reach `maxDeliveryAttempts`, the
 message is published to the dead-letter topic and removed from the source subscription.
 
-When `pushConfig.oidcToken.serviceAccountEmail` is set, push requests include
-`Authorization: Bearer <lab JWT>`. The lab JWT is unsigned theatre (`alg=none`,
-empty signature segment) with `aud` = audience (or the push endpoint when audience
-is empty), and `email` / `sub` = the service account email. This is not Google-signed
-OIDC. Unlike Cloud Scheduler, Pub/Sub returns `oidcToken` on get (API-shaped config).
+When `pushConfig.oidcToken.serviceAccountEmail` is set, create/update /
+`modifyPushConfig` require `iam.serviceAccounts.actAs` on that account (or the
+parent project). Push requests then include `Authorization: Bearer <lab JWT>`.
+The lab JWT is unsigned theatre (`alg=none`, empty signature segment) with
+`aud` = audience (or the push endpoint when audience is empty), and
+`email` / `sub` = the service account email. This is not Google-signed OIDC.
+Unlike Cloud Scheduler, Pub/Sub returns `oidcToken` on get (API-shaped config).
 Lab catcher deliveries also record the `authorization` header value on the catcher
 JSON for tests.
 
@@ -55,7 +57,9 @@ JSON for tests.
 Permissions such as `pubsub.topics.*`, `pubsub.subscriptions.*`, and
 `pubsub.snapshots.*` (including `pubsub.subscriptions.consume` for Pull /
 Acknowledge / ModifyAckDeadline / StreamingPull / Seek) are evaluated on
-`projects/{projectId}`.
+`projects/{projectId}`. CreateSubscription also requires
+`pubsub.topics.attachSubscription` on the topic's project. OIDC push config
+requires `iam.serviceAccounts.actAs` as above.
 
 When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, publish (gRPC and REST) also checks VPC
 Service Controls for `pubsub.googleapis.com`. The caller project is the SA email

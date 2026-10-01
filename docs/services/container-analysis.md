@@ -68,6 +68,9 @@ Checked on `projects/{project}`:
 - `containeranalysis.occurrences.get`
 - `containeranalysis.occurrences.create`
 
+Occurrence create also evaluates `containeranalysis.notes.attachOccurrence` on
+the request `noteName` (for example `projects/{provider}/notes/{id}`).
+
 Root bypasses. Viewer suffix grants cover get/list.
 
 ## Emulator limits

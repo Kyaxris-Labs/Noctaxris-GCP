@@ -47,14 +47,13 @@ trigger whose destination is that function (see
 Delivery is fire-and-forget (3s timeout for HTTP). On transport error or HTTP
 5xx, the lab retries once. In-process Cloud Functions delivery does not use HTTP.
 
-Create that names trigger `serviceAccount` or
-`destination.cloudRunService.serviceAccount` requires `iam.serviceAccounts.actAs`
-on that account (or the parent project). For HTTP / Cloud Run `:invoke`
-delivery, a registered Bearer is minted (`access_tokens`, same registration as
-IAM `generateAccessToken`) using, in order: trigger `serviceAccount`,
-`destination.cloudRunService.serviceAccount`, or
-`{project}-compute@developer.gserviceaccount.com`. Delivery skips when targeting
-`:invoke` with no resolvable SA.
+Create requires `iam.serviceAccounts.actAs` on the delivery identity (or the
+parent project): trigger `serviceAccount`, else
+`destination.cloudRunService.serviceAccount`, else the default Compute Engine SA
+`{project}-compute@developer.gserviceaccount.com`. For HTTP / Cloud Run
+`:invoke` delivery, a registered Bearer is minted (`access_tokens`, same
+registration as IAM `generateAccessToken`) using that same order. Delivery
+skips when targeting `:invoke` with no resolvable SA.
 
 Channels store `provider`, `pubsubTopic`, and `state` metadata only (no provider handshake).
 
@@ -62,7 +61,7 @@ Channels store `provider`, `pubsubTopic`, and `state` metadata only (no provider
 
 - `eventarc.triggers.create|get|list|delete`
 - `eventarc.channels.create|get|list|delete`
-- `iam.serviceAccounts.actAs` when create names a delivery service account
+- `iam.serviceAccounts.actAs` on the delivery service account (named or default Compute Engine SA)
 
 ## Client configuration
 

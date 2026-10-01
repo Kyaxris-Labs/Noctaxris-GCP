@@ -84,8 +84,9 @@ func TestEncryptDecryptAndDestroyRefuses(t *testing.T) {
 	}
 
 	plain := base64.StdEncoding.EncodeToString([]byte("hello-kms"))
+	aad := base64.StdEncoding.EncodeToString([]byte("tenant-a"))
 	encURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/lab-ring/cryptoKeys/lab-key:encrypt"
-	req = httptest.NewRequest(http.MethodPost, encURL, bytes.NewReader([]byte(`{"plaintext":"`+plain+`"}`)))
+	req = httptest.NewRequest(http.MethodPost, encURL, bytes.NewReader([]byte(`{"plaintext":"`+plain+`","additionalAuthenticatedData":"`+aad+`"}`)))
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -102,6 +103,12 @@ func TestEncryptDecryptAndDestroyRefuses(t *testing.T) {
 
 	decURL := "/v1/projects/" + project + "/locations/" + loc + "/keyRings/lab-ring/cryptoKeys/lab-key:decrypt"
 	req = httptest.NewRequest(http.MethodPost, decURL, bytes.NewReader([]byte(`{"ciphertext":"`+ct+`"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatal("decrypt without matching AAD must fail")
+	}
+	req = httptest.NewRequest(http.MethodPost, decURL, bytes.NewReader([]byte(`{"ciphertext":"`+ct+`","additionalAuthenticatedData":"`+aad+`"}`)))
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

@@ -70,8 +70,9 @@ scopes):
 - `cloudasset.assets.exportResource`
 - `cloudasset.feeds.create|get|list|delete`
 
-`roles/viewer` covers search/list/feeds get+list. Export and feed mutate need
-`roles/editor` / `roles/owner` (or a custom / `roles/cloudasset.*` grant).
+`roles/viewer` and `roles/cloudasset.viewer` cover search/list/feeds get+list.
+Export and feed mutate need `roles/editor` / `roles/owner` /
+`roles/cloudasset.owner` (or a custom role with those permissions).
 
 Service Usage title: `cloudasset.googleapis.com` (not required to call these
 routes in the lab).
@@ -82,7 +83,7 @@ routes in the lab).
 - No real GCS/BigQuery export bytes; LRO completes immediately
 - Feeds do not push to Pub/Sub
 - No `searchAllIamPolicies`, `analyzeIamPolicy`, or `queryAssets`
-- Folder/org scope does not walk CRM ancestry filters beyond union of projects
+- Folder/org scope returns inventory only for projects whose CRM ancestry includes that parent (seeded projects hang under the default organization; folder scope is empty until projects sit under the folder)
 
 ## Deferred depth
 

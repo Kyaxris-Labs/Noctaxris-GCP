@@ -151,6 +151,9 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 			}
 		}
 	}
+	if !s.requirePubsubTargetPublish(w, p, job.PubsubTargetJSON) {
+		return
+	}
 	created, err := s.Store.CreateSchedulerJob(job)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -271,6 +274,9 @@ func (s *Service) patchJob(w http.ResponseWriter, r *http.Request, p authn.Princ
 			}
 		}
 	}
+	if !s.requirePubsubTargetPublish(w, p, updated.PubsubTargetJSON) {
+		return
+	}
 	if _, err := s.Store.UpdateSchedulerJob(updated); err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -367,9 +373,47 @@ func (s *Service) runJob(w http.ResponseWriter, _ *http.Request, p authn.Princip
 			return
 		}
 	}
+	if !s.requirePubsubTargetPublish(w, p, job.PubsubTargetJSON) {
+		return
+	}
 	s.fire(job)
 	out, _, _ := s.Store.GetSchedulerJob(name)
 	writeJSON(w, http.StatusOK, toJobJSON(out))
+}
+
+func (s *Service) requirePubsubTargetPublish(w http.ResponseWriter, p authn.Principal, pubsubTargetJSON string) bool {
+	if strings.TrimSpace(pubsubTargetJSON) == "" {
+		return true
+	}
+	var pt struct {
+		TopicName string `json:"topicName"`
+	}
+	if err := json.Unmarshal([]byte(pubsubTargetJSON), &pt); err != nil || strings.TrimSpace(pt.TopicName) == "" {
+		return true
+	}
+	topicProject := topicProjectFromName(pt.TopicName)
+	if topicProject == "" {
+		gcperrors.InvalidArgument(w, "invalid pubsubTarget.topicName")
+		return false
+	}
+	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, "pubsub.topics.publish", "projects/"+topicProject)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return false
+	}
+	if !ok {
+		gcperrors.PermissionDenied(w, "")
+		return false
+	}
+	return true
+}
+
+func topicProjectFromName(topic string) string {
+	parts := strings.Split(strings.TrimSpace(topic), "/")
+	if len(parts) >= 2 && parts[0] == "projects" {
+		return parts[1]
+	}
+	return ""
 }
 
 func parseJobBody(project, location, jobID string, body map[string]any) store.SchedulerJob {

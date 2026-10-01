@@ -163,19 +163,28 @@ func (s *Service) createCertificate(w http.ResponseWriter, r *http.Request, p au
 			extras[k] = v
 		}
 	}
-	// Do not persist private key material beyond theatre metadata flags.
-	if sm, ok := extras["selfManaged"].(map[string]any); ok {
+	// Strip PEM material at any shape; reject non-object selfManaged.
+	if smRaw, has := extras["selfManaged"]; has {
+		sm, ok := smRaw.(map[string]any)
+		if !ok {
+			gcperrors.InvalidArgument(w, "selfManaged must be an object")
+			return
+		}
 		sanitized := map[string]any{}
-		if _, has := sm["pemCertificate"]; has {
+		if _, hasCert := sm["pemCertificate"]; hasCert {
 			sanitized["pemCertificate"] = "(redacted lab theatre)"
 		}
-		if _, has := sm["pemPrivateKey"]; has {
+		if _, hasKey := sm["pemPrivateKey"]; hasKey {
 			sanitized["pemPrivateKeyPresent"] = true
 		}
 		extras["selfManaged"] = sanitized
 	}
+	delete(extras, "pemPrivateKey")
+	delete(extras, "pemCertificate")
 	if managed, ok := extras["managed"].(map[string]any); ok {
 		managed["state"] = "ACTIVE"
+		delete(managed, "pemPrivateKey")
+		delete(managed, "pemCertificate")
 		extras["managed"] = managed
 	}
 	extrasJSON, _ := json.Marshal(extras)

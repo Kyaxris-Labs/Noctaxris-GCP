@@ -108,3 +108,30 @@ func TestOrgPolicyUnknownConstraintRejected(t *testing.T) {
 		t.Fatal("expected unknown constraint error")
 	}
 }
+
+func TestOrgPolicyRejectsNonBoolEnforceAndNormalizesBooleanPolicy(t *testing.T) {
+	st := openOrgPolicyStore(t)
+	parent := "projects/noctaxris-gcp-local"
+	constraint := store.ConstraintDisableServiceAccountKeyCreation
+
+	for _, spec := range []string{
+		`{"rules":[{"enforce":"true"}]}`,
+		`{"rules":[{"enforce":1}]}`,
+	} {
+		if _, err := st.SetOrgPolicy(parent, constraint, spec); err == nil {
+			t.Fatalf("expected reject for %s", spec)
+		}
+	}
+
+	p, err := st.SetOrgPolicy(parent, constraint, `{"booleanPolicy":{"enforced":true}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enforced, err := st.IsOrgPolicyConstraintEnforced(parent, constraint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enforced {
+		t.Fatalf("booleanPolicy should normalize to enforce=true; spec=%s", p.SpecJSON)
+	}
+}

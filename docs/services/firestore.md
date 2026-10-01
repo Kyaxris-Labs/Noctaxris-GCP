@@ -56,8 +56,9 @@ Permissions checked on `projects/{project}`:
 - `datastore.entities.list`
 
 Identity Toolkit JWT principals (`iss` `https://securetoken.google.com/`) may
-write only `.../documents/users/{uid}` matching the token `user_id` / `sub`.
-Other document paths and other users' docs are denied. REST PATCH
+write only when the path under `/documents/` is exactly `users/{uid}` matching
+the token `user_id` / `sub` (no nested suffix tricks). Other document paths and
+other users' docs are denied. REST PATCH
 `/v1/projects/{project}/databases/(default)/documents/users/{uid}` and POST
 create on `/documents/users?documentId=` use that same owner-write check. This
 is not a security-rules interpreter.

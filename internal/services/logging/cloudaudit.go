@@ -149,6 +149,12 @@ func (s *Service) injectAuditLogs(w http.ResponseWriter, r *http.Request, p auth
 		resJSON := e.Resource
 		if len(resJSON) == 0 {
 			resJSON = json.RawMessage(`{"type":"audited_resource"}`)
+		} else {
+			var res any
+			if err := json.Unmarshal(resJSON, &res); err == nil {
+				redacted, _ := json.Marshal(redactInjectValue(res, injectMaxDepth))
+				resJSON = redacted
+			}
 		}
 		out = append(out, store.CloudAuditEntry{
 			InsertID:         insertID,
@@ -245,7 +251,7 @@ func (s *Service) injectLogEntries(w http.ResponseWriter, r *http.Request, p aut
 		}
 		payload := map[string]any{}
 		if e.TextPayload != "" {
-			payload["textPayload"] = e.TextPayload
+			payload["textPayload"] = redactInjectText(e.TextPayload)
 		}
 		if len(e.JSONPayload) > 0 && string(e.JSONPayload) != "null" {
 			var jp any
@@ -259,6 +265,12 @@ func (s *Service) injectLogEntries(w http.ResponseWriter, r *http.Request, p aut
 		resJSON := string(e.Resource)
 		if resJSON == "" {
 			resJSON = `{"type":"global"}`
+		} else {
+			var res any
+			if err := json.Unmarshal([]byte(resJSON), &res); err == nil {
+				redacted, _ := json.Marshal(redactInjectValue(res, injectMaxDepth))
+				resJSON = string(redacted)
+			}
 		}
 		out = append(out, store.LogEntry{
 			InsertID: insertID, ProjectID: projectID, LogName: logName,
@@ -317,16 +329,31 @@ func wantsCloudAudit(exactLogName, filter string) bool {
 
 func injectSensitiveKey(key string) bool {
 	k := strings.ToLower(strings.TrimSpace(key))
+	k = strings.ReplaceAll(k, "_", "")
+	k = strings.ReplaceAll(k, "-", "")
 	switch k {
-	case "password", "secret", "token", "secretstring", "secretbinary",
+	case "password", "passwd", "secret", "token", "secretstring", "secretbinary",
 		"sessiontoken", "idtoken", "accesstoken", "refreshtoken",
-		"clientsecret", "privatekey", "credentials", "authorization":
+		"clientsecret", "privatekey", "credentials", "authorization",
+		"apikey":
 		return true
 	}
-	if strings.Contains(k, "password") || strings.Contains(k, "secret") || strings.HasSuffix(k, "token") {
+	if strings.Contains(k, "password") || strings.Contains(k, "passwd") ||
+		strings.Contains(k, "secret") || strings.Contains(k, "privatekey") ||
+		strings.Contains(k, "apikey") || strings.HasSuffix(k, "token") {
 		return true
 	}
 	return false
+}
+
+func redactInjectText(s string) string {
+	upper := strings.ToUpper(s)
+	if strings.Contains(upper, "PRIVATE KEY") || strings.Contains(upper, "BEGIN RSA") ||
+		strings.Contains(upper, "BEGIN EC") || strings.Contains(strings.ToLower(s), "api_key") ||
+		strings.Contains(strings.ToLower(s), "apikey") {
+		return "[REDACTED]"
+	}
+	return s
 }
 
 func redactInjectMap(m map[string]any, depth int) map[string]any {

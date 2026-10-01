@@ -89,8 +89,10 @@ Checked on the policy `parent` (default `organizations/noctaxris-gcp-org`):
 - `accesscontextmanager.policies.create|get|list|update|delete`
 - `accesscontextmanager.servicePerimeters.create|get|list|update|delete`
 
-`roles/owner` / `roles/editor` grant these; `roles/accesscontextmanager.*` is on
-the lab predefined prefix allowlist.
+`roles/owner` / `roles/editor` grant these. Predefined ACM roles use explicit
+maps: `roles/accesscontextmanager.policyAdmin` (and admin aliases) for full
+mutate; `policyEditor` for perimeter/policy write; `policyReader` / `viewer`
+for get/list only.
 
 Enable API via Service Usage: `accesscontextmanager.googleapis.com` (not
 auto-seeded; enable when gating creates).

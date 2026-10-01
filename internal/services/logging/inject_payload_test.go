@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+func TestInjectSensitiveKeySnakeCaseAndAPIKey(t *testing.T) {
+	for _, key := range []string{"private_key", "privateKey", "api_key", "apiKey", "apikey", "passwd"} {
+		if !injectSensitiveKey(key) {
+			t.Fatalf("expected sensitive: %s", key)
+		}
+	}
+	if injectSensitiveKey("table_name") {
+		t.Fatal("table_name must not redact")
+	}
+	if redactInjectText("-----BEGIN PRIVATE KEY-----\nabc") != "[REDACTED]" {
+		t.Fatal("textPayload PEM should redact")
+	}
+}
+
 func TestBuildInjectProtoPayload(t *testing.T) {
 	raw, err := buildInjectProtoPayload(injectEntryIn{
 		ProtoPayload: json.RawMessage(`{"serviceName":"storage.googleapis.com"}`),

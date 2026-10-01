@@ -62,7 +62,10 @@ Checked on the parent resource (`organizations/{org}` or `projects/{project}`):
 - `securitycenter.sources.create|get|list|delete`
 - `securitycenter.findings.create|get|list|delete|setState`
 
-Inject uses `securitycenter.findings.create` after the env gate.
+Inject requires Bearer root after the env gate, then
+`securitycenter.findings.create`. Auto-creating a missing source also needs
+`securitycenter.sources.create`; replacing an existing finding needs
+`securitycenter.findings.delete`.
 
 ## Emulator limits
 

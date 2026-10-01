@@ -26,7 +26,7 @@ Job body fields used: `schedule`, `timeZone`, `httpTarget` (`uri`, `httpMethod`,
 
 Create, patch, and `:run` that name `oidcToken` / `oauthToken` `serviceAccountEmail` require `iam.serviceAccounts.actAs` on that account (or the parent project). On `:run` / ticker fire to non-catcher URLs, a registered Bearer is minted via the same `access_tokens` table as IAM `generateAccessToken` and set as `Authorization: Bearer …` (not Google-signed OIDC).
 
-Pub/Sub publish uses the existing store when the topic exists; missing topics fail silently on fire.
+`pubsubTarget` create, patch, and `:run` require `pubsub.topics.publish` on the topic project. Pub/Sub publish uses the existing store when the topic exists; missing topics fail silently on fire.
 
 ## Authz
 
@@ -34,6 +34,7 @@ Checked on `projects/{project}`:
 
 - `cloudscheduler.jobs.create|get|list|update|delete|run`
 - `iam.serviceAccounts.actAs` when `httpTarget` names a service account for OIDC/OAuth
+- `pubsub.topics.publish` on the topic project when `pubsubTarget` is set
 
 ## Emulator limits
 

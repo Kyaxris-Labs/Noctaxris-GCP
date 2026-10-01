@@ -89,7 +89,6 @@ func (s *Service) folderGETColon(w http.ResponseWriter, r *http.Request, p authn
 	parent := "folders/" + folderID
 	switch action {
 	case "searchAllResources":
-		// Lab: folder scope searches the default project inventory.
 		s.searchAllResources(w, r, p, parent, "")
 	case "batchGetAssetsHistory":
 		s.batchGetAssetsHistory(w, r, p, parent, "")
@@ -159,7 +158,7 @@ func (s *Service) requireScope(p authn.Principal, permission, parent, projectID 
 	return restlab.Evaluate(s.Authz, p, permission, resource)
 }
 
-func (s *Service) inventoryForScope(projectID string) ([]store.InventoryAsset, error) {
+func (s *Service) inventoryForScope(parent, projectID string) ([]store.InventoryAsset, error) {
 	if projectID != "" {
 		return s.Store.ListInventoryAssets(projectID)
 	}
@@ -169,6 +168,9 @@ func (s *Service) inventoryForScope(projectID string) ([]store.InventoryAsset, e
 	}
 	var out []store.InventoryAsset
 	for _, p := range projects {
+		if parent != "" && !s.projectUnderParent(p.ID, parent) {
+			continue
+		}
 		part, err := s.Store.ListInventoryAssets(p.ID)
 		if err != nil {
 			return nil, err
@@ -178,12 +180,38 @@ func (s *Service) inventoryForScope(projectID string) ([]store.InventoryAsset, e
 	return out, nil
 }
 
+// projectUnderParent walks CRM ancestry from projects/{id} and returns true when
+// parent appears in the chain (folder or organization).
+func (s *Service) projectUnderParent(projectID, parent string) bool {
+	parent = strings.TrimSpace(parent)
+	if parent == "" {
+		return false
+	}
+	cur := "projects/" + strings.TrimSpace(projectID)
+	seen := map[string]bool{}
+	for i := 0; i < 32; i++ {
+		if cur == parent {
+			return true
+		}
+		if seen[cur] {
+			return false
+		}
+		seen[cur] = true
+		next, ok, err := s.Store.CRMParent(cur)
+		if err != nil || !ok || next == "" {
+			return false
+		}
+		cur = next
+	}
+	return false
+}
+
 func (s *Service) searchAllResources(w http.ResponseWriter, r *http.Request, p authn.Principal, parent, projectID string) {
 	if err := s.requireScope(p, "cloudasset.assets.searchAllResources", parent, projectID); err != nil {
 		restlab.WriteAuthzErr(w, err)
 		return
 	}
-	assets, err := s.inventoryForScope(projectID)
+	assets, err := s.inventoryForScope(parent, projectID)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -221,7 +249,7 @@ func (s *Service) listAssetsForParent(w http.ResponseWriter, r *http.Request, p 
 		restlab.WriteAuthzErr(w, err)
 		return
 	}
-	assets, err := s.inventoryForScope(projectID)
+	assets, err := s.inventoryForScope(parent, projectID)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -269,7 +297,7 @@ func (s *Service) exportAssets(w http.ResponseWriter, r *http.Request, p authn.P
 		return
 	}
 	assetTypes, _ := stringSlice(body["assetTypes"])
-	assets, err := s.inventoryForScope(projectID)
+	assets, err := s.inventoryForScope(parent, projectID)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return

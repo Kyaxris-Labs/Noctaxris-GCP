@@ -568,6 +568,19 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 			return
 		}
 		schemaJSON, _ := json.Marshal(schemaFields)
+		if _, ok, err := s.Store.GetBQDataset(project, datasetID); err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		} else if !ok {
+			if err := s.require(p, "bigquery.datasets.create", project); err != nil {
+				writeAuthz(w, err)
+				return
+			}
+		}
+		if err := s.require(p, "bigquery.tables.create", project); err != nil {
+			writeAuthz(w, err)
+			return
+		}
 		if body.DryRun {
 			_ = s.Store.PutBQJob(store.BQJob{
 				ProjectID: project, JobID: jobID, Query: q, DryRun: true, State: "DONE", CreatedAt: now,
@@ -629,6 +642,10 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 			gcperrors.InvalidArgument(w, "JOIN ON aliases must match FROM aliases")
 			return
 		}
+		if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+			writeAuthz(w, err)
+			return
+		}
 		leftRows, err := s.Store.ListBQRows(project, dsA, tblA)
 		if err != nil {
 			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -664,6 +681,10 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 
 	if m := reInfo.FindStringSubmatch(q); m != nil {
 		selectCols, datasetID := m[1], m[2]
+		if err := s.require(p, "bigquery.tables.list", project); err != nil {
+			writeAuthz(w, err)
+			return
+		}
 		tables, err := s.Store.ListBQTables(project, datasetID)
 		if err != nil {
 			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -715,6 +736,10 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 			} else {
 				alias = "f0_"
 			}
+		}
+		if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+			writeAuthz(w, err)
+			return
 		}
 		srcRows, err := s.Store.ListBQRows(project, datasetID, tableID)
 		if err != nil {
@@ -775,13 +800,21 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 	if m := reUnion.FindStringSubmatch(q); m != nil {
 		leftQ := strings.TrimSpace(m[1])
 		rightQ := strings.TrimSpace(m[2])
-		leftCols, leftRows, err := s.evalSimpleSelect(project, leftQ)
+		leftCols, leftRows, err := s.evalSimpleSelect(p, project, leftQ)
 		if err != nil {
+			if err == errDenied {
+				writeAuthz(w, err)
+				return
+			}
 			gcperrors.InvalidArgument(w, "UNION ALL left side: "+err.Error())
 			return
 		}
-		rightCols, rightRows, err := s.evalSimpleSelect(project, rightQ)
+		rightCols, rightRows, err := s.evalSimpleSelect(p, project, rightQ)
 		if err != nil {
+			if err == errDenied {
+				writeAuthz(w, err)
+				return
+			}
 			gcperrors.InvalidArgument(w, "UNION ALL right side: "+err.Error())
 			return
 		}
@@ -812,6 +845,10 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 	}
 	selectCols, datasetID, tableID := m[1], m[2], m[3]
 	whereCol, whereRaw, limitStr := m[4], m[5], m[6]
+	if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+		writeAuthz(w, err)
+		return
+	}
 	rows, err := s.Store.ListBQRows(project, datasetID, tableID)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -854,13 +891,16 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 }
 
 // evalSimpleSelect runs a lab SELECT (no JOIN/GROUP/UNION) and returns columns + rows.
-func (s *Service) evalSimpleSelect(project, q string) ([]string, []map[string]any, error) {
+func (s *Service) evalSimpleSelect(p authn.Principal, project, q string) ([]string, []map[string]any, error) {
 	m := reSelect.FindStringSubmatch(strings.TrimSpace(q))
 	if m == nil {
 		return nil, nil, fmt.Errorf("unsupported SELECT")
 	}
 	selectCols, datasetID, tableID := m[1], m[2], m[3]
 	whereCol, whereRaw, limitStr := m[4], m[5], m[6]
+	if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+		return nil, nil, err
+	}
 	rows, err := s.Store.ListBQRows(project, datasetID, tableID)
 	if err != nil {
 		return nil, nil, err

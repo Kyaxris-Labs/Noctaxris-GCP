@@ -3,7 +3,8 @@
 Lab Managed Kafka REST for clusters, topics, and ACL metadata. Without nested DinD,
 `bootstrapServers` is a theatre string and `state` is `ACTIVE`. With
 `NOCTAXRIS_GCP_DOCKER_HOST` set, create attempts a nested Redpanda broker on the
-shared `noctaxris-gcp-lab` bridge (no host Kafka port publish); nested start
+shared `noctaxris-gcp-lab` bridge (no host Kafka port publish). Container names
+are unique per project/location/cluster id with ownership labels; nested start
 failures soft-fail back to theatre bootstrap unless
 `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED` is `1`/`true` (create returns
 `FAILED_PRECONDITION` and the cluster row is rolled back).

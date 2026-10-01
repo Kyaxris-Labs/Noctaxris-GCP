@@ -10,6 +10,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -714,13 +715,17 @@ func (s *Service) requireWorkerPoolUse(w http.ResponseWriter, p authn.Principal,
 	return true
 }
 
-// requireBuildServiceAccountActAs enforces iam.serviceAccounts.actAs when the
-// request names a serviceAccount. An omitted serviceAccount uses the default
-// compute SA at runtime and is not gated here.
+// requireBuildServiceAccountActAs enforces iam.serviceAccounts.actAs on the
+// build identity. An omitted serviceAccount resolves to the default Compute
+// Engine SA (same email nested steps mint) and is gated the same way.
 func (s *Service) requireBuildServiceAccountActAs(w http.ResponseWriter, p authn.Principal, project string, body map[string]any) bool {
 	email := serviceAccountEmail(stringField(body["serviceAccount"]))
 	if email == "" {
-		return true
+		email = labtoken.DefaultComputeSAEmail(project)
+	}
+	if email == "" {
+		gcperrors.PermissionDenied(w, "")
+		return false
 	}
 	saRes := fmt.Sprintf("projects/%s/serviceAccounts/%s", project, email)
 	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, "iam.serviceAccounts.actAs", saRes, "projects/"+project)

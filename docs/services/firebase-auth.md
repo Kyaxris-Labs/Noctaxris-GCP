@@ -23,7 +23,7 @@ Client methods (emulator-shaped; identifier lookup still needs admin Bearer):
 
 Client `accounts:update` and `accounts:delete` require a valid lab `idToken`. When `localId` is also sent, it must match the token `user_id`/`sub`. Missing `idToken` returns `401` `MISSING_ID_TOKEN`; invalid or mismatched token returns `400` `INVALID_ID_TOKEN`.
 
-Client `accounts:lookup` with only `idToken` is the public getAccountInfo path: the lab JWT is parsed and that uid is returned. Firebase client "Get user data" sends `idToken` and nothing else. `email[]`, `localId[]`, `phoneNumber[]`, and `federatedUserId[]` are admin identifier queries. They need Bearer plus `firebaseauth.users.get` or `firebaseauth.users.list`, or root. No admin principal returns `401` `MISSING_ID_TOKEN`. A Bearer principal without those permissions returns `403`. Identifier queries do not return `userRecord` on deny.
+Client `accounts:lookup` with only `idToken` is the public getAccountInfo path: the id token must verify as a process HS256 Identity Toolkit token (same as update/delete); that uid is returned. Firebase client "Get user data" sends `idToken` and nothing else. `email[]`, `localId[]`, `phoneNumber[]`, and `federatedUserId[]` are admin identifier queries. They need Bearer plus `firebaseauth.users.get` or `firebaseauth.users.list`, or root. No admin principal returns `401` `MISSING_ID_TOKEN`. A Bearer principal without those permissions returns `403`. Identifier queries do not return `userRecord` on deny.
 
 Admin (Bearer required):
 
@@ -44,7 +44,7 @@ Admin (Bearer required):
 
 Password reset: `sendOobCode` with `requestType=PASSWORD_RESET` returns a lab `oobCode` (no email send). `resetPassword` consumes the code and sets `newPassword`.
 
-`setCustomUserClaims` stores `customAttributes` / `claims` JSON on the user. Id tokens are HS256-signed with the process signing key (`alg: HS256`). `verifyIdToken` and Bearer acceptance require a valid signature; unsigned tokens (`alg: none`) are rejected. Custom tokens remain payload-only for `:signInWithCustomToken` exchange and are not accepted as control-plane Bearers.
+`setCustomUserClaims` stores `customAttributes` / `claims` JSON on the user. Id tokens are HS256-signed with the process signing key (`alg: HS256`). Reserved claims (`user_id`, `sub`, `exp`, `iss`, `aud`, and related) are set by the mint path and cannot be overwritten by custom attributes. `verifyIdToken`, public lookup, and Bearer acceptance require a valid signature; unsigned tokens (`alg: none`) are rejected. Admin `createCustomToken` mints HS256 custom tokens; `:signInWithCustomToken` verifies that signature before minting an id token. Custom tokens are not accepted as control-plane Bearers. Email-shaped Toolkit localIds authenticate as `user:{uid}` so they do not match `serviceAccount:` IAM bindings.
 
 v2 tenant CRUD stores `allowPasswordSignup`. `accounts:signUp` with `tenantId` of a locked tenant (`allowPasswordSignup=false`) returns `admin-restricted-operation`. Open tenants accept email/password sign-up.
 
@@ -68,7 +68,7 @@ Admin calls still need `Authorization: Bearer <token>`.
 - Client Identity Toolkit methods skip middleware Bearer (emulator-shaped)
 - Client `accounts:lookup` with `idToken` only is public self-lookup; `email[]` / `localId[]` / phone / federated need admin Bearer as above
 - Client `accounts:update` / `accounts:delete` require lab `idToken` matching `localId` when provided; admin project CRUD remains Bearer-only
-- Id tokens use process HS256 keys (not Google public keys); custom tokens are exchange-only
+- Id tokens and custom tokens use process HS256 keys (not Google public keys); custom-token exchange requires a verified custom token
 - `sendOobCode` returns an `oobCode` only (no email delivery)
 - No phone / OAuth / SAML / OIDC providers, MFA, or blocking functions
 

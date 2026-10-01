@@ -27,7 +27,7 @@ REST on the shared listener (`http://127.0.0.1:4588`):
 | `GET` | `/v1/projects/{p}/locations/{loc}/operations/{operation}` |
 
 Create certificate body fields used: `description`, `labels`, `scope`,
-`managed` (domains; lab sets `state=ACTIVE`), or `selfManaged` (PEM stored as
+`managed` (domains; lab sets `state=ACTIVE`), or object-shaped `selfManaged` (PEM stored as
 redacted theatre flags only). Create map body: `description`, `labels`.
 
 Create certificate / certificateMap returns a completed Operation:

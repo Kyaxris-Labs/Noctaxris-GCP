@@ -74,7 +74,7 @@ A sink with `disabled: true` is persisted and listed but is omitted from matchin
 | `timestamp<"..."` / `timestamp<="..."` | Upper bound (`<=` treated as exclusive `<` in lab) |
 | `resource.type="http_load_balancer"` | Exact `resource.type` (also unquoted). Lab types include `http_load_balancer` (Armor `enforcedSecurityPolicy` / `previewSecurityPolicy` in `jsonPayload`), `cloud_run_revision`, `gce_subnetwork` (VPC Flow `connection` 5-tuple + `bytes_sent`), `cloudsql_database` (`PgAuditEntry.statement`), `dns_query` |
 
-`POST /_noctaxris-gcp/lab/logs:inject` writes non-CAL entries when `NOCTAXRIS_GCP_LOGS_INJECT=1` (Bearer root). CAL names must use `auditLogs:inject`. Cap 50. Sensitive JSON keys redact.
+`POST /_noctaxris-gcp/lab/logs:inject` writes non-CAL entries when `NOCTAXRIS_GCP_LOGS_INJECT=1` (Bearer root). CAL names must use `auditLogs:inject`. Cap 50. Sensitive JSON keys redact (including snake_case `private_key` / `api_key`); `resource` maps are redacted the same way; PEM-shaped `textPayload` is replaced.
 
 Seeded routing: `_Required` sink keeps Admin Activity and cannot be patched or deleted. `_Default` can drop Data Access via an exclusion (`LOG_ID("cloudaudit.googleapis.com/data_access")`).
 
