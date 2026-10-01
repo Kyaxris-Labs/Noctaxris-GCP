@@ -150,6 +150,11 @@ func (s *Service) knativeCreateService(w http.ResponseWriter, r *http.Request, p
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created service missing")
 		return
 	}
+	out, err = s.reconcileNested(r.Context(), out)
+	if err != nil {
+		s.writeNestedFailure(w, err, name)
+		return
+	}
 	writeJSON(w, http.StatusCreated, toKnativeService(out))
 }
 
@@ -187,6 +192,11 @@ func (s *Service) knativeReplaceService(w http.ResponseWriter, r *http.Request, 
 		gcperrors.NotFound(w, "Service not found")
 		return
 	}
+	svc, err = s.reconcileNested(r.Context(), svc)
+	if err != nil {
+		s.writeNestedFailure(w, err, "")
+		return
+	}
 	writeJSON(w, http.StatusOK, toKnativeService(svc))
 }
 
@@ -198,7 +208,7 @@ func (s *Service) knativeDeleteService(w http.ResponseWriter, r *http.Request, p
 		writeAuthzErr(w, err)
 		return
 	}
-	ok, err := s.Store.DeleteRunService(serviceName(project, location, id))
+	ok, err := s.deleteServiceAndNested(r.Context(), serviceName(project, location, id))
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return

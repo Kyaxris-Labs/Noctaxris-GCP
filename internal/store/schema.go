@@ -255,6 +255,9 @@ CREATE TABLE IF NOT EXISTS run_services (
   lab_response_body TEXT NOT NULL DEFAULT '',
   last_invoke_json TEXT NOT NULL DEFAULT '',
   traffic_json TEXT NOT NULL DEFAULT '[]',
+  container_id TEXT NOT NULL DEFAULT '',
+  nested_host TEXT NOT NULL DEFAULT '',
+  nested_port INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

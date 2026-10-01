@@ -18,7 +18,7 @@ with honest emulator limits on each page.
 | Cloud Audit Logs | lab (theatre) | [cloud-audit-logs.md](cloud-audit-logs.md) | Env-gated inject + lab clock/BulkSeed; listable `protoPayload` lite via Logging `entries:list` |
 | Security Command Center | lab | [security-command-center.md](security-command-center.md) | Sources/findings CRUD lite; lab InjectFindings (`NOCTAXRIS_GCP_SCC_INJECT`) |
 | Cloud Asset Inventory | lab (theatre) | [cloud-asset-inventory.md](cloud-asset-inventory.md) | searchAllResources / listAssets / exportAssets lite over store resources; feeds + history |
-| Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke`; Binary Authorization admit; IMDS metadata |
+| Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke`; nested long-lived HTTP + `/run/` proxy when ports/command/args set; Binary Authorization admit; IMDS metadata |
 | Container Analysis | lab | [container-analysis.md](container-analysis.md) | REST v1 occurrences list/create/get, filter + pagination, vulnerabilitySummary; BinAuth exact URI admit |
 | Cloud Functions | lab | [cloud-functions.md](cloud-functions.md) | REST Functions v2, upload/download URL + source accept, IAM, `:invoke` stub |
 | Cloud Scheduler | lab | [cloud-scheduler.md](cloud-scheduler.md) | REST v1 jobs, 5-field cron next-run, pause/resume, OIDC audience |
@@ -93,10 +93,11 @@ docker compose -f compose.yaml --env-file .env up --build
 Default Compose starts restricted DinD (`noctaxris-gcp-engine`, `privileged: false`)
 on the Compose network only (no host publish of 2375/2376) and sets
 `NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH` plus fail-closed
-nested envs. Nested SQL, Managed Kafka, and Memorystore Redis share the
-engine-internal `noctaxris-gcp-lab` bridge (API-created; no host publish of
-broker/DB ports). Cloud Run one-shot invoke stays off that bridge
-(`NetworkMode: none`). Host `docker.sock`, `unix://`, and `npipe://` are rejected.
+nested envs. Nested SQL, Managed Kafka, Memorystore Redis, and Cloud Run
+long-lived HTTP share the engine-internal `noctaxris-gcp-lab` bridge
+(API-created; no host publish of broker/DB ports by default). Cloud Run
+one-shot invoke stays off that bridge (`NetworkMode: none`). Host
+`docker.sock`, `unix://`, and `npipe://` are rejected.
 If nested containers fail on Desktop/WSL2, add `-f compose.engine-privileged.yaml`.
 Nested proof: `bash docker/smoke-nested.sh`. Details:
 [configuration.md](../configuration.md), [security-defaults.md](../security-defaults.md),

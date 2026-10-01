@@ -17,10 +17,15 @@ func (s *Server) registerServerless() {
 		return PrincipalFromContext(r.Context())
 	}
 
+	engine, err := compute.Dial(s.cfg.DockerHost, s.cfg.DockerTLSCertPath)
+	if err != nil {
+		engine, _ = compute.Dial("", "")
+	}
 	runSvc := &cloudrun.Service{
 		Store:   s.store,
 		Authz:   s.authz,
 		Invoker: compute.NewInvoker(s.cfg.DockerHost, s.cfg.DockerTLSCertPath),
+		Engine:  engine,
 	}
 	runSvc.Mount(s.mux, principalFrom)
 

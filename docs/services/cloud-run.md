@@ -17,6 +17,38 @@ GET returns the service. Terraform:
 | Nested soft-fail | Nested dial/run fails; `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` unset | Falls back to mock; response may include `engine` detail |
 | Nested fail-closed | Nested dial/run fails; `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED=1` or `true` | Hard error; no mock fallback |
 
+## Nested long-lived HTTP
+
+A service with a container image and none of `template.labResponseBody` or
+`RESPONSE_BODY` runs as a long-lived nested container when the engine is
+configured (`NOCTAXRIS_GCP_DOCKER_HOST` and `NOCTAXRIS_GCP_DOCKER_CERT_PATH`) and the
+first container declares a port, `command`, or `args`. An image with none of
+those keeps the one-shot nested `:invoke` path above.
+
+| Step | Behavior |
+|------|----------|
+| Admission | Binary Authorization is consulted on create and patch first. Denied images never reach the engine. |
+| Image | Must pass the pull allowlist (`python:3.13-slim-bookworm` is pinned by default, extend with `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST`). An image already present in the engine is used without a registry pull, so a digest-pinned or exact-ref allowlisted image can be loaded into the engine ahead of time. |
+| Start | Container joins the lab bridge with the container port published on the engine (ephemeral host port, or `NOCTAXRIS_GCP_RUN_PUBLISH_PORT` when set). Container port comes from `ports[0].containerPort` (default 8080) and is passed as `PORT`. `command` maps to the entrypoint and `args` to the command. Template env is passed through. When `NOCTAXRIS_GCP_INJECT_HOST_GATEWAY` is `1`/`true` the container gets `host.docker.internal:host-gateway` so it can reach the lab API on `:4588`. |
+| URI | `service.uri` is `http://127.0.0.1:4588/run/{project}/{location}/{service}/`. When `NOCTAXRIS_GCP_RUN_PUBLIC_URI_BASE` is a valid `http(s)` URL (for example `http://127.0.0.1:8091` when the engine port is host-published), `service.uri` is that base followed by `/`. |
+| Patch | Template patch removes the prior container and starts a new one. Traffic-only patch leaves it running. |
+| Delete | Service delete force-removes the container. |
+| Failure | Start failure keeps the mock `:invoke` URI unless `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED` is `1`/`true`. Then create returns `FAILED_PRECONDITION` and the new service is rolled back. A failed patch returns the same error and the service reverts to mock URI. |
+
+`:invoke` on a nested service keeps IAM (`run.routes.invoke`) and proxies the
+method, query, and body to `/` on the container. The browser route
+`ANY /run/{project}/{location}/{service}/{path...}` is unauthenticated by design
+(the `/run/` prefix is a public path, like the load balancer and CDN edge
+routes). It is served only while a nested container is recorded for the service,
+otherwise 404. Anything reachable at the emulator listener can therefore reach
+the container, so keep the listener on loopback or behind your own access
+control. `Authorization` and `Proxy-Authorization` are stripped before the
+request reaches the container, and client `X-Forwarded-*` headers are replaced.
+
+The recorded engine port is stable only while the engine keeps its bindings.
+Set `NOCTAXRIS_GCP_RUN_PUBLISH_PORT` to pin it. A pinned port supports one
+nested Run service per engine.
+
 ## Status
 
 **lab** — services CRUD with traffic metadata, jobs CRUD theatre, revision list,
@@ -138,6 +170,10 @@ as Admin API v2.
 - Nested dial/run failures soft-fail to mock (`engine.detail`) unless
   `NOCTAXRIS_GCP_NESTED_INVOKE_FAIL_CLOSED` is `1`/`true` (hard error, no mock)
 - `template.labResponseBody` forces mock even when the engine is configured
+- Nested long-lived HTTP has no readiness probe, scale-to-zero, revision traffic
+  split, or request timeout beyond the proxy defaults. Requests sent before the
+  app listens return 502
+- The `/run/` browser route has no IAM check by design (see Nested long-lived HTTP)
 - Domain mappings and worker pools are not implemented
 - Service IAM get/set is stored; Invoker is evaluated on `:invoke` only (no
   public unauthenticated invoke without a binding)

@@ -89,6 +89,12 @@ func TestIsPublicPath(t *testing.T) {
 	if !authn.IsPublicPath("/lb/p/fr/obj") {
 		t.Fatal("expected public lb dataplane")
 	}
+	if !authn.IsPublicPath("/run/noctaxris-gcp-local/us-central1/web/") {
+		t.Fatal("cloud run nested browser route should be public")
+	}
+	if authn.IsPublicPath("/run/../v1/projects") {
+		t.Fatal("run prefix must not allow traversal into authenticated APIs")
+	}
 	if !authn.IsPublicPath("/cdn/dist-id/obj") {
 		t.Fatal("expected public cdn edge")
 	}

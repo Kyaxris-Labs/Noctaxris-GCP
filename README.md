@@ -74,7 +74,7 @@ curl -H "Authorization: Bearer $ROOT_TOKEN" \
   http://127.0.0.1:4588/v3/projects/noctaxris-gcp-local
 ```
 
-Nested Cloud Run invoke uses the default Compose engine. Copy `docker/.env.example` to `docker/.env`, replace both root values with unique lab credentials, then `docker compose -f docker/compose.yaml --env-file docker/.env up --build`. Default host publish is `127.0.0.1:4588` only. Privileged workaround: `-f docker/compose.engine-privileged.yaml` (see [ops.md](docs/ops.md#compose-overlays-lab-opt-in)). Per-service smoke: [docs/services/](docs/services/index.md). Nested proof: `bash docker/smoke-nested.sh`.
+Nested Cloud Run invoke and long-lived HTTP use the default Compose engine. Copy `docker/.env.example` to `docker/.env`, replace both root values with unique lab credentials, then `docker compose -f docker/compose.yaml --env-file docker/.env up --build`. Default host publish is `127.0.0.1:4588` only. Privileged workaround: `-f docker/compose.engine-privileged.yaml` (see [ops.md](docs/ops.md#compose-overlays-lab-opt-in)). Per-service smoke: [docs/services/](docs/services/index.md). Nested proof: `bash docker/smoke-nested.sh`.
 
 ## Services
 
@@ -222,8 +222,8 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud Run</td>
-      <td>Admin API v2 services/jobs, traffic, IAM, <code>:invoke</code> status/delay; Binary Authorization admit; IMDS metadata; nested DinD on by default in Compose.</td>
-      <td>Default nested containers; traffic percent enforce beyond metadata.</td>
+      <td>Admin API v2 services/jobs, traffic, IAM, <code>:invoke</code> status/delay; nested long-lived HTTP (lab bridge + <code>/run/</code> proxy) when the template has ports/command/args; Binary Authorization admit; IMDS metadata; nested DinD on by default in Compose.</td>
+      <td>Scale-to-zero, readiness probes, revision traffic split; traffic percent enforce beyond metadata.</td>
     </tr>
     <tr>
       <td>Cloud Functions</td>
@@ -353,7 +353,7 @@ flowchart LR
   Client["gcloud / GCP SDK"] --> Port["127.0.0.1:4588"]
   Port --> API["noctaxris-gcp API"]
   API -.->|"TLS DinD"| Engine["noctaxris-gcp-engine DinD"]
-  Engine --> Nested["Cloud Run nested invoke"]
+  Engine --> Nested["Cloud Run nested invoke / long-lived HTTP"]
 ```
 
 Full graph and request path: [docs/architecture.md](docs/architecture.md).
@@ -365,7 +365,7 @@ Full graph and request path: [docs/architecture.md](docs/architecture.md).
 | [docs/index.md](docs/index.md) | Architecture, configuration, ops, security posture |
 | [docs/services/](docs/services/index.md) | Per-service APIs, authz notes, CLI smoke |
 | [docs/ops.md](docs/ops.md) | Backup, restore, upgrade, graceful shutdown, CI matrix |
-| [docs/release.md](docs/release.md) | Cutting a release (`v1.4.3`, Hub `latest` / semver) |
+| [docs/release.md](docs/release.md) | Cutting a release (`v1.5.0`, Hub `latest` / semver) |
 | [tests/README.md](tests/README.md) | SDK and Terraform suites (Compose required for live runs) |
 
 ## Contributors

@@ -18,6 +18,7 @@ func TestAllowImagePullPinned(t *testing.T) {
 		"rancher/k3s:v1.28.8-k3s1",
 		"postgres:16-alpine",
 		"mysql:8.0",
+		"python:3.13-slim-bookworm",
 		compute.MemorystoreRedisImage,
 		compute.LabRedpandaImage,
 	}

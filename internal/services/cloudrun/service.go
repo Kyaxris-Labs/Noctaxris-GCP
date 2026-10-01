@@ -1,6 +1,7 @@
 package cloudrun
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,10 +23,13 @@ const DefaultLocation = "us-central1"
 // Service serves Cloud Run Admin API v2 REST (lab subset).
 // Invoker defaults to compute.MockInvoker; nested hooks activate when
 // NOCTAXRIS_GCP_DOCKER_HOST is set (still no host docker.sock).
+// Engine, when enabled, runs long-lived nested HTTP containers for services
+// that have an image and no labResponseBody.
 type Service struct {
 	Store   *store.Store
 	Authz   *authz.Evaluator
 	Invoker compute.Invoker
+	Engine  NestedRunner
 }
 
 func (s *Service) invoker() compute.Invoker {
@@ -55,6 +59,7 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("DELETE /v2/projects/{project}/locations/{location}/jobs/{job}", s.wrap(principalFrom, s.deleteJob))
 
 	s.mountKnative(mux, principalFrom)
+	s.mountRunProxy(mux)
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -182,6 +187,11 @@ func (s *Service) createService(w http.ResponseWriter, r *http.Request, p authn.
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, "created service missing")
 		return
 	}
+	out, err = s.reconcileNested(r.Context(), out)
+	if err != nil {
+		s.writeNestedFailure(w, err, name)
+		return
+	}
 	writeDoneOperation(w, project, location, "create-"+serviceID, toServiceJSON(out))
 }
 
@@ -290,6 +300,11 @@ func (s *Service) patchService(w http.ResponseWriter, r *http.Request, p authn.P
 		gcperrors.NotFound(w, "Service not found")
 		return
 	}
+	svc, err = s.reconcileNested(r.Context(), svc)
+	if err != nil {
+		s.writeNestedFailure(w, err, "")
+		return
+	}
 	writeDoneOperation(w, project, location, "update-"+id, toServiceJSON(svc))
 }
 
@@ -302,7 +317,7 @@ func (s *Service) deleteService(w http.ResponseWriter, r *http.Request, p authn.
 		return
 	}
 	name := serviceName(project, location, id)
-	ok, err := s.Store.DeleteRunService(name)
+	ok, err := s.deleteServiceAndNested(r.Context(), name)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -312,6 +327,22 @@ func (s *Service) deleteService(w http.ResponseWriter, r *http.Request, p authn.
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+// deleteServiceAndNested deletes the service row and removes its nested container.
+func (s *Service) deleteServiceAndNested(ctx context.Context, name string) (bool, error) {
+	prior, found, err := s.Store.GetRunService(name)
+	if err != nil {
+		return false, err
+	}
+	ok, err := s.Store.DeleteRunService(name)
+	if err != nil || !ok {
+		return ok, err
+	}
+	if found {
+		s.removeNested(ctx, prior)
+	}
+	return true, nil
 }
 
 func (s *Service) listRevisions(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -577,6 +608,10 @@ func (s *Service) invoke(w http.ResponseWriter, r *http.Request, p authn.Princip
 	}
 	raw, _ := json.Marshal(rec)
 	_ = s.Store.RecordRunInvoke(name, string(raw))
+
+	if s.invokeNested(w, r, svc, body) {
+		return
+	}
 
 	env := envFromTemplateJSON(svc.TemplateJSON)
 	respBody := []byte(svc.LabResponseBody)

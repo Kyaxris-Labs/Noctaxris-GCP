@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.5.0
+
+Minor after 1.4.4: Cloud Run nested long-lived HTTP containers with `/run/` proxy, publish-port and public URI env knobs, and image allowlist reuse of engine-local images. Docker Hub: `kyaxris/noctaxris-gcp` (`1.5.0`, `1.5`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Cloud Run: when the nested engine is configured and a service template has an image plus `ports` / `command` / `args` (and no `labResponseBody` / `RESPONSE_BODY`), create and template patch start a long-lived container on the lab bridge, publish the container port (ephemeral or `NOCTAXRIS_GCP_RUN_PUBLISH_PORT`), and set `service.uri` to `/run/{project}/{location}/{service}/` (or `NOCTAXRIS_GCP_RUN_PUBLIC_URI_BASE` when set). `:invoke` proxies with IAM; `ANY /run/...` is the public browser path (Authorization stripped). Delete and template patch replace the prior container. Start failure soft-fails to mock URI unless `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED` is set.
+- Nested Cloud Run HTTP containers receive `host.docker.internal:host-gateway` when `NOCTAXRIS_GCP_INJECT_HOST_GATEWAY` is on (same as Cloud Build steps).
+- Image pull allowlist: an image already present in the engine can be used without a registry pull when the ref is allowlisted (exact ref or digest).
+
 ## 1.4.4
 
 Patch after 1.4.3: predefined IAM role maps, Cloud KMS AAD, Managed Kafka container scoping, BigQuery jobs.query table authz, Certificate Manager selfManaged sanitize, Cloud Asset ancestry, Container Analysis note attach, Organization Policy enforce parse, Security Command Center inject gates, Cloud Run invoke body, Logging inject redaction, Identity Toolkit and Firestore owner path, compute metadata link-local mint, Pub/Sub actAs and topic attach, Cloud Build / Eventarc default-SA actAs, Cloud Scheduler topics.publish. Docker Hub: `kyaxris/noctaxris-gcp` (`1.4.4`, `1.4`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

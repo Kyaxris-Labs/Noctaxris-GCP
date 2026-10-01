@@ -93,18 +93,18 @@ flowchart TB
   AUDIT --> DATAVOL
 ```
 
-Nested SQL, Managed Kafka (Redpanda), and Memorystore Redis share the engine-internal
-`noctaxris-gcp-lab` bridge so containers can resolve each other by DNS. Cloud Run
-one-shot invoke keeps `NetworkMode: none`. No broker or DB ports are published to
-the operator host. The Compose volume `noctaxris-gcp-data` is sealed API state only
-(not a DinD network).
+Nested SQL, Managed Kafka (Redpanda), Memorystore Redis, and Cloud Run long-lived
+HTTP share the engine-internal `noctaxris-gcp-lab` bridge so containers can resolve
+each other by DNS. Cloud Run one-shot invoke keeps `NetworkMode: none`. No broker
+or DB ports are published to the operator host by default. The Compose volume
+`noctaxris-gcp-data` is sealed API state only (not a DinD network).
 
 ## Kernel packages
 
 | Package | Role |
 |---------|------|
 | `internal/config` | `NOCTAXRIS_GCP_*` load + loopback / TLS gate + Docker host validation |
-| `internal/compute` | Opt-in nested DinD dial, image allowlist, Cloud Run invoker (mock default) |
+| `internal/compute` | Nested DinD dial, image allowlist, Cloud Run one-shot invoker and long-lived HTTP start/proxy helpers |
 | `internal/kernel/authn` | Bearer extraction; root vs registered tokens |
 | `internal/kernel/authz` | IAM policy Evaluate / testIamPermissions (project parent + CRM folder/org ancestry) |
 | `internal/kernel/audit` | JSONL audit writer |

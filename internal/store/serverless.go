@@ -24,8 +24,13 @@ type RunService struct {
 	LabResponseBody string
 	LastInvokeJSON  string
 	TrafficJSON     string
-	CreatedAt       string
-	UpdatedAt       string
+	// ContainerID, NestedHost, and NestedPort are set when a long-lived nested
+	// HTTP container backs the service (engine hostname and published host port).
+	ContainerID string
+	NestedHost  string
+	NestedPort  int
+	CreatedAt   string
+	UpdatedAt   string
 }
 
 // RunRevision is a Cloud Run revision metadata row.
@@ -133,7 +138,7 @@ func (s *Store) CreateRunService(svc RunService) (created bool, err error) {
 		svc.LatestRevision = revName
 	}
 	if svc.URI == "" {
-		svc.URI = fmt.Sprintf("http://127.0.0.1:4588/v2/%s:invoke", svc.Name)
+		svc.URI = DefaultRunServiceURI(svc.Name)
 	}
 	if svc.TrafficJSON == "" {
 		svc.TrafficJSON = fmt.Sprintf(`[{"type":"TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST","percent":100,"revision":%q}]`, svc.LatestRevision)
@@ -180,12 +185,12 @@ func (s *Store) GetRunService(name string) (RunService, bool, error) {
 	var svc RunService
 	err := s.db.QueryRow(
 		`SELECT name, project_id, location, service_id, uid, generation, template_json, uri, latest_revision,
-		        lab_response_body, last_invoke_json, traffic_json, created_at, updated_at
+		        lab_response_body, last_invoke_json, traffic_json, container_id, nested_host, nested_port, created_at, updated_at
 		 FROM run_services WHERE name = ?`, name,
 	).Scan(
 		&svc.Name, &svc.ProjectID, &svc.Location, &svc.ServiceID, &svc.UID, &svc.Generation,
 		&svc.TemplateJSON, &svc.URI, &svc.LatestRevision, &svc.LabResponseBody, &svc.LastInvokeJSON,
-		&svc.TrafficJSON, &svc.CreatedAt, &svc.UpdatedAt,
+		&svc.TrafficJSON, &svc.ContainerID, &svc.NestedHost, &svc.NestedPort, &svc.CreatedAt, &svc.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return RunService{}, false, nil
@@ -200,7 +205,7 @@ func (s *Store) GetRunService(name string) (RunService, bool, error) {
 func (s *Store) ListRunServices(projectID, location string) ([]RunService, error) {
 	rows, err := s.db.Query(
 		`SELECT name, project_id, location, service_id, uid, generation, template_json, uri, latest_revision,
-		        lab_response_body, last_invoke_json, traffic_json, created_at, updated_at
+		        lab_response_body, last_invoke_json, traffic_json, container_id, nested_host, nested_port, created_at, updated_at
 		 FROM run_services WHERE project_id = ? AND location = ? ORDER BY name`,
 		projectID, location,
 	)
@@ -214,7 +219,7 @@ func (s *Store) ListRunServices(projectID, location string) ([]RunService, error
 		if err := rows.Scan(
 			&svc.Name, &svc.ProjectID, &svc.Location, &svc.ServiceID, &svc.UID, &svc.Generation,
 			&svc.TemplateJSON, &svc.URI, &svc.LatestRevision, &svc.LabResponseBody, &svc.LastInvokeJSON,
-			&svc.TrafficJSON, &svc.CreatedAt, &svc.UpdatedAt,
+			&svc.TrafficJSON, &svc.ContainerID, &svc.NestedHost, &svc.NestedPort, &svc.CreatedAt, &svc.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -289,6 +294,34 @@ func (s *Store) DeleteRunService(name string) (bool, error) {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// DefaultRunServiceURI is the mock-mode service URI (the :invoke endpoint).
+func DefaultRunServiceURI(serviceName string) string {
+	return fmt.Sprintf("http://127.0.0.1:4588/v2/%s:invoke", serviceName)
+}
+
+// UpdateRunServiceNested records (or clears, when host is empty) the nested HTTP
+// container for a service and sets its URI. Generation and revisions are unchanged.
+func (s *Store) UpdateRunServiceNested(name, uri, nestedHost string, nestedPort int, containerID string) (bool, error) {
+	if name == "" {
+		return false, fmt.Errorf("run service name required")
+	}
+	if uri == "" {
+		uri = DefaultRunServiceURI(name)
+	}
+	res, err := s.db.Exec(
+		`UPDATE run_services SET uri = ?, nested_host = ?, nested_port = ?, container_id = ? WHERE name = ?`,
+		uri, nestedHost, nestedPort, containerID, name,
+	)
+	if err != nil {
+		return false, fmt.Errorf("update run service nested: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
 		return false, err
 	}
 	return n > 0, nil
