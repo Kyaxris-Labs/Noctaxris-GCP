@@ -4,9 +4,10 @@
 
 ## 1.5.1
 
-Patch after 1.5.0: Firestore REST GET and Identity Toolkit owner read for `users/{uid}`. Docker Hub: `kyaxris/noctaxris-gcp` (`1.5.1`, `1.5`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+Patch after 1.5.0: Firestore REST GET and Identity Toolkit owner read for `users/{uid}`, plus nested DinD IPv6 sysctls for Docker Engine 29 Desktop. Docker Hub: `kyaxris/noctaxris-gcp` (`1.5.1`, `1.5`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
 
 - Firestore: REST `GET .../documents/{document}` returns the same document JSON as PATCH (404 when missing). Identity Toolkit users can read their own `users/{uid}` over REST and gRPC `GetDocument` without project IAM. Other users' documents stay denied for toolkit principals, and other callers still need `datastore.entities.get`.
+- Nested engine: Cloud Build steps, Cloud Run long-lived HTTP, lab daemons (SQL/Kafka-shaped), Managed Kafka Redpanda, and Memorystore Redis container creates set `net.ipv6.conf.all.disable_ipv6=1` and `net.ipv6.conf.default.disable_ipv6=1`. Fixes Engine 29 DinD start errors of the form `failed to disable IPv6 on container's interface eth0` when dockerd `--ipv6=false` alone is not enough.
 
 ## 1.5.0
 

@@ -21,9 +21,12 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 - Never mount host `/var/run/docker.sock` on the API service. Runtime rejects
   `unix://`, `npipe://`, and any host string containing `docker.sock`.
 - Engine is digest-pinned `docker:29-dind` as restricted DinD (`privileged: false` +
-  caps / devices / `cgroup: host` / writable `/sys/fs/cgroup`). The engine API is
-  not published to the host. Compatibility overlay `compose.engine.yaml` only
-  reasserts API Docker env + depends_on (do not redeclare the engine service).
+  caps / devices / `cgroup: host` / writable `/sys/fs/cgroup`, dockerd
+  `--ipv6=false --ip6tables=false`). Nested bridge creates also set
+  `net.ipv6.conf.all/default.disable_ipv6=1` so Engine 29 DinD on Desktop can
+  start containers. The engine API is not published to the host. Compatibility
+  overlay `compose.engine.yaml` only reasserts API Docker env + depends_on
+  (do not redeclare the engine service).
 - Non-default engine URLs require `NOCTAXRIS_GCP_DOCKER_HOST_ALLOWLIST`. TLS
   client PEMs are required whenever Docker host is set.
 - Image pulls fail closed: pinned lab bases (`alpine:3.23`, …) only, unless

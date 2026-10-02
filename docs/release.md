@@ -33,7 +33,7 @@ Pushing tag `v*` runs [`.github/workflows/release.yml`](../.github/workflows/rel
 | Tag | Meaning |
 |-----|---------|
 | `kyaxris/noctaxris-gcp:1.5.1` | Exact semver |
-| `kyaxris/noctaxris-gcp:1.4` | Major.minor |
+| `kyaxris/noctaxris-gcp:1.5` | Major.minor |
 | `kyaxris/noctaxris-gcp:1` | Major |
 | `kyaxris/noctaxris-gcp:latest` | Latest tagged release |
 | `kyaxris/noctaxris-gcp:sha-<short>` | Git short SHA |

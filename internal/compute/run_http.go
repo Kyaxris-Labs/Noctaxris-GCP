@@ -196,6 +196,7 @@ func (c *Client) RemoveRunHTTP(ctx context.Context, containerID string) error {
 func runHostConfig(port network.Port, publish int) *container.HostConfig {
 	cfg := &container.HostConfig{
 		NetworkMode:  container.NetworkMode(LabDaemonNetwork),
+		Sysctls:      LabNetSysctls(),
 		PortBindings: runPortBindings(port, publish),
 		RestartPolicy: container.RestartPolicy{
 			Name: container.RestartPolicyUnlessStopped,

@@ -87,6 +87,7 @@ services:
       - systempaths=unconfined
     devices:
       - /dev/fuse
+    # dockerd IPv6 off; nested creates also set LabNetSysctls (see compute package).
     command: ["--ipv6=false", "--ip6tables=false"]
     environment:
       DOCKER_TLS_SAN: DNS:noctaxris-gcp-engine

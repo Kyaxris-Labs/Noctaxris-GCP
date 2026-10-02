@@ -65,6 +65,10 @@ func TestRunHostConfigHostGateway(t *testing.T) {
 	if string(cfg.NetworkMode) != LabDaemonNetwork {
 		t.Fatalf("network = %q", cfg.NetworkMode)
 	}
+	if cfg.Sysctls["net.ipv6.conf.all.disable_ipv6"] != "1" ||
+		cfg.Sysctls["net.ipv6.conf.default.disable_ipv6"] != "1" {
+		t.Fatalf("Sysctls = %#v", cfg.Sysctls)
+	}
 }
 
 func TestHostPortFromPortMap(t *testing.T) {

@@ -197,7 +197,10 @@ func (c *Client) RunBuildStep(ctx context.Context, step BuildStepRun) (OneShotRe
 	}
 
 	name := "noctaxris-gcp-cb-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-	hostCfg := &container.HostConfig{AutoRemove: false}
+	hostCfg := &container.HostConfig{
+		AutoRemove: false,
+		Sysctls:    LabNetSysctls(),
+	}
 	if len(step.ExtraHosts) > 0 {
 		hostCfg.ExtraHosts = step.ExtraHosts
 	}
@@ -300,6 +303,7 @@ func (c *Client) StartLabDaemon(ctx context.Context, imageRef, containerName str
 		},
 		HostConfig: &container.HostConfig{
 			NetworkMode: container.NetworkMode(LabDaemonNetwork),
+			Sysctls:     LabNetSysctls(),
 			RestartPolicy: container.RestartPolicy{
 				Name: container.RestartPolicyUnlessStopped,
 			},
@@ -425,6 +429,7 @@ func (c *Client) EnsureRedpanda(ctx context.Context, containerName string, owner
 		},
 		HostConfig: &container.HostConfig{
 			NetworkMode: container.NetworkMode(LabDaemonNetwork),
+			Sysctls:     LabNetSysctls(),
 			RestartPolicy: container.RestartPolicy{
 				Name: container.RestartPolicyUnlessStopped,
 			},

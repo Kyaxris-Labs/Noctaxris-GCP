@@ -93,9 +93,11 @@ docker compose -f compose.yaml --env-file .env up --build
 Default Compose starts restricted DinD (`noctaxris-gcp-engine`, `privileged: false`)
 on the Compose network only (no host publish of 2375/2376) and sets
 `NOCTAXRIS_GCP_DOCKER_HOST` / `NOCTAXRIS_GCP_DOCKER_CERT_PATH` plus fail-closed
-nested envs. Nested SQL, Managed Kafka, Memorystore Redis, and Cloud Run
-long-lived HTTP share the engine-internal `noctaxris-gcp-lab` bridge
-(API-created; no host publish of broker/DB ports by default). Cloud Run
+nested envs. Nested SQL, Managed Kafka, Memorystore Redis, Cloud Build steps, and Cloud Run
+long-lived HTTP share bridge networking on the engine (lab bridge
+`noctaxris-gcp-lab` where applicable; no host publish of broker/DB ports by
+default). Those creates set IPv6-disable sysctls so Docker Engine 29 DinD on
+Desktop does not fail start while clearing IPv6 on the veth. Cloud Run
 one-shot invoke stays off that bridge (`NetworkMode: none`). Host
 `docker.sock`, `unix://`, and `npipe://` are rejected.
 If nested containers fail on Desktop/WSL2, add `-f compose.engine-privileged.yaml`.

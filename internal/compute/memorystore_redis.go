@@ -161,6 +161,7 @@ func (c *Client) EnsureMemorystoreRedis(ctx context.Context, instanceID, authPas
 		HostConfig: &container.HostConfig{
 			AutoRemove:      false,
 			NetworkMode:     container.NetworkMode(MemorystoreRedisNetwork),
+			Sysctls:         LabNetSysctls(),
 			PublishAllPorts: false,
 			RestartPolicy: container.RestartPolicy{
 				Name: container.RestartPolicyUnlessStopped,
