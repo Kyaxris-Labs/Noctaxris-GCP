@@ -48,6 +48,24 @@ jobs:
       - name: Compose static checks
         run: go test ./docker/ -count=1
 
+  govulncheck:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install govulncheck
+        # Pin module version (not @latest) for supply-chain reproducibility.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: govulncheck
+        # Native govulncheck has no per-ID exclude. scripts/govulncheck-ci still
+        # fails on any non-allowlisted finding; allowlist is empty by default after
+        # the moby client migration (see scripts/govulncheck-allowlist.txt and
+        # docs/security-defaults.md).
+        run: go run ./scripts/govulncheck-ci
+
   race:
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
@@ -87,24 +105,6 @@ jobs:
         with:
           name: noctaxris-gcp-sbom
           path: noctaxris-gcp-sbom.spdx.json
-
-  govulncheck:
-    runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - name: Install govulncheck
-        # Pin module version (not @latest) for supply-chain reproducibility.
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-      - name: govulncheck
-        # Native govulncheck has no per-ID exclude. scripts/govulncheck-ci still
-        # fails on any non-allowlisted finding; allowlist is empty by default after
-        # the moby client migration (see scripts/govulncheck-allowlist.txt and
-        # docs/security-defaults.md).
-        run: go run ./scripts/govulncheck-ci
 
   smoke-core:
     runs-on: ubuntu-latest
@@ -151,22 +151,30 @@ jobs:
           set -euo pipefail
           AUTH="Authorization: Bearer ${ROOT_TOKEN}"
           curl -fsS -H "$AUTH" "$EP/v3/projects/${PROJECT}" | grep -q "${PROJECT}"
-          BUCKET="ci-smoke-$(date +%s)"
+          BUCKET="noctaxris-gcp-ci-$(date +%s)"
           curl -fsS -H "$AUTH" -H "Content-Type: application/json" \
             -X POST "$EP/storage/v1/b?project=${PROJECT}" \
             -d "{\"name\":\"${BUCKET}\"}" | grep -q "${BUCKET}"
+          echo smoke-core > /tmp/smoke-core.txt
+          curl -fsS -H "$AUTH" -H "Content-Type: text/plain" \
+            -X POST "$EP/upload/storage/v1/b/${BUCKET}/o?uploadType=media&name=smoke.txt" \
+            --data-binary @/tmp/smoke-core.txt >/dev/null
+          curl -fsS -H "$AUTH" "$EP/storage/v1/b/${BUCKET}/o/smoke.txt" | grep -q smoke.txt
           SECRET="ci-secret-$(date +%s)"
           curl -fsS -H "$AUTH" -H "Content-Type: application/json" \
             -X POST "$EP/v1/projects/${PROJECT}/secrets?secretId=${SECRET}" \
             -d '{"replication":{"automatic":{}}}' | grep -q "${SECRET}"
-      - name: Audit hygiene (root token absent from data volume)
+          curl -fsS -H "$AUTH" -H "Content-Type: application/json" \
+            -X POST "$EP/v1/projects/${PROJECT}/secrets/${SECRET}:addVersion" \
+            -d '{"payload":{"data":"c21va2UtY29yZQ=="}}' | grep -q versions
+      - name: Audit hygiene (root token absent)
         env:
           ROOT_TOKEN: ${{ env.ROOT_TOKEN }}
         run: |
           set -euo pipefail
           CID=$(docker compose -f docker/compose.yaml --env-file docker/.env ps -q noctaxris-gcp)
           docker run --rm --volumes-from "$CID" -e ROOT_TOKEN busybox \
-            sh -c 'test -f /var/lib/noctaxris-gcp/state.db && ! grep -Fq "$ROOT_TOKEN" /var/lib/noctaxris-gcp/state.db || true'
+            sh -c 'test -f /var/lib/noctaxris-gcp/audit/audit.jsonl && ! grep -Fq "$ROOT_TOKEN" /var/lib/noctaxris-gcp/audit/audit.jsonl'
       - name: Compose down
         if: always()
         run: docker compose -f docker/compose.yaml --env-file docker/.env down -v

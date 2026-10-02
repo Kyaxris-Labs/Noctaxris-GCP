@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CI: PR `smoke-core` matches `ci-required` (object upload + Secret Manager version + audit JSONL hygiene); `docker-nightly` runs `ci-required` before Hub push
+
 ## 1.7.0
 
 Minor after 1.6.1: IAM and Service Usage gate tightening, JWT verify via go-jose, CEL helpers for condition eval, plus more tests and service docs. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.0`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

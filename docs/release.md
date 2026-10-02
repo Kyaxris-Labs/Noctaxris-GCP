@@ -44,7 +44,7 @@ Optional: Actions → **release** → Run workflow with an existing tag if you n
 
 ## Nightly (separate)
 
-[`.github/workflows/docker-nightly.yml`](../.github/workflows/docker-nightly.yml) runs on a UTC cron and `workflow_dispatch`. It pushes `nightly`, `nightly-YYYYMMDD`, and `sha-<short>` only. It does **not** move `latest` or semver tags.
+[`.github/workflows/docker-nightly.yml`](../.github/workflows/docker-nightly.yml) runs on a UTC cron and `workflow_dispatch`. It first runs the required CI gates (`ci-required.yml`), then pushes `nightly`, `nightly-YYYYMMDD`, and `sha-<short>` only when those gates succeed. It does **not** move `latest` or semver tags.
 
 ## Local image check
 

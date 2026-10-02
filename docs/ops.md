@@ -88,9 +88,9 @@ Release / Hub publish (separate workflows):
 
 | Workflow | When |
 |----------|------|
-| `ci-required.yml` | Called by `release.yml`: unit, compose-static, govulncheck, scoped race, image, smoke-core (Compose up + CRM/GCS/Secret Manager + audit hygiene). Failures block Hub push |
-| `release.yml` | Tag push `v*` / dispatch: run `ci-required`, then push semver + `latest` (+ sha). Canonical repo + Hub secrets required |
-| `docker-nightly.yml` | UTC cron + `workflow_dispatch`: push `nightly` (+ dated / sha). Does not move `latest` or semver |
+| `ci-required.yml` | Called by `release.yml` and `docker-nightly.yml`: unit, compose-static, govulncheck, scoped race, image, smoke-core (Compose up + CRM/GCS/Secret Manager + audit hygiene). Failures block Hub push |
+| `release.yml` | Tag push `v*` / dispatch: run `ci-required.yml`, then push semver + `latest` (+ sha) only if gates pass. Canonical repo + Hub secrets required |
+| `docker-nightly.yml` | UTC cron + `workflow_dispatch`: run `ci-required.yml`, then push `nightly` (+ dated / sha) only if gates pass. Does not move `latest` or semver |
 
 A green PR proves unit tests, compose-static, scoped race, image build, SBOM, govulncheck, and smoke-core (API + nested engine ready). Weekly / dispatch nested smoke (`docker/smoke-nested.sh`) proves Memorystore nested create and Cloud Run nested `:invoke`. Nested compute is **on** in default Compose.
 
