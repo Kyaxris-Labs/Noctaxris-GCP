@@ -10,6 +10,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 )
@@ -72,12 +73,19 @@ func (s *Service) requireResource(p authn.Principal, permission, resource string
 
 // noteAttachResource returns the note resource name for attachOccurrence.
 // projects/{p}/notes/{id} stays as-is; bare ids attach under the occurrence project parent.
-func noteAttachResource(noteName string) string {
+func noteAttachResource(noteName, occurrenceProject string) string {
 	noteName = strings.TrimSpace(noteName)
+	if noteName == "" {
+		return ""
+	}
 	if strings.HasPrefix(noteName, "projects/") && strings.Contains(noteName, "/notes/") {
 		return noteName
 	}
-	return noteName
+	occurrenceProject = strings.TrimSpace(occurrenceProject)
+	if occurrenceProject == "" {
+		return noteName
+	}
+	return "projects/" + occurrenceProject + "/notes/" + noteName
 }
 
 var errDenied = fmt.Errorf("permission denied")
@@ -257,6 +265,9 @@ func (s *Service) createOccurrence(w http.ResponseWriter, r *http.Request, p aut
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "containeranalysis.googleapis.com") {
+		return
+	}
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body == nil {
@@ -282,12 +293,16 @@ func (s *Service) createOccurrence(w http.ResponseWriter, r *http.Request, p aut
 	}
 	note, _ := body["noteName"].(string)
 	note = strings.TrimSpace(note)
-	if note != "" {
-		if err := s.requireResource(p, "containeranalysis.notes.attachOccurrence", noteAttachResource(note)); err != nil {
-			writeAuthzErr(w, err)
-			return
-		}
+	if note == "" {
+		gcperrors.InvalidArgument(w, "noteName is required")
+		return
 	}
+	attachNote := noteAttachResource(note, project)
+	if err := s.requireResource(p, "containeranalysis.notes.attachOccurrence", attachNote); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	note = attachNote
 	raw, _ := json.Marshal(body)
 	name := "projects/" + project + "/occurrences/" + id
 	o := store.ContainerOccurrence{

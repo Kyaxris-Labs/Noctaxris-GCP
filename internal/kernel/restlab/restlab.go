@@ -126,3 +126,107 @@ func RequireServiceEnabled(w http.ResponseWriter, st ServiceUsageChecker, projec
 	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 	return false
 }
+
+// VPCSCChecker evaluates optional VPC Service Controls perimeter membership.
+type VPCSCChecker interface {
+	VPCSCDenyCrossPerimeter(fromProject, toProject, service string) error
+}
+
+// PrincipalProjectResolver maps a principal email to a lab project id for VPC-SC.
+type PrincipalProjectResolver interface {
+	ProjectIDFromPrincipalEmail(email string) (string, error)
+}
+
+// CheckVPCSC returns store.ErrVPCSCPerimeter when the call is denied.
+// Root principals skip. Enforce-off is a no-op inside VPCSCDenyCrossPerimeter.
+func CheckVPCSC(st VPCSCChecker, fromProject, toProject, service string) error {
+	if st == nil {
+		return nil
+	}
+	return st.VPCSCDenyCrossPerimeter(fromProject, toProject, service)
+}
+
+// RequireVPCSC writes PermissionDenied when the perimeter check denies.
+// Returns false when the handler should stop.
+func RequireVPCSC(w http.ResponseWriter, st VPCSCChecker, fromProject, toProject, service string) bool {
+	err := CheckVPCSC(st, fromProject, toProject, service)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, store.ErrVPCSCPerimeter) {
+		gcperrors.PermissionDenied(w, err.Error())
+		return false
+	}
+	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+	return false
+}
+
+// CheckVPCSCPrincipal resolves the caller's project and runs CheckVPCSC.
+// Root and enforce-off skip (nil). Lookup errors are returned as-is.
+func CheckVPCSCPrincipal(st interface {
+	VPCSCChecker
+	PrincipalProjectResolver
+}, p authn.Principal, toProject, service string) error {
+	if st == nil || p.IsRoot || !store.VPCSCEnforceEnabled() {
+		return nil
+	}
+	from, err := st.ProjectIDFromPrincipalEmail(p.Email)
+	if err != nil {
+		return err
+	}
+	return CheckVPCSC(st, from, toProject, service)
+}
+
+// RequireVPCSCPrincipal resolves the caller's project and runs RequireVPCSC.
+// Root skips. Missing Store/resolver fails closed with PermissionDenied when enforce is on
+// only after a successful project resolution error path writes Internal.
+func RequireVPCSCPrincipal(w http.ResponseWriter, st interface {
+	VPCSCChecker
+	PrincipalProjectResolver
+}, p authn.Principal, toProject, service string) bool {
+	err := CheckVPCSCPrincipal(st, p, toProject, service)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, store.ErrVPCSCPerimeter) {
+		gcperrors.PermissionDenied(w, err.Error())
+		return false
+	}
+	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+	return false
+}
+
+// ProjectAPIGateStore is Service Usage + VPC-SC for project-scoped create paths.
+type ProjectAPIGateStore interface {
+	ServiceUsageChecker
+	VPCSCChecker
+	PrincipalProjectResolver
+}
+
+// CheckProjectAPIGates returns Service Usage then VPC-SC errors (no HTTP write).
+// Use from gRPC handlers; REST should prefer RequireProjectAPIGates.
+func CheckProjectAPIGates(st ProjectAPIGateStore, p authn.Principal, projectID, serviceName string) error {
+	if err := CheckServiceEnabled(st, projectID, serviceName); err != nil {
+		return err
+	}
+	return CheckVPCSCPrincipal(st, p, projectID, serviceName)
+}
+
+// RequireProjectAPIGates enforces Service Usage then VPC-SC for a project API.
+// Returns false when the handler should stop.
+func RequireProjectAPIGates(w http.ResponseWriter, st ProjectAPIGateStore, p authn.Principal, projectID, serviceName string) bool {
+	err := CheckProjectAPIGates(st, p, projectID, serviceName)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, store.ErrServiceDisabled) {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, ServiceDisabledMessage(serviceName))
+		return false
+	}
+	if errors.Is(err, store.ErrVPCSCPerimeter) {
+		gcperrors.PermissionDenied(w, err.Error())
+		return false
+	}
+	gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+	return false
+}

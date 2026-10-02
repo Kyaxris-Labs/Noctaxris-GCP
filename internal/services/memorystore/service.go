@@ -12,6 +12,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 )
@@ -109,6 +110,9 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "redis.googleapis.com") {
+		return
+	}
 	instanceID := r.URL.Query().Get("instanceId")
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -178,13 +182,25 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 	}
 	resp := toInstanceJSON(out)
 	resp["@type"] = instanceTypeURL
+	// Create may return authString once; get/list omit secrets (use :getAuthString).
+	if out.AuthEnabled && out.AuthString != "" {
+		resp["authString"] = out.AuthString
+	}
 	writeDoneOperation(w, project, location, "create-"+instanceID, resp)
 }
 
 func (s *Service) getInstance(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
-	id, _ := splitAction(r.PathValue("instance"))
+	id, action := splitAction(r.PathValue("instance"))
+	if action == "getAuthString" {
+		s.getAuthString(w, r, p, project, location, id)
+		return
+	}
+	if action != "" {
+		gcperrors.NotFound(w, "unknown Memorystore method")
+		return
+	}
 	if err := s.require(p, "redis.instances.get", project); err != nil {
 		writeAuthzErr(w, err)
 		return
@@ -199,6 +215,27 @@ func (s *Service) getInstance(w http.ResponseWriter, r *http.Request, p authn.Pr
 		return
 	}
 	writeJSON(w, http.StatusOK, toInstanceJSON(inst))
+}
+
+func (s *Service) getAuthString(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, id string) {
+	if err := s.require(p, "redis.instances.getAuthString", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	inst, ok, err := s.Store.GetMemorystoreRedisInstance(instanceName(project, location, id))
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Instance not found")
+		return
+	}
+	if !inst.AuthEnabled || inst.AuthString == "" {
+		gcperrors.WriteREST(w, http.StatusBadRequest, gcperrors.StatusFailedPrecondition, "AUTH not enabled on instance")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"authString": inst.AuthString})
 }
 
 func (s *Service) listInstances(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -270,10 +307,6 @@ func toInstanceJSON(inst store.MemorystoreRedisInstance) map[string]any {
 		"createTime":        inst.CreatedAt,
 		"currentLocationId": inst.Location + "-a",
 		"locationId":        inst.Location + "-a",
-	}
-	// Lab convenience: echo authString on Instance get/create (GCP uses getAuthString).
-	if inst.AuthEnabled && inst.AuthString != "" {
-		out["authString"] = inst.AuthString
 	}
 	return out
 }

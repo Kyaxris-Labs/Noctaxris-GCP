@@ -116,6 +116,9 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "cloudscheduler.googleapis.com") {
+		return
+	}
 	jobID := r.URL.Query().Get("jobId")
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)

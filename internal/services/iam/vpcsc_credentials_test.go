@@ -165,7 +165,7 @@ func TestVPCSCCredentialsGenerateAccessTokenSameProjectAllows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "[]", false); err != nil {
+	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "", "[]", false); err != nil {
 		t.Fatal(err)
 	}
 	email := "wif:oidc-lab:alice"
@@ -183,7 +183,7 @@ func TestVPCSCCredentialsGenerateAccessTokenOtherProjectDenies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "[]", false); err != nil {
+	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "", "[]", false); err != nil {
 		t.Fatal(err)
 	}
 	email := "wif:oidc-lab:alice"
@@ -210,7 +210,7 @@ func TestVPCSCCredentialsGenerateAccessTokenRootSkipsCallerCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "[]", false); err != nil {
+	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "", "[]", false); err != nil {
 		t.Fatal(err)
 	}
 	f.who = authn.Principal{Email: "wif:oidc-lab:alice", IsRoot: true}
@@ -233,7 +233,7 @@ func TestVPCSCCredentialsSignBlobAndSignJwtEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "[]", false); err != nil {
+	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "", "[]", false); err != nil {
 		t.Fatal(err)
 	}
 	cross := "wif:oidc-lab:alice"
@@ -246,7 +246,7 @@ func TestVPCSCCredentialsSignBlobAndSignJwtEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.CreateWIFProvider(samePool.Name, "oidc-same", "", "", "", "{}", "[]", false); err != nil {
+	if _, err := f.st.CreateWIFProvider(samePool.Name, "oidc-same", "", "", "", "{}", "", "[]", false); err != nil {
 		t.Fatal(err)
 	}
 	same := "wif:oidc-same:alice"

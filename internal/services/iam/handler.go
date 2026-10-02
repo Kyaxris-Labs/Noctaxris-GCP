@@ -21,6 +21,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -340,22 +341,7 @@ func (h *Handler) resolveServiceAccount(projectID, account string) (store.Servic
 }
 
 func (h *Handler) checkVPCSCCredentials(w http.ResponseWriter, p authn.Principal, sa store.ServiceAccount) bool {
-	if !p.IsRoot {
-		from, err := h.Store.ProjectIDFromPrincipalEmail(p.Email)
-		if err != nil {
-			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-			return false
-		}
-		if err := h.Store.VPCSCDenyCrossPerimeter(from, sa.ProjectID, "iamcredentials.googleapis.com"); err != nil {
-			if errors.Is(err, store.ErrVPCSCPerimeter) {
-				gcperrors.PermissionDenied(w, err.Error())
-				return false
-			}
-			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-			return false
-		}
-	}
-	return true
+	return restlab.RequireVPCSCPrincipal(w, h.Store, p, sa.ProjectID, "iamcredentials.googleapis.com")
 }
 
 // generateAccessToken mints a lab Bearer token for the target SA (impersonation theatre).

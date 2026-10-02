@@ -732,13 +732,14 @@ func (s *Store) GetCDNDistributionByID(projectID, distributionID string) (CDNDis
 	return s.GetCDNDistribution(cdnDistributionName(projectID, distributionID))
 }
 
-// GetCDNDistributionByEdgeID finds a distribution by edge id (distribution_id).
-func (s *Store) GetCDNDistributionByEdgeID(distributionID string) (CDNDistribution, bool, error) {
+// GetCDNDistributionByEdgeID finds a distribution by project and edge id.
+func (s *Store) GetCDNDistributionByEdgeID(projectID, distributionID string) (CDNDistribution, bool, error) {
 	var d CDNDistribution
 	var enabled int
 	err := s.db.QueryRow(
 		`SELECT name, project_id, distribution_id, description, origin_type, origin_json, enabled, created_at
-		 FROM cdn_distributions WHERE distribution_id = ? AND enabled = 1`, distributionID,
+		 FROM cdn_distributions WHERE project_id = ? AND distribution_id = ? AND enabled = 1`,
+		projectID, distributionID,
 	).Scan(&d.Name, &d.ProjectID, &d.DistributionID, &d.Description, &d.OriginType, &d.OriginJSON, &enabled, &d.CreatedAt)
 	if err == sql.ErrNoRows {
 		return CDNDistribution{}, false, nil

@@ -10,6 +10,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -81,6 +83,32 @@ func splitAction(seg string) (name, action string) {
 	return seg, ""
 }
 
+// dataflowServiceAccountEmail returns the runtime SA from a Dataflow create body,
+// defaulting to the lab Compute Engine SA when omitted.
+func dataflowServiceAccountEmail(body map[string]any, project string) string {
+	email := ""
+	if env, ok := body["environment"].(map[string]any); ok {
+		if v, _ := env["serviceAccountEmail"].(string); strings.TrimSpace(v) != "" {
+			email = strings.TrimSpace(v)
+		} else if v, _ := env["service_account_email"].(string); strings.TrimSpace(v) != "" {
+			email = strings.TrimSpace(v)
+		}
+	}
+	if email == "" {
+		if v, _ := body["serviceAccountEmail"].(string); strings.TrimSpace(v) != "" {
+			email = strings.TrimSpace(v)
+		}
+	}
+	const marker = "/serviceAccounts/"
+	if i := strings.LastIndex(email, marker); i >= 0 {
+		email = strings.TrimSpace(email[i+len(marker):])
+	}
+	if email == "" {
+		return labtoken.DefaultComputeSAEmail(project)
+	}
+	return email
+}
+
 func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
@@ -88,10 +116,16 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "dataflow.googleapis.com") {
+		return
+	}
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body == nil {
 		body = map[string]any{}
+	}
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, dataflowServiceAccountEmail(body, project)) {
+		return
 	}
 	jobName, _ := body["name"].(string)
 	jobType, _ := body["type"].(string)

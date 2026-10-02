@@ -94,7 +94,7 @@ func (s *Service) createCluster(w http.ResponseWriter, r *http.Request, p authn.
 		writeAuthzErr(w, err)
 		return
 	}
-	if !restlab.RequireServiceEnabled(w, s.Store, project, "container.googleapis.com") {
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "container.googleapis.com") {
 		return
 	}
 	clusterID := r.URL.Query().Get("clusterId")

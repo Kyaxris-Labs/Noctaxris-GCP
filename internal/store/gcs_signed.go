@@ -181,6 +181,30 @@ func HasV4Signature(query url.Values) bool {
 	return algo != "" && sig != ""
 }
 
+// IsV4SignedURLPath reports whether path is a lab object GET/PUT surface that may
+// authenticate via V4 signed URL query params (not arbitrary /storage/ admin paths).
+func IsV4SignedURLPath(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	// Object download: /storage/v1/b/{bucket}/o/{object}...
+	if strings.HasPrefix(path, "/storage/v1/b/") {
+		rest := strings.TrimPrefix(path, "/storage/v1/b/")
+		slash := strings.IndexByte(rest, '/')
+		if slash < 0 {
+			return false
+		}
+		afterBucket := rest[slash:]
+		return strings.HasPrefix(afterBucket, "/o/") && !strings.Contains(afterBucket, "/iam")
+	}
+	// Media upload: /upload/storage/v1/b/{bucket}/o
+	if strings.HasPrefix(path, "/upload/storage/v1/b/") {
+		return strings.HasSuffix(path, "/o") || strings.Contains(path, "/o?")
+	}
+	return false
+}
+
 // SignGOOG4HMACHeader builds Authorization + x-goog-date for XML HMAC requests.
 // query is included in the canonical request (Cloud Storage V4). Pass nil when
 // the request has no query string.

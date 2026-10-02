@@ -11,6 +11,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 )
@@ -105,11 +107,44 @@ func splitAction(seg string) (name, action string) {
 	return seg, ""
 }
 
+// functionServiceAccountEmail returns the runtime SA from a Functions create/patch body,
+// defaulting to the project Compute Engine SA when omitted.
+func functionServiceAccountEmail(body map[string]any, project string) string {
+	email := ""
+	if body != nil {
+		if sc, _ := body["serviceConfig"].(map[string]any); sc != nil {
+			if v, _ := sc["serviceAccountEmail"].(string); strings.TrimSpace(v) != "" {
+				email = strings.TrimSpace(v)
+			} else if v, _ := sc["service_account_email"].(string); strings.TrimSpace(v) != "" {
+				email = strings.TrimSpace(v)
+			}
+		}
+		if email == "" {
+			if v, _ := body["serviceAccountEmail"].(string); strings.TrimSpace(v) != "" {
+				email = strings.TrimSpace(v)
+			} else if v, _ := body["serviceAccount"].(string); strings.TrimSpace(v) != "" {
+				email = strings.TrimSpace(v)
+			}
+		}
+	}
+	const marker = "/serviceAccounts/"
+	if i := strings.LastIndex(email, marker); i >= 0 {
+		email = strings.TrimSpace(email[i+len(marker):])
+	}
+	if email == "" {
+		return labtoken.DefaultComputeSAEmail(project)
+	}
+	return email
+}
+
 func (s *Service) createFunction(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	if err := s.require(p, "cloudfunctions.functions.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "cloudfunctions.googleapis.com") {
 		return
 	}
 	functionID := r.URL.Query().Get("functionId")
@@ -121,6 +156,9 @@ func (s *Service) createFunction(w http.ResponseWriter, r *http.Request, p authn
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body == nil {
 		body = map[string]any{}
+	}
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, functionServiceAccountEmail(body, project)) {
+		return
 	}
 	labResp := `{"ok":true}`
 	if v, ok := body["labResponse"].(map[string]any); ok {
@@ -360,6 +398,9 @@ func (s *Service) patchFunction(w http.ResponseWriter, r *http.Request, p authn.
 		}
 		for k, v := range body {
 			existingCfg[k] = v
+		}
+		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, functionServiceAccountEmail(existingCfg, project)) {
+			return
 		}
 		b, _ := json.Marshal(existingCfg)
 		cfgRaw = string(b)

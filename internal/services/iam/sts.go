@@ -96,14 +96,19 @@ func (h *Handler) stsToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subject := labSubjectFromToken(subjectToken)
+	assertion := assertionClaimsFromSubjectToken(subjectToken)
 	if stsOIDCShouldVerify(prov.IssuerURI) {
-		verifiedSub, verr := h.verifyOIDCSubjectToken(subjectToken, prov)
+		verifiedClaims, verr := h.verifyOIDCSubjectTokenClaims(subjectToken, prov)
 		if verr != nil {
 			gcperrors.WriteREST(w, http.StatusUnauthorized, gcperrors.StatusUnauthenticated, "invalid subject_token")
 			return
 		}
-		subject = verifiedSub
+		assertion = verifiedClaims
+	}
+	subject, aerr := resolveWIFSubject(prov, assertion, subjectToken)
+	if aerr != nil {
+		gcperrors.WriteREST(w, http.StatusUnauthorized, gcperrors.StatusUnauthenticated, "invalid subject_token")
+		return
 	}
 	principalEmail := "wif:" + prov.ProviderID + ":" + subject
 	token := newAccessToken()

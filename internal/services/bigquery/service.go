@@ -12,6 +12,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 )
@@ -56,7 +57,11 @@ func (s *Service) wrap(principalFrom principalFunc, h handlerFunc) http.HandlerF
 }
 
 func (s *Service) require(p authn.Principal, permission, projectID string) error {
-	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, "projects/"+projectID)
+	return s.requireAny(p, permission, "projects/"+projectID)
+}
+
+func (s *Service) requireAny(p authn.Principal, permission string, resources ...string) error {
+	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, permission, resources...)
 	if err != nil {
 		return err
 	}
@@ -64,6 +69,14 @@ func (s *Service) require(p authn.Principal, permission, projectID string) error
 		return errDenied
 	}
 	return nil
+}
+
+func datasetAuthzResource(project, dataset string) string {
+	return "projects/" + project + "/datasets/" + dataset
+}
+
+func (s *Service) requireDataset(p authn.Principal, permission, project, dataset string) error {
+	return s.requireAny(p, permission, datasetAuthzResource(project, dataset), "projects/"+project)
 }
 
 var errDenied = fmt.Errorf("permission denied")
@@ -126,6 +139,9 @@ func (s *Service) createDataset(w http.ResponseWriter, r *http.Request, p authn.
 		writeAuthz(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "bigquery.googleapis.com") {
+		return
+	}
 	var body struct {
 		DatasetReference struct {
 			DatasetID string `json:"datasetId"`
@@ -161,7 +177,7 @@ func (s *Service) createDataset(w http.ResponseWriter, r *http.Request, p authn.
 
 func (s *Service) getDataset(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, dataset := r.PathValue("project"), r.PathValue("dataset")
-	if err := s.require(p, "bigquery.datasets.get", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.datasets.get", project, dataset); err != nil {
 		writeAuthz(w, err)
 		return
 	}
@@ -206,7 +222,7 @@ func (s *Service) listDatasets(w http.ResponseWriter, r *http.Request, p authn.P
 
 func (s *Service) deleteDataset(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, dataset := r.PathValue("project"), r.PathValue("dataset")
-	if err := s.require(p, "bigquery.datasets.delete", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.datasets.delete", project, dataset); err != nil {
 		writeAuthz(w, err)
 		return
 	}
@@ -224,7 +240,7 @@ func (s *Service) deleteDataset(w http.ResponseWriter, r *http.Request, p authn.
 
 func (s *Service) createTable(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, dataset := r.PathValue("project"), r.PathValue("dataset")
-	if err := s.require(p, "bigquery.tables.create", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.tables.create", project, dataset); err != nil {
 		writeAuthz(w, err)
 		return
 	}
@@ -272,7 +288,7 @@ func (s *Service) createTable(w http.ResponseWriter, r *http.Request, p authn.Pr
 
 func (s *Service) getTable(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, dataset, table := r.PathValue("project"), r.PathValue("dataset"), r.PathValue("table")
-	if err := s.require(p, "bigquery.tables.get", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.tables.get", project, dataset); err != nil {
 		writeAuthz(w, err)
 		return
 	}
@@ -290,7 +306,7 @@ func (s *Service) getTable(w http.ResponseWriter, r *http.Request, p authn.Princ
 
 func (s *Service) listTables(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, dataset := r.PathValue("project"), r.PathValue("dataset")
-	if err := s.require(p, "bigquery.tables.list", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.tables.list", project, dataset); err != nil {
 		writeAuthz(w, err)
 		return
 	}
@@ -318,7 +334,7 @@ func (s *Service) listTables(w http.ResponseWriter, r *http.Request, p authn.Pri
 
 func (s *Service) deleteTable(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, dataset, table := r.PathValue("project"), r.PathValue("dataset"), r.PathValue("table")
-	if err := s.require(p, "bigquery.tables.delete", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.tables.delete", project, dataset); err != nil {
 		writeAuthz(w, err)
 		return
 	}
@@ -342,7 +358,7 @@ type schemaField struct {
 
 func (s *Service) insertAll(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, dataset, table := r.PathValue("project"), r.PathValue("dataset"), r.PathValue("table")
-	if err := s.require(p, "bigquery.tables.updateData", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.tables.updateData", project, dataset); err != nil {
 		writeAuthz(w, err)
 		return
 	}
@@ -437,7 +453,7 @@ func validateInsertRow(row map[string]any, schema []schemaField) string {
 
 func (s *Service) tabledataList(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project, dataset, table := r.PathValue("project"), r.PathValue("dataset"), r.PathValue("table")
-	if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.tables.getData", project, dataset); err != nil {
 		writeAuthz(w, err)
 		return
 	}
@@ -577,7 +593,7 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 				return
 			}
 		}
-		if err := s.require(p, "bigquery.tables.create", project); err != nil {
+		if err := s.requireDataset(p, "bigquery.tables.create", project, datasetID); err != nil {
 			writeAuthz(w, err)
 			return
 		}
@@ -642,7 +658,11 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 			gcperrors.InvalidArgument(w, "JOIN ON aliases must match FROM aliases")
 			return
 		}
-		if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+		if err := s.requireDataset(p, "bigquery.tables.getData", project, dsA); err != nil {
+			writeAuthz(w, err)
+			return
+		}
+		if err := s.requireDataset(p, "bigquery.tables.getData", project, dsB); err != nil {
 			writeAuthz(w, err)
 			return
 		}
@@ -681,7 +701,7 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 
 	if m := reInfo.FindStringSubmatch(q); m != nil {
 		selectCols, datasetID := m[1], m[2]
-		if err := s.require(p, "bigquery.tables.list", project); err != nil {
+		if err := s.requireDataset(p, "bigquery.tables.list", project, datasetID); err != nil {
 			writeAuthz(w, err)
 			return
 		}
@@ -737,7 +757,7 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 				alias = "f0_"
 			}
 		}
-		if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+		if err := s.requireDataset(p, "bigquery.tables.getData", project, datasetID); err != nil {
 			writeAuthz(w, err)
 			return
 		}
@@ -845,7 +865,7 @@ func (s *Service) jobsQuery(w http.ResponseWriter, r *http.Request, p authn.Prin
 	}
 	selectCols, datasetID, tableID := m[1], m[2], m[3]
 	whereCol, whereRaw, limitStr := m[4], m[5], m[6]
-	if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.tables.getData", project, datasetID); err != nil {
 		writeAuthz(w, err)
 		return
 	}
@@ -898,7 +918,7 @@ func (s *Service) evalSimpleSelect(p authn.Principal, project, q string) ([]stri
 	}
 	selectCols, datasetID, tableID := m[1], m[2], m[3]
 	whereCol, whereRaw, limitStr := m[4], m[5], m[6]
-	if err := s.require(p, "bigquery.tables.getData", project); err != nil {
+	if err := s.requireDataset(p, "bigquery.tables.getData", project, datasetID); err != nil {
 		return nil, nil, err
 	}
 	rows, err := s.Store.ListBQRows(project, datasetID, tableID)

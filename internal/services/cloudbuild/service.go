@@ -11,6 +11,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -129,6 +130,9 @@ func (s *Service) createBuildRegional(w http.ResponseWriter, r *http.Request, p 
 func (s *Service) createBuild(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location string) {
 	if err := s.require(p, "cloudbuild.builds.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "cloudbuild.googleapis.com") {
 		return
 	}
 	var body map[string]any
@@ -417,10 +421,16 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "cloudbuild.googleapis.com") {
+		return
+	}
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body == nil {
 		body = map[string]any{}
+	}
+	if !s.requireTriggerServiceAccountActAs(w, p, project, body) {
+		return
 	}
 	triggerID := ""
 	if id, _ := body["id"].(string); id != "" {
@@ -612,17 +622,24 @@ func (s *Service) runTrigger(w http.ResponseWriter, r *http.Request, p authn.Pri
 		gcperrors.NotFound(w, "Trigger not found")
 		return
 	}
+	var trigCfg map[string]any
+	_ = json.Unmarshal([]byte(trig.TriggerJSON), &trigCfg)
+	if !s.requireTriggerServiceAccountActAs(w, p, project, trigCfg) {
+		return
+	}
 	// Consume optional RepoSource body; theatre ignores SCM and creates a WORKING build.
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body == nil {
 		body = map[string]any{}
 	}
+	buildSA := triggerServiceAccountEmail(trigCfg, project)
 	buildCfg := map[string]any{
 		"steps": []any{
 			map[string]any{"name": "gcr.io/cloud-builders/gcloud", "args": []any{"version"}},
 		},
-		"tags": []any{"trigger-" + trig.TriggerID, "lab-trigger-run"},
+		"tags":           []any{"trigger-" + trig.TriggerID, "lab-trigger-run"},
+		"serviceAccount": buildSA,
 	}
 	if filename, _ := extractTriggerFilename(trig.TriggerJSON); filename != "" {
 		buildCfg["filename"] = filename
@@ -669,6 +686,24 @@ func extractTriggerFilename(triggerJSON string) (string, bool) {
 		return f, true
 	}
 	return "", false
+}
+
+// requireTriggerServiceAccountActAs gates trigger create/:run on iam.serviceAccounts.actAs
+// for the trigger serviceAccount (default Compute Engine SA when omitted).
+func (s *Service) requireTriggerServiceAccountActAs(w http.ResponseWriter, p authn.Principal, project string, cfg map[string]any) bool {
+	email := triggerServiceAccountEmail(cfg, project)
+	return restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email)
+}
+
+func triggerServiceAccountEmail(cfg map[string]any, project string) string {
+	email := ""
+	if cfg != nil {
+		email = serviceAccountEmail(stringField(cfg["serviceAccount"]))
+	}
+	if email == "" {
+		return labtoken.DefaultComputeSAEmail(project)
+	}
+	return email
 }
 
 func (s *Service) deleteTrigger(w http.ResponseWriter, r *http.Request, p authn.Principal) {

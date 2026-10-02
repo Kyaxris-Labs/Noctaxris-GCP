@@ -47,11 +47,22 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   step identity, or interservice dispatch via `labtoken.Mint` for
   Scheduler/Tasks/Eventarc). CreateKey returns RSA PEM credentials and does not
   register the PEM as a Bearer.
+- Verified Identity Toolkit id tokens (process HS256) are accepted as
+  `Authorization: Bearer` when the string is not the root token and is not in
+  `access_tokens`. Principal email is `user:{uid}` for every Toolkit localId
+  (not only email-shaped) so values cannot match `serviceAccount:` or `wif:` IAM
+  bindings. Custom tokens are not control-plane Bearers. Unsigned (`alg: none`)
+  id tokens are rejected.
 - Missing or invalid credentials return Google JSON `UNAUTHENTICATED` (HTTP 401).
 - GCS XML HMAC (`Authorization: GOOG4-HMAC-SHA256`) is separate from Bearer. When Host
   is `storage.googleapis.com` and the path has been rewritten to `/storage/xml/...`,
   signature verify still accepts the wire path `/{bucket}/{object}` (see
   [services/gcs.md](services/gcs.md)).
+- GCS V4 signed URL query auth: when `Authorization` is empty and the query has
+  `X-Goog-Algorithm` + `X-Goog-Signature`, middleware skips Bearer only for
+  `/storage/` and `/upload/storage/` paths. The GCS handler still verifies the
+  signature fail-closed. Other APIs cannot be opened via `X-Goog-*` alone
+  (see [services/gcs.md](services/gcs.md)).
 - Public paths (Bearer skipped):
   - `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`
   - Lab HTTP catcher `POST`/`GET` `/_noctaxris-gcp/http-catcher` (and `POST` under
@@ -64,20 +75,35 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
     `email[]` / `localId[]` / phone / federated is denied without admin Bearer; see
     [firebase-auth.md](services/firebase-auth.md). Admin paths under
     `/v1/projects/{project}/accounts…` still require Bearer
-  - Lab edge dataplane `GET`/`HEAD` `/lb/{project}/{rule}/…` and `/cdn/{id}/…`
-    (serve configured lab GCS object bytes without auth; control-plane CRUD stays Bearer)
+  - Lab edge dataplane `GET`/`HEAD` `/lb/{project}/{rule}/…` and `/cdn/{project}/{id}/…`
+    (Bearer optional; GCS origin requires `storage.objects.get` via principal or
+    `allUsers`. Control-plane CRUD stays Bearer-required)
+  - Cloud Run nested browser proxy `ANY /run/{project}/{location}/{service}/…`
+    (Bearer optional; Invoker required via principal or `allUsers` before proxy;
+    served only while a nested container is recorded; `:invoke` stays Bearer + IAM).
+    `Authorization` / `Proxy-Authorization` are stripped before proxy;
+    see [services/cloud-run.md](services/cloud-run.md)
+  - GCE metadata theatre `GET /computeMetadata/v1…` (`Metadata-Flavor: Google`
+    required). Email/account listing is public on the shared listener.
+    `.../token` mints a lab Bearer for `runtime@{project}.iam.gserviceaccount.com`
+    only when the TCP peer is link-local; Host alone is not enough
 - Lab HTTP catcher deliveries are recorded in-process (Pub/Sub push, Eventarc,
   Scheduler, Cloud Tasks short-circuit, or public POST accept).
   See [services/iam.md](services/iam.md) for TokenCreator and STS (theatre default; opt-in OIDC verify).
 
 ## Lab edge dataplane risk
 
-`/lb/…` and `/cdn/…` are intentionally unauthenticated so curl/CLI smoke matches a
-public HTTP(S) LB / CDN edge. Object bytes are only those already stored in lab
-GCS and linked through authenticated control-plane setup. Default listen and
-Compose host publish stay loopback (`127.0.0.1:4588`). If you bind or publish
-beyond loopback, anyone who can reach `:4588` can read those edge-linked objects
-without a Bearer token. Keep host publish on loopback for shared or LAN hosts.
+`/lb/…`, `/cdn/…`, and `/run/…` skip required Bearer so curl/CLI smoke can look
+like a public edge. GCS-backed LB/CDN still require `storage.objects.get`
+(principal or `allUsers`). `/run/` requires Cloud Run Invoker (`allUsers` or a
+Bearer with Invoker) before proxying, and strips lab Authorization only after
+allow. Default listen and Compose host publish stay loopback (`127.0.0.1:4588`).
+Keep host publish on loopback for shared or LAN hosts.
+
+`/computeMetadata/v1` likewise skips Bearer. Listing and email are available to
+any client that sends `Metadata-Flavor: Google`. Token mint stays fail-closed to
+link-local peers so a remote caller on the shared listener cannot mint
+`runtime@…` Bearers by setting Host alone.
 
 ## Example root refusal
 
@@ -92,11 +118,13 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
   operator convenience in the AWS-shaped sibling product and is intentional.
   Documented here so operators do not treat root as a normal service account.
 - Non-root evaluation uses role bindings. `roles/owner` grants all permissions.
-  `roles/editor` grants mutators except `*.setIamPolicy` and service-account
-  token/signing impersonation (`getAccessToken`, `actAs`, `signBlob`, …).
+  `roles/editor` grants mutators except `*.setIamPolicy`, service-account
+  token/signing impersonation (`getAccessToken`, `actAs`, `signBlob`, …),
+  `secretmanager.versions.access`, and KMS crypto ops (`useToEncrypt` /
+  `useToDecrypt` / `useToSign` / `viewPublicKey`).
   `roles/viewer` is read-only metadata (suffix `.get` / `.list` / `.getIamPolicy`
   / `.search` only, never substring `.get`, so `getAccessToken` is denied).
-  Viewer does **not** grant `secretmanager.versions.access` (needs
+  Viewer and editor do **not** grant `secretmanager.versions.access` (needs
   `roles/secretmanager.secretAccessor` or owner).
   `roles/iam.serviceAccountTokenCreator` on a service account grants
   `getAccessToken` / `actAs` / sign methods for impersonation theatre.

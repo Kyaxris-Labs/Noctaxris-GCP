@@ -80,6 +80,21 @@ func (s *Store) GetFirebaseUserByLocalID(localID string) (*FirebaseUser, bool, e
 	)
 }
 
+// ToolkitUserDisabled reports whether an Identity Toolkit localId is disabled.
+// ok=false when the user row is missing. Accepts optional user: prefix.
+func (s *Store) ToolkitUserDisabled(localID string) (disabled bool, ok bool, err error) {
+	localID = strings.TrimSpace(localID)
+	localID = strings.TrimPrefix(localID, "user:")
+	if localID == "" {
+		return false, false, nil
+	}
+	u, found, err := s.GetFirebaseUserByLocalID(localID)
+	if err != nil || !found {
+		return false, found, err
+	}
+	return u.Disabled, true, nil
+}
+
 func (s *Store) scanFirebaseUser(q string, args ...any) (*FirebaseUser, bool, error) {
 	var u FirebaseUser
 	var disabled int

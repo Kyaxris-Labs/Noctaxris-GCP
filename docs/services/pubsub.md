@@ -20,7 +20,7 @@ address; Terraform typically uses the REST surface.
 | Seek | Seek to time (gRPC + REST `:seek`); clears ack state for later messages, deletes earlier backlog |
 | StreamingPull | Long-lived loop: recv acks/modacks, send messages until client cancels |
 | Push | If `pushConfig.pushEndpoint` is set, best-effort HTTP POST on publish (2xx acks that copy); endpoints gated by shared `httpegress` (lab catcher / loopback `:4588` default; open internet only with opt-in egress + exact allowlist) |
-| Push OIDC | `pushConfig.oidcToken` (`serviceAccountEmail`, `audience`) stored and returned; push sets `Authorization: Bearer` with unsigned lab JWT (`alg=none`) |
+| Push OIDC | `pushConfig.oidcToken` (`serviceAccountEmail`, `audience`) stored and returned; push sets `Authorization: Bearer` with RS256 lab JWT (jose; `alg=none` rejected) |
 | Push update | REST `PATCH` and `:modifyPushConfig` (including OIDC fields) |
 
 REST paths (colon actions live inside path wildcards):
@@ -45,9 +45,9 @@ message is published to the dead-letter topic and removed from the source subscr
 When `pushConfig.oidcToken.serviceAccountEmail` is set, create/update /
 `modifyPushConfig` require `iam.serviceAccounts.actAs` on that account (or the
 parent project). Push requests then include `Authorization: Bearer <lab JWT>`.
-The lab JWT is unsigned theatre (`alg=none`, empty signature segment) with
-`aud` = audience (or the push endpoint when audience is empty), and
-`email` / `sub` = the service account email. This is not Google-signed OIDC.
+The lab JWT is RS256-signed with the stable oidc-lab key (jose; not
+`alg=none`) with `aud` = audience (or the push endpoint when audience is empty),
+and `email` / `sub` = the service account email. This is not Google-signed OIDC.
 Unlike Cloud Scheduler, Pub/Sub returns `oidcToken` on get (API-shaped config).
 Lab catcher deliveries also record the `authorization` header value on the catcher
 JSON for tests.
@@ -77,7 +77,7 @@ re-check IAM when a principal is present.
 - Snapshots are metadata-only (no backlog retention); seek-to-snapshot returns invalid argument
 - Filter language is attribute equality only (no HAS, OR, NOT)
 - Message retention and backlog quotas are not enforced
-- Push OIDC uses unsigned lab JWT theatre (`alg=none`), not real Google-signed tokens
+- Push OIDC uses lab RS256 JWTs (jose / oidc-lab key), not Google-signed tokens
 - Dead-letter publishes when pull or failed-push attempt count reaches `maxDeliveryAttempts` (no separate deliveryAttempt metric API)
 - Push endpoints use the shared HTTP egress gate (metadata / link-local / private hosts fail closed even when egress is enabled)
 
@@ -152,6 +152,6 @@ go test ./tests/sdk/go/ -run TestPubSubOIDCPushSmoke -count=1
 - Ordering keys / full exactly-once ack semantics / schemas
 - Snapshot backlog retention and seek-to-snapshot
 - Full filter language (OR / NOT / HAS)
-- Real Google-signed push OIDC (lab uses `alg=none` theatre)
+- Real Google-signed push OIDC (lab uses jose RS256 with the oidc-lab key)
 - Operator root skips VPC-SC on publish; pull and subscribe are not perimeter-checked
 - STS stays unrestricted

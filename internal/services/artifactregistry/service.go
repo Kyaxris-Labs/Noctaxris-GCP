@@ -10,6 +10,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -79,9 +80,36 @@ func (s *Service) require(p authn.Principal, permission, projectID string) error
 	return nil
 }
 
+// requireRepo evaluates permission on the repository resource first, then project.
+func (s *Service) requireRepo(p authn.Principal, permission, project, location, repoID string) error {
+	name := repoName(project, location, repoID)
+	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, permission, name, "projects/"+project)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errDenied
+	}
+	return nil
+}
+
 func (s *Service) requireAny(p authn.Principal, projectID string, perms ...string) error {
 	for _, perm := range perms {
 		ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, perm, "projects/"+projectID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	}
+	return errDenied
+}
+
+func (s *Service) requireAnyRepo(p authn.Principal, project, location, repoID string, perms ...string) error {
+	name := repoName(project, location, repoID)
+	for _, perm := range perms {
+		ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, perm, name, "projects/"+project)
 		if err != nil {
 			return err
 		}
@@ -142,6 +170,9 @@ func (s *Service) createRepository(w http.ResponseWriter, r *http.Request, p aut
 	location := r.PathValue("location")
 	if err := s.require(p, "artifactregistry.repositories.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "artifactregistry.googleapis.com") {
 		return
 	}
 	repoID := r.URL.Query().Get("repositoryId")
@@ -222,7 +253,7 @@ func (s *Service) getRepository(w http.ResponseWriter, r *http.Request, p authn.
 		gcperrors.NotFound(w, "unknown Artifact Registry method")
 		return
 	}
-	if err := s.require(p, "artifactregistry.repositories.get", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.repositories.get", project, location, id); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -254,7 +285,7 @@ func (s *Service) repositoryPOSTAction(w http.ResponseWriter, r *http.Request, p
 }
 
 func (s *Service) getIamPolicy(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, id string) {
-	if err := s.require(p, "artifactregistry.repositories.getIamPolicy", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.repositories.getIamPolicy", project, location, id); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -281,7 +312,7 @@ func (s *Service) getIamPolicy(w http.ResponseWriter, _ *http.Request, p authn.P
 }
 
 func (s *Service) setIamPolicy(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, id string) {
-	if err := s.require(p, "artifactregistry.repositories.setIamPolicy", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.repositories.setIamPolicy", project, location, id); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -311,7 +342,7 @@ func (s *Service) patchRepository(w http.ResponseWriter, r *http.Request, p auth
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	id, _ := splitColonAction(r.PathValue("repository"))
-	if err := s.require(p, "artifactregistry.repositories.update", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.repositories.update", project, location, id); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -368,7 +399,7 @@ func (s *Service) listFiles(w http.ResponseWriter, r *http.Request, p authn.Prin
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	repoID, _ := splitColonAction(r.PathValue("repository"))
-	if err := s.require(p, "artifactregistry.files.list", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.files.list", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -403,7 +434,7 @@ func (s *Service) listTags(w http.ResponseWriter, r *http.Request, p authn.Princ
 	location := r.PathValue("location")
 	repoID, _ := splitColonAction(r.PathValue("repository"))
 	pkgID, _ := splitColonAction(r.PathValue("package"))
-	if err := s.require(p, "artifactregistry.tags.list", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.tags.list", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -434,7 +465,7 @@ func (s *Service) deleteRepository(w http.ResponseWriter, r *http.Request, p aut
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	id := r.PathValue("repository")
-	if err := s.require(p, "artifactregistry.repositories.delete", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.repositories.delete", project, location, id); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -454,7 +485,7 @@ func (s *Service) createPackage(w http.ResponseWriter, r *http.Request, p authn.
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	repoID := r.PathValue("repository")
-	if err := s.require(p, "artifactregistry.packages.create", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.packages.create", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -508,7 +539,7 @@ func (s *Service) listPackages(w http.ResponseWriter, r *http.Request, p authn.P
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	repoID := r.PathValue("repository")
-	if err := s.require(p, "artifactregistry.packages.list", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.packages.list", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -529,7 +560,7 @@ func (s *Service) getPackage(w http.ResponseWriter, r *http.Request, p authn.Pri
 	location := r.PathValue("location")
 	repoID := r.PathValue("repository")
 	pkgID := r.PathValue("package")
-	if err := s.require(p, "artifactregistry.packages.get", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.packages.get", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -550,7 +581,7 @@ func (s *Service) deletePackage(w http.ResponseWriter, r *http.Request, p authn.
 	location := r.PathValue("location")
 	repoID := r.PathValue("repository")
 	pkgID := r.PathValue("package")
-	if err := s.require(p, "artifactregistry.packages.delete", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.packages.delete", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -571,7 +602,7 @@ func (s *Service) createVersion(w http.ResponseWriter, r *http.Request, p authn.
 	location := r.PathValue("location")
 	repoID := r.PathValue("repository")
 	pkgID := r.PathValue("package")
-	if err := s.require(p, "artifactregistry.versions.create", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.versions.create", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -638,7 +669,7 @@ func (s *Service) listVersions(w http.ResponseWriter, r *http.Request, p authn.P
 	location := r.PathValue("location")
 	repoID := r.PathValue("repository")
 	pkgID := r.PathValue("package")
-	if err := s.require(p, "artifactregistry.versions.list", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.versions.list", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -660,7 +691,7 @@ func (s *Service) getVersion(w http.ResponseWriter, r *http.Request, p authn.Pri
 	repoID := r.PathValue("repository")
 	pkgID := r.PathValue("package")
 	verID := r.PathValue("version")
-	if err := s.require(p, "artifactregistry.versions.get", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.versions.get", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
@@ -682,7 +713,7 @@ func (s *Service) deleteVersion(w http.ResponseWriter, r *http.Request, p authn.
 	repoID := r.PathValue("repository")
 	pkgID := r.PathValue("package")
 	verID := r.PathValue("version")
-	if err := s.require(p, "artifactregistry.versions.delete", project); err != nil {
+	if err := s.requireRepo(p, "artifactregistry.versions.delete", project, location, repoID); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}

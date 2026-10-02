@@ -82,7 +82,7 @@ func TestSTSTokenExchangeHappyAndFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := h.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", "https://example.com", "", "[]", false)
+	prov, err := h.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", "https://example.com", "", "", "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}

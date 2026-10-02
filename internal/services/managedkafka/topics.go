@@ -25,7 +25,7 @@ func (s *Service) createTopic(w http.ResponseWriter, r *http.Request, p authn.Pr
 		writeAuthzErr(w, err)
 		return
 	}
-	if !restlab.RequireServiceEnabled(w, s.Store, project, "managedkafka.googleapis.com") {
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "managedkafka.googleapis.com") {
 		return
 	}
 	parent := clusterName(project, location, clusterID)

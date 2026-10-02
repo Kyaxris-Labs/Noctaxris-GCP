@@ -43,6 +43,18 @@ func caMux(t *testing.T) (*http.ServeMux, *store.Store, string) {
 
 func postOccurrence(t *testing.T, mux http.Handler, project, id, body string) {
 	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		t.Fatal(err)
+	}
+	if note, _ := m["noteName"].(string); note == "" {
+		m["noteName"] = "projects/" + project + "/notes/lab-" + id
+		raw, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = string(raw)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/occurrences?occurrenceId="+id, bytes.NewReader([]byte(body)))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -194,7 +206,7 @@ func TestContainerAnalysisPagination(t *testing.T) {
 
 func TestContainerAnalysisLocationScopedRoutes(t *testing.T) {
 	mux, _, project := caMux(t)
-	body := `{"resourceUri":"loc-img:1","kind":"ATTESTATION"}`
+	body := `{"resourceUri":"loc-img:1","kind":"ATTESTATION","noteName":"projects/` + project + `/notes/loc"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project+"/locations/us/occurrences?occurrenceId=loc-1", bytes.NewReader([]byte(body)))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

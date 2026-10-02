@@ -107,7 +107,7 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 		writeAuthzErr(w, err)
 		return
 	}
-	if !restlab.RequireServiceEnabled(w, s.Store, project, "sqladmin.googleapis.com") {
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "sqladmin.googleapis.com") {
 		return
 	}
 	var body map[string]any

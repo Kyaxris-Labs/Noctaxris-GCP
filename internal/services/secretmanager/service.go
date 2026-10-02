@@ -14,6 +14,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -149,6 +150,13 @@ func splitColonAction(v string) (id, action string) {
 func (s *Service) httpCreateSecret(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("project")
 	if !s.requireHTTP(w, r, "secretmanager.secrets.create", projectResource(project)) {
+		return
+	}
+	p, ok := s.HTTPPrincipal(r)
+	if !ok {
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "secretmanager.googleapis.com") {
 		return
 	}
 	secretID := r.URL.Query().Get("secretId")

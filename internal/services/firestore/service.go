@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
@@ -63,7 +65,7 @@ func (s *Service) principal(ctx context.Context) (authn.Principal, error) {
 		return p, nil
 	}
 	if uid, ok := authn.LabIdentityToolkitUID(token); ok {
-		return authn.Principal{Email: uid, IsRoot: false}, nil
+		return authn.Principal{Email: "user:" + uid, IsRoot: false}, nil
 	}
 	if err == authn.ErrUnauthenticated {
 		return authn.Principal{}, status.Error(codes.Unauthenticated, "unauthenticated")
@@ -72,6 +74,11 @@ func (s *Service) principal(ctx context.Context) (authn.Principal, error) {
 }
 
 func (s *Service) require(ctx context.Context, permission, projectID string) (authn.Principal, error) {
+	return s.requirePermissions(ctx, projectID, permission)
+}
+
+// requirePermissions authenticates, gates Service Usage, then Evaluate each permission (fail-closed).
+func (s *Service) requirePermissions(ctx context.Context, projectID string, permissions ...string) (authn.Principal, error) {
 	p, err := s.principal(ctx)
 	if err != nil {
 		if err == authn.ErrUnauthenticated {
@@ -82,15 +89,68 @@ func (s *Service) require(ctx context.Context, permission, projectID string) (au
 		}
 		return authn.Principal{}, status.Error(codes.Unauthenticated, err.Error())
 	}
-	resource := "projects/" + projectID
-	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, resource)
-	if err != nil {
-		return authn.Principal{}, status.Errorf(codes.Internal, "authz: %v", err)
+	if err := restlab.CheckServiceEnabled(s.Store, projectID, "firestore.googleapis.com"); err != nil {
+		if errors.Is(err, store.ErrServiceDisabled) {
+			return authn.Principal{}, status.Error(codes.FailedPrecondition, restlab.ServiceDisabledMessage("firestore.googleapis.com"))
+		}
+		return authn.Principal{}, status.Errorf(codes.Internal, "%v", err)
 	}
-	if !ok {
-		return authn.Principal{}, status.Error(codes.PermissionDenied, "The caller does not have permission.")
+	resource := "projects/" + projectID
+	for _, permission := range permissions {
+		if permission == "" {
+			continue
+		}
+		ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, resource)
+		if err != nil {
+			return authn.Principal{}, status.Errorf(codes.Internal, "authz: %v", err)
+		}
+		if !ok {
+			return authn.Principal{}, status.Error(codes.PermissionDenied, "The caller does not have permission.")
+		}
 	}
 	return p, nil
+}
+
+// permissionsForWrite maps a Firestore Write to IAM entity permissions (GCP Commit/BatchWrite table).
+func permissionsForWrite(w *firestorepb.Write) []string {
+	if w == nil {
+		return nil
+	}
+	switch w.GetOperation().(type) {
+	case *firestorepb.Write_Delete:
+		return []string{"datastore.entities.delete"}
+	case *firestorepb.Write_Update, *firestorepb.Write_Transform:
+		if pre := w.GetCurrentDocument(); pre != nil {
+			if c, ok := pre.GetConditionType().(*firestorepb.Precondition_Exists); ok {
+				if c.Exists {
+					return []string{"datastore.entities.update"}
+				}
+				return []string{"datastore.entities.create"}
+			}
+		}
+		return []string{"datastore.entities.create", "datastore.entities.update"}
+	default:
+		return nil
+	}
+}
+
+func permissionsForWrites(writes []*firestorepb.Write) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, w := range writes {
+		for _, p := range permissionsForWrite(w) {
+			if _, ok := seen[p]; ok {
+				continue
+			}
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		// Empty Commit (transaction only): gate on databases.get.
+		return []string{"datastore.databases.get"}
+	}
+	return out
 }
 
 func isIdentityToolkitUser(p authn.Principal) bool {
@@ -206,6 +266,37 @@ func parseDocPath(name string) (projectID, collectionID, documentID string, err 
 	collectionID = segs[len(segs)-2]
 	documentID = segs[len(segs)-1]
 	return projectID, collectionID, documentID, nil
+}
+
+// requireDocInProject ensures a document path belongs to the authorized project.
+func requireDocInProject(path, projectID string) error {
+	p, err := projectFromName(path)
+	if err != nil {
+		return err
+	}
+	if p != projectID {
+		return fmt.Errorf("document %q is not in project %q", path, projectID)
+	}
+	return nil
+}
+
+func writeDocPath(w *firestorepb.Write) string {
+	if w == nil {
+		return ""
+	}
+	switch op := w.GetOperation().(type) {
+	case *firestorepb.Write_Update:
+		if op.Update != nil {
+			return op.Update.GetName()
+		}
+	case *firestorepb.Write_Delete:
+		return op.Delete
+	case *firestorepb.Write_Transform:
+		if op.Transform != nil {
+			return op.Transform.GetDocument()
+		}
+	}
+	return ""
 }
 
 func fieldsToJSON(fields map[string]*firestorepb.Value) (string, error) {
@@ -426,12 +517,23 @@ func (s *Service) BatchGetDocuments(req *firestorepb.BatchGetDocumentsRequest, s
 	if len(req.GetDocuments()) == 0 {
 		return status.Error(codes.InvalidArgument, "documents is required")
 	}
-	projectID, err := projectFromName(req.GetDocuments()[0])
+	var projectID string
+	var err error
+	if db := strings.TrimSpace(req.GetDatabase()); db != "" {
+		projectID, err = projectFromName(db)
+	} else {
+		projectID, err = projectFromName(req.GetDocuments()[0])
+	}
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	if _, err := s.require(stream.Context(), "datastore.entities.get", projectID); err != nil {
 		return err
+	}
+	for _, name := range req.GetDocuments() {
+		if err := requireDocInProject(name, projectID); err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
 	}
 	readTime := timestamppb.Now()
 	for _, name := range req.GetDocuments() {
@@ -471,8 +573,15 @@ func (s *Service) BatchWrite(ctx context.Context, req *firestorepb.BatchWriteReq
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if _, err := s.require(ctx, "datastore.entities.create", projectID); err != nil {
+	if _, err := s.requirePermissions(ctx, projectID, permissionsForWrites(req.GetWrites())...); err != nil {
 		return nil, err
+	}
+	for _, w := range req.GetWrites() {
+		if path := writeDocPath(w); path != "" {
+			if err := requireDocInProject(path, projectID); err != nil {
+				return nil, status.Error(codes.InvalidArgument, err.Error())
+			}
+		}
 	}
 	statusOut := make([]*rpcstatus.Status, 0, len(req.GetWrites()))
 	writeResults := make([]*firestorepb.WriteResult, 0, len(req.GetWrites()))
@@ -589,8 +698,15 @@ func (s *Service) Commit(ctx context.Context, req *firestorepb.CommitRequest) (*
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if _, err := s.require(ctx, "datastore.entities.update", projectID); err != nil {
+	if _, err := s.requirePermissions(ctx, projectID, permissionsForWrites(req.GetWrites())...); err != nil {
 		return nil, err
+	}
+	for _, w := range req.GetWrites() {
+		if path := writeDocPath(w); path != "" {
+			if err := requireDocInProject(path, projectID); err != nil {
+				return nil, status.Error(codes.InvalidArgument, err.Error())
+			}
+		}
 	}
 	if len(req.GetTransaction()) > 0 {
 		ok, err := s.Store.ConsumeFirestoreTransaction(string(req.GetTransaction()), req.GetDatabase())

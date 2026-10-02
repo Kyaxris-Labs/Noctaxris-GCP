@@ -18,6 +18,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/jwtutil"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"google.golang.org/grpc"
@@ -316,7 +317,7 @@ func (s *Service) checkVPCSCPublish(ctx context.Context, topicProject string) er
 	if err != nil {
 		return status.Errorf(codes.Internal, "%v", err)
 	}
-	if err := s.Store.VPCSCDenyCrossPerimeter(from, topicProject, "pubsub.googleapis.com"); err != nil {
+	if err := restlab.CheckVPCSC(s.Store, from, topicProject, "pubsub.googleapis.com"); err != nil {
 		if errors.Is(err, store.ErrVPCSCPerimeter) {
 			return status.Error(codes.PermissionDenied, err.Error())
 		}
@@ -353,7 +354,9 @@ func (s *Service) deliverPush(copies []store.PubSubMessage) {
 			if aud == "" {
 				aud = sub.PushEndpoint
 			}
-			authHeader = "Bearer " + labPushOIDCJWT(email, aud)
+			if token := labPushOIDCJWT(email, aud); token != "" {
+				authHeader = "Bearer " + token
+			}
 		}
 		u, err := http.NewRequest(http.MethodPost, sub.PushEndpoint, bytes.NewReader(body))
 		if err != nil {
@@ -394,16 +397,18 @@ func (s *Service) deliverPush(copies []store.PubSubMessage) {
 	}
 }
 
-// labPushOIDCJWT mints an unsigned lab JWT (alg=none, empty signature) for push Authorization.
-// Claims: aud, email, sub. Not real Google-signed OIDC.
+// labPushOIDCJWT mints an RS256 lab JWT for push Authorization (jose; rejects alg=none).
+// Claims: aud, email, sub. Signed with the stable lab OIDC key.
 func labPushOIDCJWT(serviceAccountEmail, audience string) string {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	payload, _ := json.Marshal(map[string]any{
+	token, err := jwtutil.SignLabOIDCRS256(map[string]any{
 		"aud":   audience,
 		"email": serviceAccountEmail,
 		"sub":   serviceAccountEmail,
 	})
-	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + "."
+	if err != nil {
+		return ""
+	}
+	return token
 }
 
 func oidcFromPushConfig(pc *pubsubpb.PushConfig) (email, audience string) {

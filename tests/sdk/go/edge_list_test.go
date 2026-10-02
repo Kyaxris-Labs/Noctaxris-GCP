@@ -123,7 +123,7 @@ func TestGKEClusterAndCDNEdgeSmoke(t *testing.T) {
 	t.Cleanup(func() {
 		_, _, _ = doJSONErr(http.MethodDelete, distBase+"/"+distID, token, nil)
 	})
-	edgeURL := ep + "/cdn/" + distID + "/obj.txt"
+	edgeURL := ep + "/cdn/" + project + "/" + distID + "/obj.txt"
 	req, err := http.NewRequest(http.MethodGet, edgeURL, nil)
 	if err != nil {
 		t.Fatal(err)

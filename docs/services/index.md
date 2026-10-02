@@ -46,7 +46,7 @@ with honest emulator limits on each page.
 | Certificate Manager | lab | [certificate-manager.md](certificate-manager.md) | certificates + certificateMaps CRUD; create returns completed Operation (`done:true`; `global` OK) |
 | GKE | lab | [gke.md](gke.md) | Container API v1 clusters CRUD; optional k3s one-shot with nested engine |
 | HTTP(S) load balancing | lab | [load-balancing.md](load-balancing.md) | Global LB metadata + public `/lb/{project}/{rule}/...` GCS dataplane |
-| Cloud CDN | lab | [cloud-cdn.md](cloud-cdn.md) | Distributions CRUD + public `/cdn/{id}/...` edge |
+| Cloud CDN | lab | [cloud-cdn.md](cloud-cdn.md) | Distributions CRUD + public `/cdn/{project}/{id}/...` edge |
 | Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC membership deny on GCS/Pub/Sub/KMS decrypt and IAM Credentials (same-project is not a skip; STS unrestricted) |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
@@ -60,9 +60,15 @@ Per-service deferred depth lives on each page. Shared gaps:
   that org; folders CRUD lite (no full hierarchy tooling)
 - Cloud Build and Eventarc share regional `.../locations/.../triggers` (body-shape
   dispatch on create; list may merge); project-scoped triggers stay Cloud Build
-- Bearer required on API paths (health/ready/version are public; Identity Toolkit
-  `/identitytoolkit.googleapis.com/v1/accounts*` client methods skip middleware Bearer.
-  `accounts:lookup` identifier arrays still require admin Bearer; see [firebase-auth.md](firebase-auth.md))
+- Bearer required on API paths except documented public routes: health/ready/version;
+  STS `/v1/token` and SA OAuth `/token` + `/oauth2/token`; Identity Toolkit client
+  `/identitytoolkit.googleapis.com/v1/accounts*` (identifier `accounts:lookup`
+  still needs admin Bearer; see [firebase-auth.md](firebase-auth.md)); lab edge
+  `/lb/…` and `/cdn/…`; Cloud Run nested `/run/…`; `/computeMetadata/v1…`
+  (`Metadata-Flavor: Google`; token mint link-local only). GCS V4 signed URLs
+  with empty Authorization skip Bearer only on `/storage/` and `/upload/storage/`
+  (signature verified in-handler). Verified Toolkit HS256 id tokens also authenticate
+  as Bearer (`user:` prefix for all localIds; custom tokens do not)
 - Root principal bypasses IAM evaluation (lab operator)
 - No host `docker.sock`; nested DinD on by default in Compose (see Nested DinD below)
 - Compute Engine stores instance/VPC/firewall metadata only (no VMs or NICs); Images are a fixed canned set; firewall `:validate` is single-rule lite

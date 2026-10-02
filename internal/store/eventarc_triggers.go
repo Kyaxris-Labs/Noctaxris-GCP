@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
 	"github.com/google/uuid"
@@ -403,9 +404,13 @@ func (s *Store) deliverEventarc(t EventarcTrigger, payload map[string]any) {
 		return
 	}
 	// Prefer in-process Cloud Functions delivery so lab Eventarc works without
-	// Bearer mint (A2) and without a live :4588 listener in unit tests.
+	// a live :4588 listener in unit tests. Still requires functions Invoker.
 	if fnName := cloudFunctionNameFromDestination(t); fnName != "" {
 		if _, ok, err := s.GetCloudFunction(fnName); err == nil && ok {
+			if !s.eventarcAllowFunctionInvoke(t, fnName) {
+				log.Printf("eventarc deliver %s: functions Invoker denied for %s", t.Name, fnName)
+				return
+			}
 			RecordCloudFunctionInvoke(fnName, string(raw))
 			return
 		}
@@ -424,6 +429,10 @@ func (s *Store) deliverEventarc(t EventarcTrigger, payload map[string]any) {
 	// Lab-local Functions :invoke path: record in-process when the function exists.
 	if fnName := functionNameFromInvokeURI(uri); fnName != "" {
 		if _, ok, err := s.GetCloudFunction(fnName); err == nil && ok {
+			if !s.eventarcAllowFunctionInvoke(t, fnName) {
+				log.Printf("eventarc deliver %s: functions Invoker denied for %s", t.Name, fnName)
+				return
+			}
 			RecordCloudFunctionInvoke(fnName, string(raw))
 			return
 		}
@@ -461,6 +470,34 @@ func (s *Store) deliverEventarc(t EventarcTrigger, payload map[string]any) {
 	if err := doPost(); err != nil {
 		_ = doPost() // one retry on failed deliver
 	}
+}
+
+// eventarcAllowFunctionInvoke requires cloudfunctions.functions.invoke for the
+// trigger service account (or default compute SA), or allUsers Invoker on the
+// function / project resource.
+func (s *Store) eventarcAllowFunctionInvoke(t EventarcTrigger, fnName string) bool {
+	email := strings.TrimSpace(t.ServiceAccount)
+	if email == "" {
+		email = labtoken.DefaultComputeSAEmail(t.ProjectID)
+	}
+	e := &authz.Evaluator{Policies: s, Roles: s}
+	resources := []string{fnName, "projects/" + t.ProjectID}
+	if email != "" {
+		ok, err := e.EvaluateAny(email, false, "cloudfunctions.functions.invoke", resources...)
+		if err == nil && ok {
+			return true
+		}
+	}
+	for _, res := range resources {
+		if res == "" {
+			continue
+		}
+		ok, err := e.EvaluateAllUsers("cloudfunctions.functions.invoke", res)
+		if err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // eventarcAuthHeader mints a registered lab Bearer for delivery to protected destinations.

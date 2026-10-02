@@ -11,6 +11,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 )
@@ -99,6 +101,9 @@ func (s *Service) createWorkflow(w http.ResponseWriter, r *http.Request, p authn
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "workflows.googleapis.com") {
+		return
+	}
 	workflowID := r.URL.Query().Get("workflowId")
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -118,6 +123,13 @@ func (s *Service) createWorkflow(w http.ResponseWriter, r *http.Request, p authn
 	source, _ := body["sourceContents"].(string)
 	desc, _ := body["description"].(string)
 	sa, _ := body["serviceAccount"].(string)
+	actAs := strings.TrimSpace(sa)
+	if actAs == "" {
+		actAs = labtoken.DefaultComputeSAEmail(project)
+	}
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, actAs) {
+		return
+	}
 	labelsJSON := "{}"
 	if labels, ok := body["labels"]; ok {
 		raw, _ := json.Marshal(labels)
@@ -197,6 +209,13 @@ func (s *Service) patchWorkflow(w http.ResponseWriter, r *http.Request, p authn.
 	}
 	if mask == "" || fieldMaskHas(mask, "serviceAccount") {
 		if v, ok := body["serviceAccount"].(string); ok {
+			actAs := strings.TrimSpace(v)
+			if actAs == "" {
+				actAs = labtoken.DefaultComputeSAEmail(project)
+			}
+			if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, actAs) {
+				return
+			}
 			saPtr = &v
 		}
 	}

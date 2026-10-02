@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/celutil"
 )
 
 // Policy is a Google IAM Policy allow document (bindings only for lab depth).
@@ -130,7 +132,7 @@ func (e *Evaluator) conditionAllows(b Binding) bool {
 	if e != nil && e.Now != nil {
 		now = e.Now().UTC()
 	}
-	return evalRequestTimeCEL(b.Condition.Expression, now)
+	return celutil.EvalRequestTime(b.Condition.Expression, now)
 }
 
 // resourcePolicyChain returns the resource then its project parent when nested.
@@ -229,6 +231,96 @@ func (e *Evaluator) EvaluateAny(principalEmail string, isRoot bool, permission s
 	return false, nil
 }
 
+// EvaluateAllUsers reports whether the allUsers principal is granted permission
+// on resource (anonymous public access). allAuthenticatedUsers does not match.
+func (e *Evaluator) EvaluateAllUsers(permission, resource string) (bool, error) {
+	if e == nil || e.Policies == nil || permission == "" || resource == "" {
+		return false, nil
+	}
+	chain, err := e.policyChain(resource)
+	if err != nil {
+		return false, err
+	}
+	for _, res := range chain {
+		ok, err := e.evaluateExactMemberOnResource("allUsers", permission, res)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// EvaluateAllUsersAny is EvaluateAllUsers across any of the resources.
+func (e *Evaluator) EvaluateAllUsersAny(permission string, resources ...string) (bool, error) {
+	if e == nil {
+		return false, nil
+	}
+	for _, resource := range resources {
+		if resource == "" {
+			continue
+		}
+		ok, err := e.EvaluateAllUsers(permission, resource)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// AllowPrincipalOrAllUsers allows when a principal is granted permission, or when
+// unauthenticated allUsers is granted (anonymous dataplane).
+func (e *Evaluator) AllowPrincipalOrAllUsers(principalEmail string, isRoot, hasPrincipal bool, permission string, resources ...string) (bool, error) {
+	if hasPrincipal {
+		return e.EvaluateAny(principalEmail, isRoot, permission, resources...)
+	}
+	return e.EvaluateAllUsersAny(permission, resources...)
+}
+
+func (e *Evaluator) evaluateExactMemberOnResource(member, permission, resource string) (bool, error) {
+	raw, ok, err := e.Policies.GetIAMPolicyJSON(resource)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	var pol Policy
+	if err := json.Unmarshal(raw, &pol); err != nil {
+		return false, fmt.Errorf("parse iam policy for %s: %w", resource, err)
+	}
+	for _, b := range pol.Bindings {
+		if !exactMemberIn(b.Members, member) {
+			continue
+		}
+		if !e.conditionAllows(b) {
+			continue
+		}
+		ok, err := e.roleGrants(b.Role, permission)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func exactMemberIn(members []string, want string) bool {
+	for _, m := range members {
+		if m == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestIamPermissions returns the subset of permissions granted to the principal.
 func (e *Evaluator) TestIamPermissions(principalEmail string, isRoot bool, resource string, permissions []string) ([]string, error) {
 	out := make([]string, 0, len(permissions))
@@ -268,8 +360,17 @@ func memberIdentity(email string) string {
 }
 
 func memberIn(members []string, want string) bool {
+	// Identity Toolkit principals (user:...) match only exact member bindings.
+	// They must not satisfy allAuthenticatedUsers / allUsers project grants.
+	toolkitPrincipal := strings.HasPrefix(want, "user:")
 	for _, m := range members {
-		if m == want || m == "allUsers" || m == "allAuthenticatedUsers" {
+		if m == want {
+			return true
+		}
+		if toolkitPrincipal {
+			continue
+		}
+		if m == "allUsers" || m == "allAuthenticatedUsers" {
 			return true
 		}
 	}
@@ -294,11 +395,9 @@ func (e *Evaluator) roleGrants(role, permission string) (bool, error) {
 	case "roles/viewer":
 		return viewerGrants(permission), nil
 	case "roles/iam.securityAdmin":
-		return strings.HasPrefix(permission, "iam.") ||
-			strings.HasPrefix(permission, "resourcemanager.projects."), nil
+		return securityAdminGrants(permission), nil
 	case "roles/iam.serviceAccountAdmin":
-		return strings.HasPrefix(permission, "iam.serviceAccounts.") ||
-			strings.HasPrefix(permission, "iam.serviceAccountKeys."), nil
+		return serviceAccountAdminGrants(permission), nil
 	case "roles/iam.serviceAccountTokenCreator":
 		return tokenCreatorGrants(permission), nil
 	case "roles/serviceusage.serviceUsageAdmin":
@@ -332,6 +431,13 @@ func (e *Evaluator) roleGrants(role, permission string) (bool, error) {
 			permission == "cloudkms.cryptoKeys.get", nil
 	case "roles/cloudkms.cryptoKeyDecrypter":
 		return permission == "cloudkms.cryptoKeyVersions.useToDecrypt" ||
+			permission == "cloudkms.cryptoKeys.get", nil
+	case "roles/cloudkms.signer", "roles/cloudkms.signerVerifier":
+		return permission == "cloudkms.cryptoKeyVersions.useToSign" ||
+			permission == "cloudkms.cryptoKeyVersions.viewPublicKey" ||
+			permission == "cloudkms.cryptoKeys.get", nil
+	case "roles/cloudkms.publicKeyViewer":
+		return permission == "cloudkms.cryptoKeyVersions.viewPublicKey" ||
 			permission == "cloudkms.cryptoKeys.get", nil
 	default:
 		if isCustomRoleName(role) {
@@ -382,58 +488,6 @@ func isCustomRoleName(role string) bool {
 // An empty map means unknown roles/xyz.* fail closed with no prefix shortcut.
 var labPredefinedServicePrefixes = map[string]bool{}
 
-func evalRequestTimeCEL(expr string, now time.Time) bool {
-	expr = strings.TrimSpace(expr)
-	if expr == "" {
-		return true
-	}
-	parts := strings.Split(expr, "&&")
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if !evalRequestTimeClause(p, now) {
-			return false
-		}
-	}
-	return true
-}
-
-func evalRequestTimeClause(clause string, now time.Time) bool {
-	clause = strings.TrimSpace(clause)
-	ops := []string{"<=", ">=", "<", ">"}
-	for _, op := range ops {
-		needle := "request.time " + op + " timestamp("
-		idx := strings.Index(strings.ToLower(clause), strings.ToLower(needle))
-		if idx < 0 {
-			continue
-		}
-		rest := strings.TrimSpace(clause[idx+len(needle):])
-		rest = strings.TrimPrefix(rest, `"`)
-		end := strings.Index(rest, `"`)
-		if end <= 0 {
-			return false
-		}
-		raw := rest[:end]
-		ts, err := time.Parse(time.RFC3339, raw)
-		if err != nil {
-			ts, err = time.Parse(time.RFC3339Nano, raw)
-			if err != nil {
-				return false
-			}
-		}
-		switch op {
-		case "<":
-			return now.Before(ts)
-		case ">":
-			return now.After(ts)
-		case "<=":
-			return now.Before(ts) || now.Equal(ts)
-		case ">=":
-			return now.After(ts) || now.Equal(ts)
-		}
-	}
-	return false
-}
-
 // tokenCreatorGrants mirrors roles/iam.serviceAccountTokenCreator (impersonation).
 func tokenCreatorGrants(permission string) bool {
 	switch permission {
@@ -446,6 +500,78 @@ func tokenCreatorGrants(permission string) bool {
 		"iam.serviceAccounts.generateIdToken":
 		return true
 	default:
+		return false
+	}
+}
+
+// serviceAccountAdminGrants mirrors roles/iam.serviceAccountAdmin: manage SAs and
+// keys without TokenCreator / actAs / mint / sign permissions.
+func serviceAccountAdminGrants(permission string) bool {
+	switch permission {
+	case "iam.serviceAccounts.create",
+		"iam.serviceAccounts.delete",
+		"iam.serviceAccounts.disable",
+		"iam.serviceAccounts.enable",
+		"iam.serviceAccounts.get",
+		"iam.serviceAccounts.getIamPolicy",
+		"iam.serviceAccounts.list",
+		"iam.serviceAccounts.setIamPolicy",
+		"iam.serviceAccounts.undelete",
+		"iam.serviceAccounts.update",
+		"iam.serviceAccountKeys.create",
+		"iam.serviceAccountKeys.delete",
+		"iam.serviceAccountKeys.disable",
+		"iam.serviceAccountKeys.enable",
+		"iam.serviceAccountKeys.get",
+		"iam.serviceAccountKeys.list":
+		return true
+	default:
+		return false
+	}
+}
+
+// securityAdminGrants mirrors roles/iam.securityAdmin: IAM policy and role admin
+// without TokenCreator / actAs / mint / sign permissions.
+func securityAdminGrants(permission string) bool {
+	switch permission {
+	case "iam.roles.create",
+		"iam.roles.delete",
+		"iam.roles.get",
+		"iam.roles.list",
+		"iam.roles.undelete",
+		"iam.roles.update",
+		"iam.serviceAccounts.get",
+		"iam.serviceAccounts.list",
+		"iam.serviceAccounts.getIamPolicy",
+		"iam.serviceAccounts.setIamPolicy",
+		"iam.serviceAccountKeys.get",
+		"iam.serviceAccountKeys.list",
+		"iam.workloadIdentityPools.create",
+		"iam.workloadIdentityPools.delete",
+		"iam.workloadIdentityPools.get",
+		"iam.workloadIdentityPools.list",
+		"iam.workloadIdentityPools.update",
+		"iam.workloadIdentityPoolProviders.create",
+		"iam.workloadIdentityPoolProviders.delete",
+		"iam.workloadIdentityPoolProviders.get",
+		"iam.workloadIdentityPoolProviders.list",
+		"iam.workloadIdentityPoolProviders.update",
+		"resourcemanager.projects.get",
+		"resourcemanager.projects.list",
+		"resourcemanager.projects.getIamPolicy",
+		"resourcemanager.projects.setIamPolicy",
+		"resourcemanager.folders.get",
+		"resourcemanager.folders.getIamPolicy",
+		"resourcemanager.folders.setIamPolicy",
+		"resourcemanager.organizations.get",
+		"resourcemanager.organizations.getIamPolicy",
+		"resourcemanager.organizations.setIamPolicy":
+		return true
+	default:
+		// Cross-service IAM policy admin without impersonation wildcards.
+		if strings.HasSuffix(permission, ".getIamPolicy") || strings.HasSuffix(permission, ".setIamPolicy") {
+			return true
+		}
 		return false
 	}
 }

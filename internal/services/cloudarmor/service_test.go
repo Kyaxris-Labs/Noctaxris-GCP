@@ -140,6 +140,78 @@ func TestSecurityPoliciesCRUDAndByteMatchValidate(t *testing.T) {
 	}
 }
 
+func TestSecurityPoliciesCELValidate(t *testing.T) {
+	mux, project := armorMux(t)
+	base := "/compute/v1/projects/" + project + "/global/securityPolicies"
+
+	req := httptest.NewRequest(http.MethodPost, base, bytes.NewReader([]byte(`{"name":"cel-armor"}`)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("insert status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rule := `{
+		"priority": 500,
+		"action": "deny(403)",
+		"preview": false,
+		"match": {
+			"expr": {
+				"expression": "request.path == \"/secret\" && request.headers[\"x-lab\"] == \"1\""
+			}
+		}
+	}`
+	req = httptest.NewRequest(http.MethodPost, base+"/cel-armor/addRule", bytes.NewReader([]byte(rule)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("addRule status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, base+"/cel-armor:validate",
+		bytes.NewReader([]byte(`{"uriPath":"/secret","headers":{"x-lab":"1"}}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("validate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var result map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &result)
+	if result["allowed"] != false || result["matched"] != true {
+		t.Fatalf("expected CEL deny match: %#v", result)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, base+"/cel-armor:validate",
+		bytes.NewReader([]byte(`{"uriPath":"/secret","headers":{"x-lab":"0"}}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &result)
+	if result["allowed"] != true {
+		t.Fatalf("expected default allow when CEL non-match: %#v", result)
+	}
+
+	emptyRule := `{
+		"priority": 400,
+		"action": "deny(403)",
+		"preview": false,
+		"match": {"expr": {"expression": ""}}
+	}`
+	req = httptest.NewRequest(http.MethodPost, base+"/cel-armor/addRule", bytes.NewReader([]byte(emptyRule)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty expr addRule status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, base+"/cel-armor:validate",
+		bytes.NewReader([]byte(`{"uriPath":"/anything"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &result)
+	if result["allowed"] != false || result["matched"] != true {
+		t.Fatalf("empty CEL expr must match (fail closed deny rule): %#v", result)
+	}
+}
+
 func TestSecurityPoliciesAuthzUnauthenticated(t *testing.T) {
 	dir := t.TempDir()
 	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))

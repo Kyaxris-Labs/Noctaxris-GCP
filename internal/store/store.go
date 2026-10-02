@@ -177,6 +177,7 @@ func (s *Store) ensureDataColumns() error {
 		`ALTER TABLE appengine_services ADD COLUMN migrate_traffic INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE eventarc_triggers ADD COLUMN service_account TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE wif_providers ADD COLUMN allowed_audiences_json TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE wif_providers ADD COLUMN attribute_condition TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE gce_instances ADD COLUMN numeric_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE lb_backend_services ADD COLUMN security_policy TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE log_sinks ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
@@ -364,6 +365,12 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 		"aiplatform.googleapis.com",
 		"container.googleapis.com",
 		"managedkafka.googleapis.com",
+		"containeranalysis.googleapis.com",
+		"binaryauthorization.googleapis.com",
+		"cloudasset.googleapis.com",
+		"securitycenter.googleapis.com",
+		"orgpolicy.googleapis.com",
+		"accesscontextmanager.googleapis.com",
 	}
 	for _, svc := range wave1 {
 		if _, err := tx.Exec(

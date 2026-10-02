@@ -207,9 +207,18 @@ func TestCloudFunctionsCreateWiresEventarcAndPubSubInvoke(t *testing.T) {
 		t.Fatalf("transport=%s", trig.TransportJSON)
 	}
 
+	fnName := "projects/" + project + "/locations/" + loc + "/functions/evt-fn"
+	if err := st.PutIAMPolicyJSON(fnName, authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/cloudfunctions.invoker",
+			Members: []string{"allUsers"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	st.DeliverEventarcForPubSub(topic, []byte("hello-fn"), map[string]string{"k": "v"})
 	invokes := store.ListCloudFunctionInvokes()
-	fnName := "projects/" + project + "/locations/" + loc + "/functions/evt-fn"
 	found := false
 	for _, inv := range invokes {
 		if inv.Function == fnName && (bytes.Contains([]byte(inv.Body), []byte("hello-fn")) ||
@@ -244,9 +253,18 @@ func TestCloudFunctionsEventarcGCSFinalizeInvoke(t *testing.T) {
 		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
+	fnName := "projects/" + project + "/locations/" + loc + "/functions/gcs-fn"
+	if err := st.PutIAMPolicyJSON(fnName, authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/cloudfunctions.invoker",
+			Members: []string{"allUsers"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	st.DeliverEventarcForGCSFinalize(bucket, "obj.txt", 1, 4, "text/plain")
 	invokes := store.ListCloudFunctionInvokes()
-	fnName := "projects/" + project + "/locations/" + loc + "/functions/gcs-fn"
 	found := false
 	for _, inv := range invokes {
 		if inv.Function == fnName && bytes.Contains([]byte(inv.Body), []byte("finalized")) {
@@ -271,6 +289,14 @@ func TestEventarcCloudFunctionDestinationObjectShape(t *testing.T) {
 	})
 	if err != nil || !created {
 		t.Fatalf("create fn: created=%v err=%v", created, err)
+	}
+	if err := st.PutIAMPolicyJSON(fnName, authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/cloudfunctions.invoker",
+			Members: []string{"allUsers"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
 	}
 	dest := `{"cloudFunction":{"service":"obj-fn","region":"` + loc + `"}}`
 	_, created, err = st.CreateEventarcTrigger(store.EventarcTrigger{

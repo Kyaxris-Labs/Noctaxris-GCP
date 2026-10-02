@@ -70,7 +70,7 @@ func TestWIFUpdateAndListDeleted(t *testing.T) {
 	if err != nil || len(list) < 1 {
 		t.Fatalf("list=%v", list)
 	}
-	prov, err := st.CreateWIFProvider(pool.Name, "oidc1", "OIDC", "d", "https://example.com", `{"google.subject":"assertion.sub"}`, `["aud"]`, false)
+	prov, err := st.CreateWIFProvider(pool.Name, "oidc1", "OIDC", "d", "https://example.com", `{"google.subject":"assertion.sub"}`, "", `["aud"]`, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +82,8 @@ func TestWIFUpdateAndListDeleted(t *testing.T) {
 	if err != nil || len(provs) < 1 {
 		t.Fatalf("provs=%v", provs)
 	}
-	updated, ok, err := st.UpdateWIFProvider(prov.Name, "OIDC2", "d2", "https://example.com/2", `{"google.subject":"assertion.sub"}`, `["aud2"]`, false,
-		true, true, true, true, true, false)
+	updated, ok, err := st.UpdateWIFProvider(prov.Name, "OIDC2", "d2", "https://example.com/2", `{"google.subject":"assertion.sub"}`, "", `["aud2"]`, false,
+		true, true, true, true, false, true, false)
 	if err != nil || !ok || updated.DisplayName != "OIDC2" {
 		t.Fatalf("update %#v ok=%v err=%v", updated, ok, err)
 	}

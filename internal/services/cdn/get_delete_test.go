@@ -56,14 +56,14 @@ func TestCDNGetDeleteAndHeadEdge(t *testing.T) {
 		t.Fatalf("get: %d %s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodHead, "/cdn/d1/y.txt", nil)
+	req = httptest.NewRequest(http.MethodHead, "/cdn/"+project+"/d1/y.txt", nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("head edge: %d %s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/cdn/d1/missing.txt", nil)
+	req = httptest.NewRequest(http.MethodGet, "/cdn/"+project+"/d1/missing.txt", nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound && rec.Code != http.StatusOK {

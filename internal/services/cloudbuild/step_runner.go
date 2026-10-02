@@ -44,6 +44,7 @@ type EngineRunner struct {
 // authzEvaluator is the subset of authz.Evaluator used for build-SA Secret Manager access.
 type authzEvaluator interface {
 	Evaluate(principalEmail string, isRoot bool, permission, resource string) (bool, error)
+	EvaluateAny(principalEmail string, isRoot bool, permission string, resources ...string) (bool, error)
 }
 
 var httpURLRe = regexp.MustCompile(`https?://[^\s"'\\<>]+`)
@@ -212,7 +213,7 @@ func parseAvailableSecrets(buildJSON string) []secretManagerBinding {
 // resolveStepSecrets loads Secret Manager values referenced by step secretEnv.
 // Matches real Cloud Build: availableSecrets only maps names; a step must list
 // secretEnv to receive them. Access is authorized as the build service account
-// (secretmanager.versions.access on the secret resource).
+// (secretmanager.versions.access on the secret resource or project).
 func (r *EngineRunner) resolveStepSecrets(buildJSON string, steps []BuildStep, buildSA string) (map[string]string, error) {
 	needed := map[string]struct{}{}
 	for _, step := range steps {
@@ -263,7 +264,12 @@ func (r *EngineRunner) requireBuildSASecretAccess(buildSA, secretName string) er
 		// Fail closed when Authz is unset outside tests that inject secrets without IAM.
 		return fmt.Errorf("secretmanager.versions.access denied for %s on %s", buildSA, secretName)
 	}
-	ok, err := r.Authz.Evaluate(buildSA, false, "secretmanager.versions.access", secretName)
+	// Match Secret Manager handlers: secret resource OR project-level grant (EvaluateAny).
+	resources := []string{secretName}
+	if project := projectIDFromResourceName(secretName); project != "" {
+		resources = append(resources, "projects/"+project)
+	}
+	ok, err := r.Authz.EvaluateAny(buildSA, false, "secretmanager.versions.access", resources...)
 	if err != nil {
 		return err
 	}
@@ -271,6 +277,15 @@ func (r *EngineRunner) requireBuildSASecretAccess(buildSA, secretName string) er
 		return fmt.Errorf("secretmanager.versions.access denied for %s on %s", buildSA, secretName)
 	}
 	return nil
+}
+
+// projectIDFromResourceName extracts projects/{id}/... project id.
+func projectIDFromResourceName(name string) string {
+	parts := strings.Split(strings.TrimSpace(name), "/")
+	if len(parts) >= 2 && parts[0] == "projects" && parts[1] != "" {
+		return parts[1]
+	}
+	return ""
 }
 
 // withSecretEnv injects Secret Manager values listed in step.secretEnv only

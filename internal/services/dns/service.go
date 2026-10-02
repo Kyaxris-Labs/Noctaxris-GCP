@@ -13,6 +13,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -98,6 +99,9 @@ func (s *Service) createZone(w http.ResponseWriter, r *http.Request, p authn.Pri
 	project := r.PathValue("project")
 	if err := s.require(p, "dns.managedZones.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "dns.googleapis.com") {
 		return
 	}
 	var body map[string]any

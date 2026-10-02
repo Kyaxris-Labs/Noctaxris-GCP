@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
@@ -34,9 +35,19 @@ func TestLoadBalancingInvokeGCS(t *testing.T) {
 	if _, err := st.PutObjectBytes("cdn-bucket", "static/hello.txt", "text/plain", []byte("lb-ok")); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.PutIAMPolicyJSON(store.BucketIAMResource("cdn-bucket"), authz.Policy{
+		Bindings: []authz.Binding{{
+			Role: "roles/storage.objectViewer", Members: []string{"allUsers"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	mux := http.NewServeMux()
 	principal := func(r *http.Request) (authn.Principal, bool) {
+		if strings.HasPrefix(r.URL.Path, "/lb/") {
+			return authn.Principal{}, false
+		}
 		return authn.Principal{Email: "root@noctaxris-gcp-local.iam.gserviceaccount.com", IsRoot: true}, true
 	}
 	lb := &loadbalancing.Service{Store: st, Authz: &authz.Evaluator{Policies: st}}

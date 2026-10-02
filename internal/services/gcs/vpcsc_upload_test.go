@@ -126,7 +126,7 @@ func TestVPCSCGCSUploadWIFOtherProjectDenies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "[]", false); err != nil {
+	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "", "[]", false); err != nil {
 		t.Fatal(err)
 	}
 	email := "wif:oidc-lab:alice"
@@ -144,7 +144,7 @@ func TestVPCSCGCSUploadWIFSameProjectAllows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "[]", false); err != nil {
+	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "", "[]", false); err != nil {
 		t.Fatal(err)
 	}
 	email := "wif:oidc-lab:alice"
@@ -162,7 +162,7 @@ func TestVPCSCGCSUploadRootSkipsCallerCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "[]", false); err != nil {
+	if _, err := f.st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "", "[]", false); err != nil {
 		t.Fatal(err)
 	}
 	f.who = authn.Principal{Email: "wif:oidc-lab:alice", IsRoot: true}

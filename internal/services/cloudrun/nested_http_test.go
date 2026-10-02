@@ -134,6 +134,12 @@ func TestNestedRunCreateSetsURIAndServesPublicRoute(t *testing.T) {
 		t.Fatalf("nested row=%#v", stored)
 	}
 
+	name := "projects/noctaxris-gcp-local/locations/us-central1/services/web"
+	if err := st.PutIAMPolicyJSON(name, authz.Policy{
+		Bindings: []authz.Binding{{Role: "roles/run.invoker", Members: []string{"allUsers"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/run/noctaxris-gcp-local/us-central1/web/some/page", nil)
 	req.Header.Set("Authorization", "Bearer lab-secret")
 	rec = httptest.NewRecorder()
@@ -228,6 +234,7 @@ func TestNestedRunSkippedForLabResponseBodyAndImageOnly(t *testing.T) {
 		t.Fatalf("no nested start expected, got %#v", eng.started)
 	}
 	rec := doJSON(mux, http.MethodGet, "/run/noctaxris-gcp-local/us-central1/lab/", "")
+	// Root test principal passes Invoker; labResponseBody has no nested target → 404.
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("public route without nested must 404, got %d", rec.Code)
 	}

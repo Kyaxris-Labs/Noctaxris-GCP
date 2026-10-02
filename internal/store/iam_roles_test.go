@@ -123,3 +123,36 @@ func TestCustomRoleDeleteBlocksCreateUntilUndelete(t *testing.T) {
 		t.Fatalf("grants after undelete: ok=%v perms=%v err=%v", ok, perms, err)
 	}
 }
+
+func TestCustomRoleDisabledStageDoesNotGrant(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	const project = "noctaxris-gcp-local"
+	created, err := st.CreateCustomRole(project, "disabledLister", "Disabled", "", "GA",
+		[]string{"storage.buckets.list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.GetRoleIncludedPermissions(created.Name); err != nil || !ok {
+		t.Fatalf("GA role should grant: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := st.UpdateCustomRole(created.Name, "", "", "DISABLED", nil, false, false, true, false); err != nil || !ok {
+		t.Fatalf("disable stage: ok=%v err=%v", ok, err)
+	}
+	perms, ok, err := st.GetRoleIncludedPermissions(created.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || len(perms) != 0 {
+		t.Fatalf("DISABLED stage must not grant: ok=%v perms=%v", ok, perms)
+	}
+}

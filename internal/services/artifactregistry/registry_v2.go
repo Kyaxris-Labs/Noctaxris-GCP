@@ -342,11 +342,12 @@ func (s *Service) upsertRegistryMetadata(imageName, reference, digest string) er
 
 func (s *Service) requireRegistry(p authn.Principal, imageName string, push bool) error {
 	project := s.registryProject(imageName)
+	repoID, _ := splitRegistryImage(imageName, project)
 	perms := registryPullPerms
 	if push {
 		perms = registryPushPerms
 	}
-	return s.requireAny(p, project, perms...)
+	return s.requireAnyRepo(p, project, DefaultLocation, repoID, perms...)
 }
 
 func (s *Service) registryProject(imageName string) string {

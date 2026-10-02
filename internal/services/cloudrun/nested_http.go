@@ -18,6 +18,7 @@ import (
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/compute"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -51,11 +52,14 @@ func (s *Service) engineEnabled() bool {
 	return s.Engine != nil && s.Engine.Enabled()
 }
 
-// mountRunProxy registers the browser-facing nested HTTP route. It is public
-// (no Bearer): authn.IsPublicPath admits the /run/ prefix. Only services with a
-// running nested container are reachable. :invoke keeps IAM.
-func (s *Service) mountRunProxy(mux *http.ServeMux) {
-	mux.HandleFunc(runProxyPrefix+"{project}/{location}/{service}/{path...}", s.handleRunProxy)
+// mountRunProxy registers the browser-facing nested HTTP route. Middleware may
+// skip required Bearer (IsPublicPath), but Invoker is still enforced here
+// (principal or allUsers). Only services with a running nested container are
+// reachable. :invoke keeps the same IAM check.
+func (s *Service) mountRunProxy(mux *http.ServeMux, principalFrom principalFunc) {
+	mux.HandleFunc(runProxyPrefix+"{project}/{location}/{service}/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		s.handleRunProxy(w, r, principalFrom)
+	})
 	mux.HandleFunc(runProxyPrefix+"{project}/{location}/{service}", func(w http.ResponseWriter, r *http.Request) {
 		target := r.URL.Path + "/"
 		if r.URL.RawQuery != "" {
@@ -65,8 +69,13 @@ func (s *Service) mountRunProxy(mux *http.ServeMux) {
 	})
 }
 
-func (s *Service) handleRunProxy(w http.ResponseWriter, r *http.Request) {
-	name := serviceName(r.PathValue("project"), r.PathValue("location"), r.PathValue("service"))
+func (s *Service) handleRunProxy(w http.ResponseWriter, r *http.Request, principalFrom principalFunc) {
+	project := r.PathValue("project")
+	name := serviceName(project, r.PathValue("location"), r.PathValue("service"))
+	if err := s.requireRunInvoker(r, principalFrom, name, project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
 	svc, ok, err := s.Store.GetRunService(name)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -77,6 +86,24 @@ func (s *Service) handleRunProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.proxyNested(w, r, svc, r.PathValue("path"))
+}
+
+// requireRunInvoker requires run.routes.invoke on the service or project.
+// Authenticated callers use EvaluateAny; anonymous callers need allUsers Invoker.
+func (s *Service) requireRunInvoker(r *http.Request, principalFrom principalFunc, name, project string) error {
+	var p authn.Principal
+	var hasP bool
+	if principalFrom != nil {
+		p, hasP = principalFrom(r)
+	}
+	ok, err := s.Authz.AllowPrincipalOrAllUsers(p.Email, p.IsRoot, hasP, "run.routes.invoke", name, "projects/"+project)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errDenied
+	}
+	return nil
 }
 
 // proxyNested reverse-proxies r to the service nested container at /{path}.

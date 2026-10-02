@@ -244,7 +244,7 @@ func TestProjectIDFromPrincipalEmailWIF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "[]", false); err != nil {
+	if _, err := st.CreateWIFProvider(pool.Name, "oidc-lab", "", "", "", "{}", "", "[]", false); err != nil {
 		t.Fatal(err)
 	}
 	got, err = st.ProjectIDFromPrincipalEmail("wif:oidc-lab:alice")

@@ -30,8 +30,12 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /v1/projects/{project}/global/distributions/{distribution}", s.wrap(principalFrom, s.getDistribution))
 	mux.HandleFunc("DELETE /v1/projects/{project}/global/distributions/{distribution}", s.wrap(principalFrom, s.deleteDistribution))
 
-	mux.HandleFunc("GET /cdn/{id}/{path...}", s.handleEdge)
-	mux.HandleFunc("HEAD /cdn/{id}/{path...}", s.handleEdge)
+	mux.HandleFunc("GET /cdn/{project}/{id}/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		s.handleEdge(w, r, principalFrom)
+	})
+	mux.HandleFunc("HEAD /cdn/{project}/{id}/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		s.handleEdge(w, r, principalFrom)
+	})
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -202,15 +206,20 @@ func (s *Service) deleteDistribution(w http.ResponseWriter, r *http.Request, p a
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
-func (s *Service) handleEdge(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleEdge(w http.ResponseWriter, r *http.Request, principalFrom principalFunc) {
+	project := r.PathValue("project")
 	distID := r.PathValue("id")
 	objectPath := strings.TrimPrefix(r.PathValue("path"), "/")
-	d, ok, err := s.Store.GetCDNDistributionByEdgeID(distID)
+	d, ok, err := s.Store.GetCDNDistributionByID(project, distID)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	if !ok {
+	if !ok || !d.Enabled {
+		gcperrors.NotFound(w, "distribution not found")
+		return
+	}
+	if d.ProjectID != project {
 		gcperrors.NotFound(w, "distribution not found")
 		return
 	}
@@ -221,17 +230,17 @@ func (s *Service) handleEdge(w http.ResponseWriter, r *http.Request) {
 	switch d.OriginType {
 	case "lb":
 		lbOrigin, _ := origin["lb"].(map[string]any)
-		project, _ := lbOrigin["project"].(string)
+		lbProject, _ := lbOrigin["project"].(string)
 		rule, _ := lbOrigin["forwardingRule"].(string)
-		if project == "" || rule == "" {
+		if lbProject == "" || rule == "" {
 			gcperrors.InvalidArgument(w, "lb origin requires project and forwardingRule")
 			return
 		}
 		if s.LBInvoke != nil {
-			s.LBInvoke(w, r, project, rule, objectPath)
+			s.LBInvoke(w, r, lbProject, rule, objectPath)
 			return
 		}
-		fr, ok, err := s.Store.GetLBForwardingRuleByID(project, "global", rule)
+		fr, ok, err := s.Store.GetLBForwardingRuleByID(lbProject, "global", rule)
 		if err != nil || !ok {
 			gcperrors.NotFound(w, "forwarding rule not found")
 			return
@@ -246,7 +255,7 @@ func (s *Service) handleEdge(w http.ResponseWriter, r *http.Request) {
 			gcperrors.NotFound(w, "backend service not found")
 			return
 		}
-		serveGCSFromCDN(w, r, s.Store, bs.BackendsJSON, objectPath)
+		serveGCSFromCDN(w, r, s.Store, s.Authz, principalFrom, bs.BackendsJSON, objectPath)
 	case "gcs", "":
 		gcsOrigin, _ := origin["gcs"].(map[string]any)
 		bucket, _ := gcsOrigin["bucket"].(string)
@@ -256,7 +265,7 @@ func (s *Service) handleEdge(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		backendsJSON := fmt.Sprintf(`[{"gcsBucket":%q,"objectPrefix":%q}]`, bucket, prefix)
-		serveGCSFromCDN(w, r, s.Store, backendsJSON, objectPath)
+		serveGCSFromCDN(w, r, s.Store, s.Authz, principalFrom, backendsJSON, objectPath)
 	default:
 		gcperrors.InvalidArgument(w, "unsupported origin type")
 	}
@@ -284,10 +293,35 @@ func lbSvcResolveBackend(st *store.Store, target string) (string, error) {
 	return "", fmt.Errorf("unsupported target")
 }
 
-func serveGCSFromCDN(w http.ResponseWriter, r *http.Request, st *store.Store, backendsJSON, objectPath string) {
+func serveGCSFromCDN(w http.ResponseWriter, r *http.Request, st *store.Store, eval *authz.Evaluator, principalFrom principalFunc, backendsJSON, objectPath string) {
 	bucket, prefix, ok := store.ParseGCSOriginFromBackends(backendsJSON)
 	if !ok {
 		gcperrors.NotFound(w, "no GCS origin")
+		return
+	}
+	projectID := ""
+	if b, found, err := st.GetBucket(bucket); err == nil && found {
+		projectID = b.ProjectID
+	}
+	var resources []string
+	if bucket != "" {
+		resources = append(resources, store.BucketIAMResource(bucket))
+	}
+	if projectID != "" {
+		resources = append(resources, "projects/"+projectID)
+	}
+	var p authn.Principal
+	var hasP bool
+	if principalFrom != nil {
+		p, hasP = principalFrom(r)
+	}
+	allowed, err := eval.AllowPrincipalOrAllUsers(p.Email, p.IsRoot, hasP, "storage.objects.get", resources...)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !allowed {
+		gcperrors.PermissionDenied(w, "")
 		return
 	}
 	objName := strings.TrimPrefix(objectPath, "/")
@@ -326,7 +360,7 @@ func toDistributionJSON(d store.CDNDistribution) map[string]any {
 		"id":         d.DistributionID,
 		"enabled":    d.Enabled,
 		"originType": d.OriginType,
-		"edgePath":   "/cdn/" + d.DistributionID + "/",
+		"edgePath":   "/cdn/" + d.ProjectID + "/" + d.DistributionID + "/",
 	}
 	if d.Description != "" {
 		out["description"] = d.Description

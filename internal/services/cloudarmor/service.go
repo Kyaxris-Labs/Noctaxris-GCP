@@ -13,6 +13,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/celutil"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -569,12 +570,50 @@ func ruleMatches(rule, sample map[string]any) (bool, string) {
 	}
 	if expr, ok := match["expr"].(map[string]any); ok {
 		expression, _ := expr["expression"].(string)
-		if strings.TrimSpace(expression) != "" {
-			// Lab theatre: non-empty CEL expressions do not evaluate; treat as non-match.
-			return false, "CEL expr not evaluated in lab"
+		attrs := armorRequestAttrs(sample)
+		if celutil.EvalArmorMatch(expression, attrs) {
+			return true, "matched CEL expr"
 		}
+		return false, "CEL expr non-match"
 	}
 	return false, "unsupported match"
+}
+
+// armorRequestAttrs maps :validate sample fields onto Cloud Armor CEL request.* vars.
+func armorRequestAttrs(sample map[string]any) map[string]any {
+	attrs := map[string]any{}
+	if sample == nil {
+		return attrs
+	}
+	path, _ := sample["uriPath"].(string)
+	if path == "" {
+		path, _ = sample["path"].(string)
+	}
+	host, _ := sample["host"].(string)
+	if host == "" {
+		if headers, _ := sample["headers"].(map[string]any); headers != nil {
+			if h, _ := headers["host"].(string); h != "" {
+				host = h
+			} else if h, _ := headers["Host"].(string); h != "" {
+				host = h
+			}
+		}
+	}
+	headers := map[string]any{}
+	switch h := sample["headers"].(type) {
+	case map[string]any:
+		for k, v := range h {
+			headers[strings.ToLower(k)] = v
+		}
+	case map[string]string:
+		for k, v := range h {
+			headers[strings.ToLower(k)] = v
+		}
+	}
+	attrs["path"] = path
+	attrs["host"] = host
+	attrs["headers"] = headers
+	return attrs
 }
 
 func byteMatchSetMatches(bms, sample map[string]any) (bool, string) {

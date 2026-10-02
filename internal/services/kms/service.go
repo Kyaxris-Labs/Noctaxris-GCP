@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +20,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -163,6 +163,9 @@ func splitAction(seg string) (name, action string) {
 func (s *Service) createKeyRing(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location string) {
 	if err := s.require(p, "cloudkms.keyRings.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "cloudkms.googleapis.com") {
 		return
 	}
 	keyRingID := r.URL.Query().Get("keyRingId")
@@ -569,17 +572,13 @@ func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 		writeAuthzErr(w, err)
 		return
 	}
+	// VPC-SC on decrypt is not skipped for root (lab perimeter tests use IsRoot with deny).
 	from, err := s.Store.ProjectIDFromPrincipalEmail(p.Email)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	if err := s.Store.VPCSCDenyCrossPerimeter(from, project, "cloudkms.googleapis.com"); err != nil {
-		if errors.Is(err, store.ErrVPCSCPerimeter) {
-			gcperrors.PermissionDenied(w, err.Error())
-			return
-		}
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+	if !restlab.RequireVPCSC(w, s.Store, from, project, "cloudkms.googleapis.com") {
 		return
 	}
 	k, ok, err := s.Store.GetKMSCryptoKey(keyName)
@@ -646,11 +645,11 @@ func (s *Service) decrypt(w http.ResponseWriter, r *http.Request, p authn.Princi
 }
 
 func (s *Service) getPublicKey(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
-	if err := s.require(p, "cloudkms.cryptoKeyVersions.viewPublicKey", project); err != nil {
+	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	if err := s.requireAny(p, "cloudkms.cryptoKeyVersions.viewPublicKey", keyName, "projects/"+project); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
-	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
 	k, ok, err := s.Store.GetKMSCryptoKey(keyName)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -706,11 +705,11 @@ func (s *Service) getPublicKey(w http.ResponseWriter, _ *http.Request, p authn.P
 }
 
 func (s *Service) asymmetricSign(w http.ResponseWriter, r *http.Request, p authn.Principal, project, location, keyRing, cryptoKey, version string) {
-	if err := s.require(p, "cloudkms.cryptoKeyVersions.useToSign", project); err != nil {
+	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
+	if err := s.requireAny(p, "cloudkms.cryptoKeyVersions.useToSign", keyName, "projects/"+project); err != nil {
 		writeAuthzErr(w, err)
 		return
 	}
-	keyName := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s", project, location, keyRing, cryptoKey)
 	k, ok, err := s.Store.GetKMSCryptoKey(keyName)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())

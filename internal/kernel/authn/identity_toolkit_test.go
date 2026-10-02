@@ -81,8 +81,29 @@ func TestIdentityToolkitReservedClaimsNotOverwritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Email != "uid-victim" {
-		t.Fatalf("principal email=%q", p.Email)
+	if p.Email != "user:uid-victim" {
+		t.Fatalf("principal email=%q want user:uid-victim", p.Email)
+	}
+}
+
+func TestIdentityToolkitNonEmailLocalIdNamespaced(t *testing.T) {
+	authn.SetIdentityToolkitHMACKeyForTest([]byte("test-identity-toolkit-hmac-key!!"))
+	// A wif:-shaped localId must not authenticate as a WIF principal.
+	localID := "wif:oidc-provider:subject-1"
+	tok, err := authn.MintIdentityToolkitIDToken("noctaxris-gcp-local", localID, "", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &authn.Authenticator{RootAccessToken: "root-token"}
+	p, err := a.AuthenticateToken(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Email != "user:"+localID {
+		t.Fatalf("email=%q want user: prefix", p.Email)
+	}
+	if p.Email == localID {
+		t.Fatal("raw wif: localId must not be the principal email")
 	}
 }
 

@@ -141,9 +141,10 @@ lab clock (`NOCTAXRIS_GCP_LAB_FORENSICS` freeze/set). Denies stay generic
 ### Workload Identity Federation + STS
 
 Pool/provider CRUD stores display name, description, disabled flag, OIDC
-`issuerUri`, `allowedAudiences`, and `attributeMapping` JSON. Provider PATCH
-supports `updateMask` for `displayName`, `description`, `disabled`,
-`attributeMapping`, `oidc.issuerUri`, and `oidc.allowedAudiences` (mask without
+`issuerUri`, `allowedAudiences`, `attributeMapping` JSON, and optional
+`attributeCondition` CEL. Provider PATCH supports `updateMask` for
+`displayName`, `description`, `disabled`, `attributeMapping`,
+`attributeCondition`, `oidc.issuerUri`, and `oidc.allowedAudiences` (mask without
 a body field is `InvalidArgument`; empty `allowedAudiences` in the body clears
 stored extras when the mask includes `oidc.allowedAudiences`). Soft-delete sets
 `state=DELETED`.
@@ -184,8 +185,17 @@ verifies:
 
 On success the lab returns `access_token`, `token_type=Bearer`, `expires_in=3600`,
 and registers the token as principal `wif:{providerId}:{subject}` where
-`subject` is a sanitized form of the subject (theatre: raw `subject_token`;
-verify: JWT `sub`; alnum/`-`/`_`/`.`; others become `-`; max 64 chars).
+`subject` comes from WIF CEL attribute mapping:
+
+1. Decode JWT payload claims as `assertion.*` (theatre: unverified compact JWT
+   payload when present; verify path uses signature-checked claims).
+2. Evaluate optional `attributeCondition` (empty allows; false or eval error
+   fails closed as `invalid subject_token`).
+3. Evaluate `attributeMapping` with cel-go. Non-empty mapping must produce
+   `google.subject`. Empty mapping falls back to `assertion.sub` when present,
+   else the theatre-sanitized `subject_token`.
+4. Sanitize the subject (alnum/`-`/`_`/`.`; others become `-`; max 64 chars).
+
 Unknown, deleted, or disabled pools/providers fail closed (`UNAUTHENTICATED`).
 Bind that principal on CRM/IAM policies using the literal member string
 `wif:{providerId}:{subject}` (the evaluator does not rewrite it to

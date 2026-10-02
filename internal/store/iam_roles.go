@@ -122,10 +122,14 @@ func (s *Store) GetCustomRole(name string) (CustomRole, bool, error) {
 }
 
 // GetRoleIncludedPermissions implements authz.RoleStore for active (non-deleted) custom roles.
+// Roles with stage DISABLED do not grant (ok=false).
 func (s *Store) GetRoleIncludedPermissions(roleName string) ([]string, bool, error) {
 	r, ok, err := s.GetCustomRole(roleName)
 	if err != nil || !ok || r.Deleted {
 		return nil, false, err
+	}
+	if strings.EqualFold(strings.TrimSpace(r.Stage), "DISABLED") {
+		return nil, false, nil
 	}
 	return append([]string(nil), r.IncludedPermissions...), true, nil
 }

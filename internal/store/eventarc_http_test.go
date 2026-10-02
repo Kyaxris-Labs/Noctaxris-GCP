@@ -3,6 +3,7 @@ package store_test
 import (
 	"testing"
 
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -19,6 +20,14 @@ func TestEventarcCloudFunctionNameObjectDestination(t *testing.T) {
 		Name: fnName, ProjectID: project, Location: loc, FunctionID: "http-fn", State: "ACTIVE",
 	}); err != nil || !created {
 		t.Fatalf("fn: %v %v", created, err)
+	}
+	if err := st.PutIAMPolicyJSON(fnName, authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/cloudfunctions.invoker",
+			Members: []string{"allUsers"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
 	}
 	_, created, err := st.CreateEventarcTrigger(store.EventarcTrigger{
 		ProjectID: project, Location: loc, TriggerID: "http-ea",

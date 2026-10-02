@@ -5,7 +5,7 @@ headers while reading from lab GCS or an HTTP(S) LB forwarding rule.
 
 ## Status
 
-**lab** — distributions CRUD; edge `GET /cdn/{distributionId}/{objectPath...}`.
+**lab** — distributions CRUD; edge `GET /cdn/{project}/{distributionId}/{objectPath...}` (project-bound; GCS origin requires `storage.objects.get` via principal or `allUsers`).
 
 ## Wire protocol
 
@@ -22,7 +22,7 @@ Edge (public on loopback):
 
 | Method | Path |
 |--------|------|
-| `GET` / `HEAD` | `/cdn/{distributionId}/{objectPath...}` |
+| `GET` / `HEAD` | `/cdn/{project}/{distributionId}/{objectPath...}` |
 
 Origin examples:
 
@@ -60,7 +60,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   -d '{"origin":{"gcs":{"bucket":"edge-bucket","objectPrefix":"assets"}}}'
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/global/distributions"
-curl -s "http://127.0.0.1:4588/cdn/lab-cdn/app.js"
+curl -s "http://127.0.0.1:4588/cdn/noctaxris-gcp-local/lab-cdn/app.js"
 ```
 
-Edge is the shared API listener only (`http://127.0.0.1:4588/cdn/...`); no separate host port.
+Edge is the shared API listener only (`http://127.0.0.1:4588/cdn/{project}/...`); no separate host port. GCS origins need `storage.objects.get`.

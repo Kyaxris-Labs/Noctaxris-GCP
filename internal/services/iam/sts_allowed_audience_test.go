@@ -50,7 +50,7 @@ func TestSTSVerifyAcceptsStoredAllowedAudience(t *testing.T) {
 		t.Fatal(err)
 	}
 	customAud := "https://my-service.example/audience"
-	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "{}", `["`+customAud+`"]`, false)
+	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "{}", "", `["`+customAud+`"]`, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestSTSVerifyAcceptsStoredAudienceInAudArray(t *testing.T) {
 		t.Fatal(err)
 	}
 	customAud := "https://svc.example/aud"
-	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "{}", `["`+customAud+`"]`, false)
+	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "{}", "", `["`+customAud+`"]`, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestSTSVerifyEmptyAllowedAudiencesOnlyProviderResourceAud(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "{}", "[]", false)
+	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "{}", "", "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestSTSVerifyIgnoresCrossOriginJWKSURI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "", "[]", false)
+	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "", "", "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestSTSVerifyIgnoresSameHostNonJWKSPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "", "[]", false)
+	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "", "", "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestSTSVerifyIgnoresCrossOriginJWKSURIHTTPNoFetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "", "[]", false)
+	prov, err := hh.store.CreateWIFProvider(pool.Name, "oidc", "OIDC", "", issuer, "", "", "[]", false)
 	if err != nil {
 		t.Fatal(err)
 	}

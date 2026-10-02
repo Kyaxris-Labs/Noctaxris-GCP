@@ -14,6 +14,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -59,7 +61,7 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("DELETE /v2/projects/{project}/locations/{location}/jobs/{job}", s.wrap(principalFrom, s.deleteJob))
 
 	s.mountKnative(mux, principalFrom)
-	s.mountRunProxy(mux)
+	s.mountRunProxy(mux, principalFrom)
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -129,11 +131,35 @@ func jobName(project, location, id string) string {
 	return fmt.Sprintf("projects/%s/locations/%s/jobs/%s", project, location, id)
 }
 
+// runTemplateServiceAccountEmail returns the runtime SA from a Run template,
+// defaulting to the project Compute Engine SA when omitted.
+func runTemplateServiceAccountEmail(template map[string]any, project string) string {
+	email := ""
+	if template != nil {
+		if v, _ := template["serviceAccount"].(string); strings.TrimSpace(v) != "" {
+			email = strings.TrimSpace(v)
+		} else if v, _ := template["serviceAccountName"].(string); strings.TrimSpace(v) != "" {
+			email = strings.TrimSpace(v)
+		}
+	}
+	const marker = "/serviceAccounts/"
+	if i := strings.LastIndex(email, marker); i >= 0 {
+		email = strings.TrimSpace(email[i+len(marker):])
+	}
+	if email == "" {
+		return labtoken.DefaultComputeSAEmail(project)
+	}
+	return email
+}
+
 func (s *Service) createService(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	project := r.PathValue("project")
 	location := r.PathValue("location")
 	if err := s.require(p, "run.services.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "run.googleapis.com") {
 		return
 	}
 	serviceID := r.URL.Query().Get("serviceId")
@@ -149,6 +175,9 @@ func (s *Service) createService(w http.ResponseWriter, r *http.Request, p authn.
 	template, _ := body["template"].(map[string]any)
 	if template == nil {
 		template = map[string]any{}
+	}
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, runTemplateServiceAccountEmail(template, project)) {
+		return
 	}
 	tplRaw, _ := json.Marshal(template)
 	if !s.admitTemplate(w, project, string(tplRaw)) {
@@ -265,6 +294,9 @@ func (s *Service) patchService(w http.ResponseWriter, r *http.Request, p authn.P
 	tplRaw := ""
 	labBody := ""
 	if template != nil {
+		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, runTemplateServiceAccountEmail(template, project)) {
+			return
+		}
 		b, _ := json.Marshal(template)
 		tplRaw = string(b)
 		if !s.admitTemplate(w, project, tplRaw) {
@@ -450,6 +482,9 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "run.googleapis.com") {
+		return
+	}
 	jobID := r.URL.Query().Get("jobId")
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -469,6 +504,9 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 	template, _ := body["template"].(map[string]any)
 	if template == nil {
 		template = map[string]any{}
+	}
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, runTemplateServiceAccountEmail(template, project)) {
+		return
 	}
 	tplRaw, _ := json.Marshal(template)
 	if !s.admitTemplate(w, project, string(tplRaw)) {

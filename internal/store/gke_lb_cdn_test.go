@@ -145,9 +145,13 @@ func TestGKEEdgeLBCDNRoundTrip(t *testing.T) {
 	if err != nil || !found {
 		t.Fatal(err)
 	}
-	_, found, err = st.GetCDNDistributionByEdgeID("cdn1")
+	_, found, err = st.GetCDNDistributionByEdgeID(project, "cdn1")
 	if err != nil || !found {
 		t.Fatal(err)
+	}
+	_, found, err = st.GetCDNDistributionByEdgeID("other-project", "cdn1")
+	if err != nil || found {
+		t.Fatalf("edge lookup must bind project_id: found=%v err=%v", found, err)
 	}
 	cdns, err := st.ListCDNDistributions(project)
 	if err != nil || len(cdns) != 1 {

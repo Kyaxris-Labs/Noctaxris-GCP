@@ -125,6 +125,9 @@ func (s *Service) createCertificate(w http.ResponseWriter, r *http.Request, p au
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "certificatemanager.googleapis.com") {
+		return
+	}
 	body, err := decodeBody(r)
 	if err != nil {
 		gcperrors.InvalidArgument(w, "invalid JSON body")

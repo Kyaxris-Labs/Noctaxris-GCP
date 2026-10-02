@@ -53,7 +53,7 @@ func (s *Service) createACL(w http.ResponseWriter, r *http.Request, p authn.Prin
 		writeAuthzErr(w, err)
 		return
 	}
-	if !restlab.RequireServiceEnabled(w, s.Store, project, "managedkafka.googleapis.com") {
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "managedkafka.googleapis.com") {
 		return
 	}
 	parent := clusterName(project, location, clusterID)
@@ -197,6 +197,8 @@ func toACLJSON(a store.KafkaACL) map[string]any {
 		"name":       a.Name,
 		"aclEntries": entries,
 		"etag":       a.Etag,
+		// Wire protocol is PLAINTEXT; ACL rows are not enforced on the broker.
+		"aclEnforcement": "CONTROL_PLANE_ONLY",
 	}
 	if a.ResourceType != "" {
 		out["resourceType"] = a.ResourceType

@@ -47,8 +47,12 @@ func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("GET /compute/v1/projects/{project}/"+scope+"/forwardingRules/{forwardingRule}", s.wrap(principalFrom, s.getForwardingRule))
 	mux.HandleFunc("DELETE /compute/v1/projects/{project}/"+scope+"/forwardingRules/{forwardingRule}", s.wrap(principalFrom, s.deleteForwardingRule))
 
-	mux.HandleFunc("GET /lb/{project}/{name}/{path...}", s.handleLBInvoke)
-	mux.HandleFunc("HEAD /lb/{project}/{name}/{path...}", s.handleLBInvoke)
+	mux.HandleFunc("GET /lb/{project}/{name}/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		s.handleLBInvoke(w, r, principalFrom)
+	})
+	mux.HandleFunc("HEAD /lb/{project}/{name}/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		s.handleLBInvoke(w, r, principalFrom)
+	})
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p authn.Principal)
@@ -640,7 +644,7 @@ func (s *Service) deleteForwardingRule(w http.ResponseWriter, r *http.Request, p
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
-func (s *Service) handleLBInvoke(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleLBInvoke(w http.ResponseWriter, r *http.Request, principalFrom principalFunc) {
 	project := r.PathValue("project")
 	ruleName := r.PathValue("name")
 	objectPath := strings.TrimPrefix(r.PathValue("path"), "/")
@@ -668,7 +672,7 @@ func (s *Service) handleLBInvoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("X-Noctaxris-GCP-LB", ruleName)
-	serveGCSBackend(w, r, s.Store, bs.BackendsJSON, objectPath)
+	serveGCSBackend(w, r, s.Store, s.Authz, principalFrom, bs.BackendsJSON, objectPath)
 }
 
 func (s *Service) resolveBackendService(target string) (string, error) {
@@ -779,10 +783,36 @@ func toForwardingRuleJSON(fr store.LBForwardingRule) map[string]any {
 }
 
 // serveGCSBackend streams a lab GCS object when backends declare gcsBucket.
-func serveGCSBackend(w http.ResponseWriter, r *http.Request, st *store.Store, backendsJSON, objectPath string) {
+// Requires storage.objects.get via caller principal or allUsers (fail-closed).
+func serveGCSBackend(w http.ResponseWriter, r *http.Request, st *store.Store, eval *authz.Evaluator, principalFrom principalFunc, backendsJSON, objectPath string) {
 	bucket, prefix, ok := store.ParseGCSOriginFromBackends(backendsJSON)
 	if !ok {
 		gcperrors.NotFound(w, "no GCS backend configured")
+		return
+	}
+	projectID := ""
+	if b, found, err := st.GetBucket(bucket); err == nil && found {
+		projectID = b.ProjectID
+	}
+	var resources []string
+	if bucket != "" {
+		resources = append(resources, store.BucketIAMResource(bucket))
+	}
+	if projectID != "" {
+		resources = append(resources, "projects/"+projectID)
+	}
+	var p authn.Principal
+	var hasP bool
+	if principalFrom != nil {
+		p, hasP = principalFrom(r)
+	}
+	allowed, err := eval.AllowPrincipalOrAllUsers(p.Email, p.IsRoot, hasP, "storage.objects.get", resources...)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !allowed {
+		gcperrors.PermissionDenied(w, "")
 		return
 	}
 	objName := strings.TrimPrefix(objectPath, "/")

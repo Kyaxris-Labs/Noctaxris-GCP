@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/jwtutil"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -102,38 +103,38 @@ func jwksURIMatchesIssuerOrigin(issuer, jwksURI string) bool {
 	return wantPath == gotPath
 }
 
-// verifyOIDCSubjectToken verifies RS256 JWT signature + iss/aud/exp basics.
-// Returns the sanitized subject claim for the WIF principal.
-func (h *Handler) verifyOIDCSubjectToken(subjectToken string, prov store.WorkloadIdentityPoolProvider) (string, error) {
+// verifyOIDCSubjectTokenClaims verifies RS256 JWT signature + iss/aud/exp basics.
+// Returns verified claims for attributeMapping / attributeCondition.
+func (h *Handler) verifyOIDCSubjectTokenClaims(subjectToken string, prov store.WorkloadIdentityPoolProvider) (map[string]any, error) {
 	jwksJSON, err := h.fetchOIDCJWKS(prov.IssuerURI)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	claims, err := verifyCompactRS256(subjectToken, jwksJSON)
+	claims, err := jwtutil.VerifyCompactRS256(subjectToken, jwksJSON)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	now := h.now()
-	if claimExpired(claims, now) {
-		return "", fmt.Errorf("sts oidc: token expired")
+	if jwtutil.ClaimExpired(claims, now) {
+		return nil, fmt.Errorf("sts oidc: token expired")
 	}
-	if claimNotYetValid(claims, now) {
-		return "", fmt.Errorf("sts oidc: token not yet valid")
+	if jwtutil.ClaimNotYetValid(claims, now) {
+		return nil, fmt.Errorf("sts oidc: token not yet valid")
 	}
-	iss := claimString(claims, "iss")
+	iss := jwtutil.ClaimString(claims, "iss")
 	wantIss := strings.TrimRight(strings.TrimSpace(prov.IssuerURI), "/")
 	gotIss := strings.TrimRight(strings.TrimSpace(iss), "/")
 	if gotIss == "" || !strings.EqualFold(gotIss, wantIss) {
-		return "", fmt.Errorf("sts oidc: iss mismatch")
+		return nil, fmt.Errorf("sts oidc: iss mismatch")
 	}
 	if !audienceOK(claims, prov) {
-		return "", fmt.Errorf("sts oidc: aud mismatch")
+		return nil, fmt.Errorf("sts oidc: aud mismatch")
 	}
-	sub := claimString(claims, "sub")
+	sub := jwtutil.ClaimString(claims, "sub")
 	if strings.TrimSpace(sub) == "" {
-		return "", fmt.Errorf("sts oidc: sub required")
+		return nil, fmt.Errorf("sts oidc: sub required")
 	}
-	return labSubjectFromToken(sub), nil
+	return claims, nil
 }
 
 func audienceOK(claims map[string]any, prov store.WorkloadIdentityPoolProvider) bool {

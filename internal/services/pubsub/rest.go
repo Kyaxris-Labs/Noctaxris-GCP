@@ -3,7 +3,6 @@ package pubsub
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -95,27 +94,14 @@ func (h *restHandler) requireTopicAttach(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *restHandler) checkVPCSCPublish(w http.ResponseWriter, r *http.Request, topicProject string) bool {
-	if h.svc.Store == nil || !store.VPCSCEnforceEnabled() || h.principal == nil {
+	if h.svc.Store == nil || h.principal == nil {
 		return true
 	}
 	p, ok := h.principal(r)
-	if !ok || p.IsRoot {
+	if !ok {
 		return true
 	}
-	from, err := h.svc.Store.ProjectIDFromPrincipalEmail(p.Email)
-	if err != nil {
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return false
-	}
-	if err := h.svc.Store.VPCSCDenyCrossPerimeter(from, topicProject, "pubsub.googleapis.com"); err != nil {
-		if errors.Is(err, store.ErrVPCSCPerimeter) {
-			gcperrors.PermissionDenied(w, err.Error())
-			return false
-		}
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return false
-	}
-	return true
+	return restlab.RequireVPCSCPrincipal(w, h.svc.Store, p, topicProject, "pubsub.googleapis.com")
 }
 
 func splitColon(v string) (id, action string) {
@@ -160,7 +146,12 @@ func (h *restHandler) createOrReplaceTopic(w http.ResponseWriter, r *http.Reques
 	if !h.require(w, r, "pubsub.topics.create", projectResource(project)) {
 		return
 	}
-	if !restlab.RequireServiceEnabled(w, h.svc.Store, project, "pubsub.googleapis.com") {
+	p, ok := h.principal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, h.svc.Store, p, project, "pubsub.googleapis.com") {
 		return
 	}
 	var body struct {
@@ -318,6 +309,14 @@ func (h *restHandler) createOrReplaceSubscription(w http.ResponseWriter, r *http
 	project := r.PathValue("project")
 	subID, _ := splitColon(r.PathValue("subscription"))
 	if !h.require(w, r, "pubsub.subscriptions.create", projectResource(project)) {
+		return
+	}
+	p, ok := h.principal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, h.svc.Store, p, project, "pubsub.googleapis.com") {
 		return
 	}
 	var body struct {
@@ -667,6 +666,14 @@ func (h *restHandler) createSnapshot(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("project")
 	snapID, _ := splitColon(r.PathValue("snapshot"))
 	if !h.require(w, r, "pubsub.snapshots.create", projectResource(project)) {
+		return
+	}
+	p, ok := h.principal(r)
+	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, h.svc.Store, p, project, "pubsub.googleapis.com") {
 		return
 	}
 	var body struct {

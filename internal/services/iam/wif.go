@@ -147,11 +147,12 @@ func (h *Handler) createWIFProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		DisplayName      string            `json:"displayName"`
-		Description      string            `json:"description"`
-		Disabled         bool              `json:"disabled"`
-		AttributeMapping map[string]string `json:"attributeMapping"`
-		Oidc             *struct {
+		DisplayName         string            `json:"displayName"`
+		Description         string            `json:"description"`
+		Disabled            bool              `json:"disabled"`
+		AttributeMapping    map[string]string `json:"attributeMapping"`
+		AttributeCondition  string            `json:"attributeCondition"`
+		Oidc                *struct {
 			IssuerUri        string   `json:"issuerUri"`
 			AllowedAudiences []string `json:"allowedAudiences"`
 		} `json:"oidc"`
@@ -185,7 +186,7 @@ func (h *Handler) createWIFProvider(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	poolName := "projects/" + projectID + "/locations/" + location + "/workloadIdentityPools/" + poolID
-	p, err := h.Store.CreateWIFProvider(poolName, providerID, req.DisplayName, req.Description, issuer, attrJSON, allowedAudJSON, req.Disabled)
+	p, err := h.Store.CreateWIFProvider(poolName, providerID, req.DisplayName, req.Description, issuer, attrJSON, req.AttributeCondition, allowedAudJSON, req.Disabled)
 	if errors.Is(err, store.ErrAlreadyExists) {
 		gcperrors.WriteREST(w, http.StatusConflict, gcperrors.StatusAlreadyExists, "workload identity pool provider already exists")
 		return
@@ -219,11 +220,12 @@ func (h *Handler) patchWIFProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		DisplayName      string            `json:"displayName"`
-		Description      string            `json:"description"`
-		Disabled         bool              `json:"disabled"`
-		AttributeMapping map[string]string `json:"attributeMapping"`
-		Oidc             *struct {
+		DisplayName        string            `json:"displayName"`
+		Description        string            `json:"description"`
+		Disabled           bool              `json:"disabled"`
+		AttributeMapping   map[string]string `json:"attributeMapping"`
+		AttributeCondition string            `json:"attributeCondition"`
+		Oidc               *struct {
 			IssuerUri        string   `json:"issuerUri"`
 			AllowedAudiences []string `json:"allowedAudiences"`
 		} `json:"oidc"`
@@ -241,6 +243,7 @@ func (h *Handler) patchWIFProvider(w http.ResponseWriter, r *http.Request) {
 	updateDescription := mask == "" || fieldMaskIncludes(mask, "description")
 	updateDisabled := mask == "" || fieldMaskIncludes(mask, "disabled")
 	updateAttr := mask == "" || fieldMaskIncludes(mask, "attributeMapping")
+	updateCondition := mask == "" || fieldMaskIncludes(mask, "attributeCondition")
 	updateIssuer := mask == "" || fieldMaskIncludes(mask, "oidc.issuerUri")
 	updateAudiences := false
 	if mask == "" {
@@ -253,8 +256,8 @@ func (h *Handler) patchWIFProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		updateAudiences = true
 	}
-	if mask != "" && !updateDisplay && !updateDescription && !updateDisabled && !updateAttr && !updateIssuer && !updateAudiences {
-		gcperrors.InvalidArgument(w, "updateMask must include displayName, description, disabled, attributeMapping, oidc.issuerUri, and/or oidc.allowedAudiences")
+	if mask != "" && !updateDisplay && !updateDescription && !updateDisabled && !updateAttr && !updateCondition && !updateIssuer && !updateAudiences {
+		gcperrors.InvalidArgument(w, "updateMask must include displayName, description, disabled, attributeMapping, attributeCondition, oidc.issuerUri, and/or oidc.allowedAudiences")
 		return
 	}
 	attrJSON := ""
@@ -268,6 +271,10 @@ func (h *Handler) patchWIFProvider(w http.ResponseWriter, r *http.Request) {
 			}
 			attrJSON = string(raw)
 		}
+	}
+	cond := ""
+	if updateCondition {
+		cond = req.AttributeCondition
 	}
 	issuer := ""
 	if req.Oidc != nil {
@@ -286,8 +293,8 @@ func (h *Handler) patchWIFProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	name := "projects/" + projectID + "/locations/" + location + "/workloadIdentityPools/" + poolID + "/providers/" + providerID
 	p, ok, err := h.Store.UpdateWIFProvider(
-		name, req.DisplayName, req.Description, issuer, attrJSON, allowedAudJSON, req.Disabled,
-		updateDisplay, updateDescription, updateIssuer, updateAttr, updateAudiences, updateDisabled,
+		name, req.DisplayName, req.Description, issuer, attrJSON, cond, allowedAudJSON, req.Disabled,
+		updateDisplay, updateDescription, updateIssuer, updateAttr, updateCondition, updateAudiences, updateDisabled,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid allowedAudiences") {
@@ -393,6 +400,9 @@ func wifProviderJSON(p store.WorkloadIdentityPoolProvider) map[string]any {
 		attrs = map[string]string{}
 	}
 	out["attributeMapping"] = attrs
+	if p.AttributeCondition != "" {
+		out["attributeCondition"] = p.AttributeCondition
+	}
 	oidc := map[string]any{}
 	if p.IssuerURI != "" {
 		oidc["issuerUri"] = p.IssuerURI

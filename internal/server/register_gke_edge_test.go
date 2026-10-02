@@ -45,7 +45,7 @@ func TestGKEEdgeRegisteredOnServer(t *testing.T) {
 		t.Fatalf("gke create status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/cdn/missing-edge/obj", nil)
+	req = httptest.NewRequest(http.MethodGet, "/cdn/noctaxris-gcp-local/missing-edge/obj", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {

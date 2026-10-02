@@ -1,147 +1,170 @@
-package restlab
+package restlab_test
 
 import (
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
-func TestWrapUnauthenticated(t *testing.T) {
-	h := Wrap(func(*http.Request) (authn.Principal, bool) {
+type memPolicies map[string][]byte
+
+func (m memPolicies) GetIAMPolicyJSON(resource string) ([]byte, bool, error) {
+	b, ok := m[resource]
+	return b, ok, nil
+}
+
+func mustPolicy(t *testing.T, role, member string) []byte {
+	t.Helper()
+	b, err := json.Marshal(authz.Policy{Bindings: []authz.Binding{{Role: role, Members: []string{member}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestWrapUnauthenticatedAndOK(t *testing.T) {
+	h := restlab.Wrap(func(*http.Request) (authn.Principal, bool) {
 		return authn.Principal{}, false
-	}, func(http.ResponseWriter, *http.Request, authn.Principal) {
-		t.Fatal("handler must not run")
-	})
+	}, func(http.ResponseWriter, *http.Request, authn.Principal) {})
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status=%d want %d", rec.Code, http.StatusUnauthorized)
+		t.Fatalf("status=%d", rec.Code)
 	}
-	var body gcperrors.ErrorBody
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Error.Status != gcperrors.StatusUnauthenticated {
-		t.Fatalf("status=%q", body.Error.Status)
-	}
-}
 
-func TestWrapAuthenticated(t *testing.T) {
 	called := false
-	h := Wrap(func(*http.Request) (authn.Principal, bool) {
-		return authn.Principal{Email: "a@example.com", IsRoot: true}, true
-	}, func(w http.ResponseWriter, r *http.Request, p authn.Principal) {
-		called = true
-		if p.Email != "a@example.com" {
-			t.Fatalf("email=%q", p.Email)
-		}
-		WriteJSON(w, http.StatusOK, map[string]string{"ok": "1"})
-	})
-	rec := httptest.NewRecorder()
+	h = restlab.Wrap(func(*http.Request) (authn.Principal, bool) {
+		return authn.Principal{Email: "sa@p.iam.gserviceaccount.com", IsRoot: true}, true
+	}, func(http.ResponseWriter, *http.Request, authn.Principal) { called = true })
+	rec = httptest.NewRecorder()
 	h(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if !called {
 		t.Fatal("handler not called")
 	}
-	if rec.Code != http.StatusOK {
+}
+
+func TestHandleFuncOnceIdempotent(t *testing.T) {
+	mux := http.NewServeMux()
+	var n int
+	restlab.HandleFuncOnce(mux, "GET /lab/once", func(http.ResponseWriter, *http.Request) { n++ })
+	restlab.HandleFuncOnce(mux, "GET /lab/once", func(http.ResponseWriter, *http.Request) { n += 10 })
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/lab/once", nil))
+	if n != 1 {
+		t.Fatalf("n=%d want 1", n)
+	}
+}
+
+func TestEvaluateRequireAndWriteAuthzErr(t *testing.T) {
+	email := "sa@noctaxris-gcp-local.iam.gserviceaccount.com"
+	ev := &authz.Evaluator{Policies: memPolicies{
+		"projects/p": mustPolicy(t, "roles/viewer", "serviceAccount:"+email),
+	}}
+	p := authn.Principal{Email: email}
+	if err := restlab.Require(ev, p, "resourcemanager.projects.get", "p"); err != nil {
+		t.Fatal(err)
+	}
+	if err := restlab.Require(ev, p, "storage.buckets.create", "p"); !errors.Is(err, restlab.ErrDenied) {
+		t.Fatalf("want ErrDenied got %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	restlab.WriteAuthzErr(rec, restlab.ErrDenied)
+	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status=%d", rec.Code)
 	}
-}
-
-func TestRequireRoot(t *testing.T) {
-	p := authn.Principal{Email: "root@lab", IsRoot: true}
-	if err := Require(nil, p, "file.instances.get", "p1"); err != nil {
-		t.Fatalf("root: %v", err)
-	}
-}
-
-func TestRequireDenied(t *testing.T) {
-	eval := &authz.Evaluator{}
-	p := authn.Principal{Email: "user@lab", IsRoot: false}
-	err := Require(eval, p, "file.instances.get", "p1")
-	if !errors.Is(err, ErrDenied) {
-		t.Fatalf("err=%v want ErrDenied", err)
-	}
-}
-
-func TestWriteAuthzErr(t *testing.T) {
-	rec := httptest.NewRecorder()
-	WriteAuthzErr(rec, ErrDenied)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("denied status=%d", rec.Code)
-	}
-
 	rec = httptest.NewRecorder()
-	WriteAuthzErr(rec, errors.New("boom"))
+	restlab.WriteAuthzErr(rec, errors.New("boom"))
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("internal status=%d", rec.Code)
+		t.Fatalf("status=%d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	restlab.WriteJSON(rec, http.StatusCreated, map[string]any{"ok": true})
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("json=%s", rec.Body.String())
 	}
 }
 
-type stubUsage struct {
+type suStore struct {
 	enabled bool
 	err     error
 }
 
-func (s stubUsage) IsServiceEnabled(string, string) (bool, error) {
+func (s suStore) IsServiceEnabled(string, string) (bool, error) {
 	return s.enabled, s.err
 }
 
-func TestRequireServiceEnabled(t *testing.T) {
+func TestRequireServiceEnabledBranches(t *testing.T) {
 	rec := httptest.NewRecorder()
-	if !RequireServiceEnabled(rec, stubUsage{enabled: true}, "p", "sqladmin.googleapis.com") {
-		t.Fatal("enabled should pass")
+	if !restlab.RequireServiceEnabled(rec, suStore{enabled: true}, "p", "run.googleapis.com") {
+		t.Fatal("enabled must continue")
 	}
-	if rec.Code != http.StatusOK && rec.Body.Len() != 0 {
-		t.Fatalf("enabled wrote response status=%d body=%s", rec.Code, rec.Body.String())
-	}
-
 	rec = httptest.NewRecorder()
-	if RequireServiceEnabled(rec, stubUsage{enabled: false}, "p", "sqladmin.googleapis.com") {
-		t.Fatal("disabled should stop")
+	if restlab.RequireServiceEnabled(rec, suStore{enabled: false}, "p", "run.googleapis.com") {
+		t.Fatal("disabled must stop")
 	}
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "disabled") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	if restlab.RequireServiceEnabled(rec, suStore{err: errors.New("lookup")}, "p", "run.googleapis.com") {
+		t.Fatal("lookup error must stop")
+	}
+	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d", rec.Code)
 	}
-	var body gcperrors.ErrorBody
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+	if msg := restlab.ServiceDisabledMessage("run.googleapis.com"); !strings.Contains(msg, "run.googleapis.com") {
+		t.Fatalf("msg=%s", msg)
+	}
+	if err := restlab.CheckServiceEnabled(suStore{enabled: false}, "p", "run.googleapis.com"); !errors.Is(err, store.ErrServiceDisabled) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+type vpcStore struct {
+	deny error
+}
+
+func (v vpcStore) VPCSCDenyCrossPerimeter(_, _, _ string) error { return v.deny }
+
+func (v vpcStore) ProjectIDFromPrincipalEmail(string) (string, error) {
+	return "from-proj", nil
+}
+
+func TestRequireVPCSCBranches(t *testing.T) {
+	if err := restlab.CheckVPCSC(nil, "a", "b", "run.googleapis.com"); err != nil {
 		t.Fatal(err)
 	}
-	if body.Error.Status != gcperrors.StatusFailedPrecondition {
-		t.Fatalf("status=%q", body.Error.Status)
-	}
-	if body.Error.Message != ServiceDisabledMessage("sqladmin.googleapis.com") {
-		t.Fatalf("message=%q", body.Error.Message)
-	}
-}
-
-func TestHandleFuncOnce(t *testing.T) {
-	mux := http.NewServeMux()
-	var hits int
-	first := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("first"))
-	})
-	second := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("second handler must not run")
-	})
-	pattern := "GET /v1/projects/{project}/locations/{location}/operations/{operation}"
-	HandleFuncOnce(mux, pattern, first)
-	HandleFuncOnce(mux, pattern, second)
-
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/projects/p/locations/us-central1/operations/op1", nil))
-	if rec.Code != http.StatusOK || rec.Body.String() != "first" {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	if !restlab.RequireVPCSC(rec, vpcStore{}, "a", "b", "run.googleapis.com") {
+		t.Fatal("allow must continue")
 	}
-	if hits != 1 {
-		t.Fatalf("hits=%d", hits)
+	rec = httptest.NewRecorder()
+	if restlab.RequireVPCSC(rec, vpcStore{deny: store.ErrVPCSCPerimeter}, "a", "b", "run.googleapis.com") {
+		t.Fatal("perimeter deny must stop")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	if restlab.RequireVPCSC(rec, vpcStore{deny: errors.New("boom")}, "a", "b", "run.googleapis.com") {
+		t.Fatal("other error must stop")
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d", rec.Code)
+	}
+
+	root := authn.Principal{IsRoot: true, Email: "root@x"}
+	rec = httptest.NewRecorder()
+	if !restlab.RequireVPCSCPrincipal(rec, vpcStore{deny: store.ErrVPCSCPerimeter}, root, "to", "run.googleapis.com") {
+		t.Fatal("root must skip")
 	}
 }
-

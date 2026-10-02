@@ -156,6 +156,9 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 		restlab.WriteAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "eventarc.googleapis.com") {
+		return
+	}
 	triggerID := r.URL.Query().Get("triggerId")
 	var body struct {
 		Name           string          `json:"name"`

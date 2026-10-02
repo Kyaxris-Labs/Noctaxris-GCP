@@ -18,7 +18,7 @@ func TestWIFProviderAllowedAudiencesCreateGetUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	audJSON := `["https://app.example/aud"," https://app.example/aud ","https://other"]`
-	prov, err := st.CreateWIFProvider(pool.Name, "oidc-aud", "OIDC", "", "https://issuer.example", "{}", audJSON, false)
+	prov, err := st.CreateWIFProvider(pool.Name, "oidc-aud", "OIDC", "", "https://issuer.example", "{}", "", audJSON, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,8 +37,8 @@ func TestWIFProviderAllowedAudiencesCreateGetUpdate(t *testing.T) {
 		t.Fatalf("get audiences = %#v", got.AllowedAudiences)
 	}
 
-	updated, ok, err := st.UpdateWIFProvider(prov.Name, "", "", "", "", `["https://patched"]`, false,
-		false, false, false, false, true, false)
+	updated, ok, err := st.UpdateWIFProvider(prov.Name, "", "", "", "", "", `["https://patched"]`, false,
+		false, false, false, false, false, true, false)
 	if err != nil || !ok {
 		t.Fatalf("update ok=%v err=%v", ok, err)
 	}
@@ -62,7 +62,7 @@ func TestWIFProviderAllowedAudiencesPersistAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := st.CreateWIFProvider(pool.Name, "oidc-re", "OIDC", "", "https://example.com", "{}", `["https://persist"]`, false)
+	prov, err := st.CreateWIFProvider(pool.Name, "oidc-re", "OIDC", "", "https://example.com", "{}", "", `["https://persist"]`, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,8 +151,8 @@ INSERT INTO wif_providers VALUES (
 	if len(got.AllowedAudiences) != 0 {
 		t.Fatalf("legacy default audiences = %#v", got.AllowedAudiences)
 	}
-	updated, ok, err := st.UpdateWIFProvider(name, "", "", "", "", `["https://migrated"]`, false,
-		false, false, false, false, true, false)
+	updated, ok, err := st.UpdateWIFProvider(name, "", "", "", "", "", `["https://migrated"]`, false,
+		false, false, false, false, false, true, false)
 	if err != nil || !ok {
 		t.Fatalf("update after migrate ok=%v err=%v", ok, err)
 	}

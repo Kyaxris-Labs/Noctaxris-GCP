@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -503,8 +504,9 @@ func (s *Store) GetBinaryAuthzPolicy(projectID string) (mode, bodyJSON string, o
 }
 
 // BinaryAuthzAllows reports whether imageURI may deploy under the project policy.
+// Under ENFORCED, only ATTESTATION occurrences with a non-empty noteName admit.
 func (s *Store) BinaryAuthzAllows(projectID, imageURI string) (bool, error) {
-	mode, _, ok, err := s.GetBinaryAuthzPolicy(projectID)
+	mode, bodyJSON, ok, err := s.GetBinaryAuthzPolicy(projectID)
 	if err != nil {
 		return false, err
 	}
@@ -522,5 +524,58 @@ func (s *Store) BinaryAuthzAllows(projectID, imageURI string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return len(list) > 0, nil
+	requiredNotes := requiredAttestationNotes(bodyJSON)
+	for _, o := range list {
+		if !strings.EqualFold(strings.TrimSpace(o.Kind), "ATTESTATION") {
+			continue
+		}
+		note := strings.TrimSpace(o.NoteName)
+		if note == "" {
+			continue
+		}
+		if len(requiredNotes) == 0 {
+			return true, nil
+		}
+		if requiredNotes[note] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// requiredAttestationNotes extracts note names from defaultAdmissionRule.requireAttestationsBy.
+func requiredAttestationNotes(bodyJSON string) map[string]bool {
+	out := map[string]bool{}
+	if strings.TrimSpace(bodyJSON) == "" {
+		return out
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(bodyJSON), &body); err != nil || body == nil {
+		return out
+	}
+	rule, _ := body["defaultAdmissionRule"].(map[string]any)
+	if rule == nil {
+		return out
+	}
+	raw, ok := rule["requireAttestationsBy"]
+	if !ok {
+		return out
+	}
+	switch v := raw.(type) {
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				if n := strings.TrimSpace(s); n != "" {
+					out[n] = true
+				}
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if n := strings.TrimSpace(s); n != "" {
+				out[n] = true
+			}
+		}
+	}
+	return out
 }

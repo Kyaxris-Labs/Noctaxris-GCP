@@ -114,7 +114,7 @@ func (s *Service) createCluster(w http.ResponseWriter, r *http.Request, p authn.
 		writeAuthzErr(w, err)
 		return
 	}
-	if !restlab.RequireServiceEnabled(w, s.Store, project, "managedkafka.googleapis.com") {
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "managedkafka.googleapis.com") {
 		return
 	}
 	clusterID := r.URL.Query().Get("clusterId")
@@ -324,6 +324,13 @@ func toClusterJSON(c store.KafkaCluster) map[string]any {
 		"createTime": c.CreatedAt,
 		"state":      c.State,
 		"labels":     labels,
+		// Nested Redpanda is PLAINTEXT; ACL CRUD is control-plane theatre only.
+		"satisfiesPzi": false,
+		"satisfiesPzs": false,
+		"securityConfig": map[string]any{
+			"securityProtocol": "PLAINTEXT",
+			"aclEnforcement":   "CONTROL_PLANE_ONLY",
+		},
 	}
 	if c.DisplayName != "" {
 		out["displayName"] = c.DisplayName

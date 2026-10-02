@@ -3,6 +3,7 @@ package authz_test
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 )
@@ -216,6 +217,120 @@ func TestNilEvaluatorFailClosed(t *testing.T) {
 	ok, err = e.Evaluate("a@b.c", true, "storage.objects.get", "projects/p")
 	if err != nil || !ok {
 		t.Fatalf("nil evaluator still allows root: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestServiceAccountAdminDeniesTokenCreator(t *testing.T) {
+	resource := "projects/noctaxris-gcp-local/serviceAccounts/target@noctaxris-gcp-local.iam.gserviceaccount.com"
+	email := "admin@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			resource: mustPolicy(t, "roles/iam.serviceAccountAdmin", "serviceAccount:"+email),
+		},
+	}
+	for _, perm := range []string{
+		"iam.serviceAccounts.create",
+		"iam.serviceAccounts.delete",
+		"iam.serviceAccounts.get",
+		"iam.serviceAccounts.setIamPolicy",
+		"iam.serviceAccountKeys.create",
+		"iam.serviceAccountKeys.list",
+	} {
+		ok, err := e.Evaluate(email, false, perm, resource)
+		if err != nil || !ok {
+			t.Fatalf("serviceAccountAdmin should grant %s: ok=%v err=%v", perm, ok, err)
+		}
+	}
+	for _, perm := range []string{
+		"iam.serviceAccounts.getAccessToken",
+		"iam.serviceAccounts.actAs",
+		"iam.serviceAccounts.signBlob",
+		"iam.serviceAccounts.signJwt",
+		"iam.serviceAccounts.generateAccessToken",
+		"iam.serviceAccounts.generateIdToken",
+		"iam.serviceAccounts.implicitDelegation",
+	} {
+		ok, err := e.Evaluate(email, false, perm, resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			t.Fatalf("serviceAccountAdmin must not grant %s", perm)
+		}
+	}
+}
+
+func TestSecurityAdminDeniesTokenCreator(t *testing.T) {
+	resource := "projects/noctaxris-gcp-local"
+	email := "sec@noctaxris-gcp-local.iam.gserviceaccount.com"
+	e := &authz.Evaluator{
+		Policies: memPolicies{
+			resource: mustPolicy(t, "roles/iam.securityAdmin", "serviceAccount:"+email),
+		},
+	}
+	for _, perm := range []string{
+		"iam.roles.create",
+		"iam.roles.list",
+		"resourcemanager.projects.getIamPolicy",
+		"resourcemanager.projects.setIamPolicy",
+		"storage.buckets.getIamPolicy",
+		"storage.buckets.setIamPolicy",
+	} {
+		ok, err := e.Evaluate(email, false, perm, resource)
+		if err != nil || !ok {
+			t.Fatalf("securityAdmin should grant %s: ok=%v err=%v", perm, ok, err)
+		}
+	}
+	for _, perm := range []string{
+		"iam.serviceAccounts.getAccessToken",
+		"iam.serviceAccounts.actAs",
+		"iam.serviceAccounts.signBlob",
+		"iam.serviceAccounts.signJwt",
+		"iam.serviceAccounts.generateAccessToken",
+		"iam.serviceAccounts.generateIdToken",
+	} {
+		ok, err := e.Evaluate(email, false, perm, resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			t.Fatalf("securityAdmin must not grant %s", perm)
+		}
+	}
+}
+
+func TestRequestTimeConditionCEL(t *testing.T) {
+	resource := "projects/noctaxris-gcp-local"
+	email := "cond@noctaxris-gcp-local.iam.gserviceaccount.com"
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	pol := authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/viewer",
+			Members: []string{"serviceAccount:" + email},
+			Condition: &authz.Expr{
+				Expression: `request.time < timestamp("2026-10-03T13:00:00Z")`,
+			},
+		}},
+	}
+	raw, err := json.Marshal(pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &authz.Evaluator{
+		Policies: memPolicies{resource: raw},
+		Now:      func() time.Time { return now },
+	}
+	ok, err := e.Evaluate(email, false, "resourcemanager.projects.get", resource)
+	if err != nil || !ok {
+		t.Fatalf("condition should allow: ok=%v err=%v", ok, err)
+	}
+	e.Now = func() time.Time { return time.Date(2026, 10, 3, 14, 0, 0, 0, time.UTC) }
+	ok, err = e.Evaluate(email, false, "resourcemanager.projects.get", resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("expired request.time condition must deny")
 	}
 }
 

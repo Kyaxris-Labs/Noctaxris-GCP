@@ -304,9 +304,24 @@ func TestMemorystoreRedisAuthFields(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	inst = map[string]any{}
 	_ = json.Unmarshal(rec.Body.Bytes(), &inst)
-	if inst["authEnabled"] != true || inst["authString"] != "lab-redis-secret" {
-		t.Fatalf("get auth fields=%#v", inst)
+	if inst["authEnabled"] != true {
+		t.Fatalf("get authEnabled=%#v", inst)
+	}
+	if _, ok := inst["authString"]; ok {
+		t.Fatalf("get must not echo authString: %#v", inst)
+	}
+	req = httptest.NewRequest(http.MethodGet, base+"/auth-redis:getAuthString", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("getAuthString status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var authOut map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &authOut)
+	if authOut["authString"] != "lab-redis-secret" {
+		t.Fatalf("getAuthString=%#v", authOut)
 	}
 
 	body = `{"tier":"BASIC","memorySizeGb":1,"authEnabled":true}`
@@ -350,6 +365,30 @@ func TestMemorystoreRedisAuthFields(t *testing.T) {
 	}
 	if eng.lastAuthPass != "" {
 		t.Fatalf("nested should get empty password, got %q", eng.lastAuthPass)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base+"/auth-redis:getAuthString", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("getAuthString status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var authResp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &authResp)
+	if authResp["authString"] != "lab-redis-secret" {
+		t.Fatalf("getAuthString=%#v", authResp)
+	}
+	req = httptest.NewRequest(http.MethodGet, base+"/no-auth:getAuthString", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("getAuthString without auth status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, base+"/missing:getAuthString", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("getAuthString missing status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

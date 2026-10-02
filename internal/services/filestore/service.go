@@ -58,6 +58,9 @@ func (s *Service) createInstance(w http.ResponseWriter, r *http.Request, p authn
 		restlab.WriteAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "file.googleapis.com") {
+		return
+	}
 	instanceID := r.URL.Query().Get("instanceId")
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

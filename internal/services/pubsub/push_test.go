@@ -108,8 +108,19 @@ func TestDeliverPushOIDCCatcher(t *testing.T) {
 	}
 	jwt := strings.TrimPrefix(authz, "Bearer ")
 	parts := strings.Split(jwt, ".")
-	if len(parts) != 3 || parts[2] != "" {
-		t.Fatalf("jwt shape: %q", jwt)
+	if len(parts) != 3 || parts[2] == "" {
+		t.Fatalf("expected signed RS256 JWT, got %q", jwt)
+	}
+	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header map[string]any
+	if err := json.Unmarshal(headerRaw, &header); err != nil {
+		t.Fatal(err)
+	}
+	if header["alg"] != "RS256" {
+		t.Fatalf("alg=%v", header["alg"])
 	}
 	claimsRaw, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {

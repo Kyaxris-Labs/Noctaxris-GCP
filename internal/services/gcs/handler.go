@@ -2,7 +2,6 @@ package gcs
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -87,15 +86,16 @@ func (h *Handler) authProject(known string) string {
 // requireStorage evaluates permission against bucket IAM and/or project IAM.
 // When the request carries a lab V4 signed URL query (and no principal), signature
 // verification substitutes for Bearer + IAM for the requested method.
+// Unauthenticated callers are allowed only when allUsers is granted the permission.
 func (h *Handler) requireStorage(w http.ResponseWriter, r *http.Request, permission, bucketName, projectID string) (authn.Principal, bool) {
+	var resources []string
+	if bucketName != "" {
+		resources = append(resources, store.BucketIAMResource(bucketName))
+	}
+	if projectID != "" {
+		resources = append(resources, projectResource(projectID))
+	}
 	if p, ok := h.principal(r); ok {
-		var resources []string
-		if bucketName != "" {
-			resources = append(resources, store.BucketIAMResource(bucketName))
-		}
-		if projectID != "" {
-			resources = append(resources, projectResource(projectID))
-		}
 		allowed, err := h.Authz.EvaluateAny(p.Email, p.IsRoot, permission, resources...)
 		if err != nil {
 			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -108,6 +108,11 @@ func (h *Handler) requireStorage(w http.ResponseWriter, r *http.Request, permiss
 		return p, true
 	}
 	if store.HasV4Signature(r.URL.Query()) {
+		// Fail closed: signed URLs never substitute for IAM on bucket admin/IAM paths.
+		if !store.IsV4SignedURLPath(r.URL.Path) {
+			gcperrors.Unauthenticated(w, "")
+			return authn.Principal{}, false
+		}
 		host := r.Host
 		if host == "" {
 			host = "127.0.0.1:4588"
@@ -117,6 +122,14 @@ func (h *Handler) requireStorage(w http.ResponseWriter, r *http.Request, permiss
 			return authn.Principal{}, false
 		}
 		return authn.Principal{Email: store.LabGCSHMACAccessID + "@lab.local", IsRoot: false}, true
+	}
+	allowed, err := h.Authz.EvaluateAllUsersAny(permission, resources...)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return authn.Principal{}, false
+	}
+	if allowed {
+		return authn.Principal{Email: "allUsers", IsRoot: false}, true
 	}
 	gcperrors.Unauthenticated(w, "")
 	return authn.Principal{}, false
@@ -887,21 +900,6 @@ func (h *Handler) postObjectAction(w http.ResponseWriter, r *http.Request) {
 // generateSignedURL mints a lab V4 HMAC signed URL for GET/PUT against the JSON API path.
 func (h *Handler) generateSignedURL(w http.ResponseWriter, r *http.Request, object string) {
 	bucket := r.PathValue("bucket")
-	b, ok, err := h.Store.GetBucket(bucket)
-	if err != nil {
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return
-	}
-	if !ok {
-		if _, aok := h.requireStorage(w, r, "storage.objects.get", bucket, h.authProject("")); !aok {
-			return
-		}
-		gcperrors.NotFound(w, "bucket not found")
-		return
-	}
-	if _, aok := h.requireStorage(w, r, "storage.objects.get", b.Name, b.ProjectID); !aok {
-		return
-	}
 	var body struct {
 		Method  string `json:"method"`
 		Expires int    `json:"expires"`
@@ -914,6 +912,25 @@ func (h *Handler) generateSignedURL(w http.ResponseWriter, r *http.Request, obje
 	}
 	if method != "GET" && method != "PUT" {
 		gcperrors.InvalidArgument(w, "method must be GET or PUT")
+		return
+	}
+	mintPerm := "storage.objects.get"
+	if method == "PUT" {
+		mintPerm = "storage.objects.create"
+	}
+	b, ok, err := h.Store.GetBucket(bucket)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		if _, aok := h.requireStorage(w, r, mintPerm, bucket, h.authProject("")); !aok {
+			return
+		}
+		gcperrors.NotFound(w, "bucket not found")
+		return
+	}
+	if _, aok := h.requireStorage(w, r, mintPerm, b.Name, b.ProjectID); !aok {
 		return
 	}
 	host := r.Host
@@ -997,6 +1014,10 @@ func (h *Handler) composeObject(w http.ResponseWriter, r *http.Request, dest str
 			sources = append(sources, s.Name)
 		}
 	}
+	// Compose reads each source object; require objects.get on the bucket.
+	if _, aok := h.requireStorage(w, r, "storage.objects.get", b.Name, b.ProjectID); !aok {
+		return
+	}
 	obj, err := h.Store.ComposeObject(bucket, dest, sources, body.Destination.ContentType)
 	if err != nil {
 		if err == store.ErrRetentionPolicyNotMet {
@@ -1049,12 +1070,7 @@ func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, srcObject, 
 	if _, aok := h.requireStorage(w, r, "storage.objects.create", db.Name, db.ProjectID); !aok {
 		return
 	}
-	if err := h.Store.VPCSCDenyCrossPerimeter(sb.ProjectID, db.ProjectID, "storage.googleapis.com"); err != nil {
-		if errors.Is(err, store.ErrVPCSCPerimeter) {
-			gcperrors.PermissionDenied(w, err.Error())
-			return
-		}
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+	if !restlab.RequireVPCSC(w, h.Store, sb.ProjectID, db.ProjectID, "storage.googleapis.com") {
 		return
 	}
 	var gen int64
@@ -1113,12 +1129,7 @@ func (h *Handler) rewriteObject(w http.ResponseWriter, r *http.Request, srcObjec
 	if _, aok := h.requireStorage(w, r, "storage.objects.create", db.Name, db.ProjectID); !aok {
 		return
 	}
-	if err := h.Store.VPCSCDenyCrossPerimeter(sb.ProjectID, db.ProjectID, "storage.googleapis.com"); err != nil {
-		if errors.Is(err, store.ErrVPCSCPerimeter) {
-			gcperrors.PermissionDenied(w, err.Error())
-			return
-		}
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+	if !restlab.RequireVPCSC(w, h.Store, sb.ProjectID, db.ProjectID, "storage.googleapis.com") {
 		return
 	}
 	var gen int64
@@ -1169,20 +1180,8 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request) {
 	if !aok {
 		return
 	}
-	if !p.IsRoot {
-		from, err := h.Store.ProjectIDFromPrincipalEmail(p.Email)
-		if err != nil {
-			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-			return
-		}
-		if err := h.Store.VPCSCDenyCrossPerimeter(from, b.ProjectID, "storage.googleapis.com"); err != nil {
-			if errors.Is(err, store.ErrVPCSCPerimeter) {
-				gcperrors.PermissionDenied(w, err.Error())
-				return
-			}
-			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-			return
-		}
+	if !restlab.RequireVPCSCPrincipal(w, h.Store, p, b.ProjectID, "storage.googleapis.com") {
+		return
 	}
 	uploadType := r.URL.Query().Get("uploadType")
 	name := r.URL.Query().Get("name")

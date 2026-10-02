@@ -98,7 +98,8 @@ func predefinedServiceRoleGrants(role, permission string) (granted bool, known b
 	case "roles/bigquery.user":
 		return bigqueryUserGrants(permission), true
 	case "roles/bigquery.jobUser":
-		return permission == "bigquery.jobs.create" || permission == "bigquery.jobs.get", true
+		// Real GCP jobUser creates jobs; jobs.get is not granted by this role alone.
+		return permission == "bigquery.jobs.create", true
 
 	// Logging
 	case "roles/logging.admin":
@@ -556,7 +557,20 @@ func accesscontextmanagerViewerGrants(permission string) bool {
 }
 
 func accesscontextmanagerEditorGrants(permission string) bool {
-	return strings.HasPrefix(permission, "accesscontextmanager.")
+	// policyEditor may update policies and mutate perimeters; policy create/delete stay admin-only.
+	switch permission {
+	case "accesscontextmanager.policies.get",
+		"accesscontextmanager.policies.list",
+		"accesscontextmanager.policies.update",
+		"accesscontextmanager.servicePerimeters.get",
+		"accesscontextmanager.servicePerimeters.list",
+		"accesscontextmanager.servicePerimeters.create",
+		"accesscontextmanager.servicePerimeters.update",
+		"accesscontextmanager.servicePerimeters.delete":
+		return true
+	default:
+		return false
+	}
 }
 
 func cloudassetViewerGrants(permission string) bool {
@@ -684,7 +698,8 @@ func datastoreUserGrants(permission string) bool {
 		return true
 	}
 	switch permission {
-	case "datastore.entities.create", "datastore.entities.update", "datastore.entities.delete":
+	case "datastore.entities.create", "datastore.entities.update", "datastore.entities.delete",
+		"datastore.entities.write":
 		return true
 	default:
 		return false

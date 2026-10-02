@@ -290,7 +290,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Cloud CDN</td>
-      <td>Distributions CRUD; lab <code>/cdn/{id}/...</code> edge on <code>:4588</code>.</td>
+      <td>Distributions CRUD; lab <code>/cdn/{project}/{id}/...</code> edge on <code>:4588</code> (storage IAM on GCS origins).</td>
       <td>Cache invalidation; signed URLs; PoP fleet.</td>
     </tr>
     <tr>

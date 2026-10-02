@@ -25,11 +25,18 @@ type TokenLookup interface {
 	LookupAccessToken(tokenHash string, now time.Time) (principalEmail string, ok bool, err error)
 }
 
+// ToolkitUserStatus reports whether an Identity Toolkit localId is disabled.
+// ok=false means the user row is missing.
+type ToolkitUserStatus interface {
+	ToolkitUserDisabled(localID string) (disabled bool, ok bool, err error)
+}
+
 // Authenticator validates Authorization: Bearer tokens.
 type Authenticator struct {
 	RootServiceAccount string
 	RootAccessToken    string
 	Tokens             TokenLookup
+	ToolkitUsers       ToolkitUserStatus
 	Now                func() time.Time
 }
 
@@ -57,7 +64,7 @@ func (a *Authenticator) AuthenticateToken(token string) (Principal, error) {
 		return Principal{Email: email, IsRoot: true}, nil
 	}
 	if a.Tokens == nil {
-		if p, ok := identityToolkitPrincipal(token); ok {
+		if p, ok := identityToolkitPrincipalWithStatus(token, a.ToolkitUsers); ok {
 			return p, nil
 		}
 		return Principal{}, ErrUnauthenticated
@@ -71,7 +78,7 @@ func (a *Authenticator) AuthenticateToken(token string) (Principal, error) {
 		return Principal{}, err
 	}
 	if !ok || email == "" {
-		if p, ok := identityToolkitPrincipal(token); ok {
+		if p, ok := identityToolkitPrincipalWithStatus(token, a.ToolkitUsers); ok {
 			return p, nil
 		}
 		return Principal{}, ErrUnauthenticated
@@ -80,15 +87,38 @@ func (a *Authenticator) AuthenticateToken(token string) (Principal, error) {
 }
 
 func identityToolkitPrincipal(token string) (Principal, bool) {
+	return identityToolkitPrincipalWithStatus(token, nil)
+}
+
+func identityToolkitPrincipalWithStatus(token string, users ToolkitUserStatus) (Principal, bool) {
 	uid, ok := LabIdentityToolkitUID(token)
 	if !ok {
 		return Principal{}, false
 	}
-	// Email-shaped localIds must not match serviceAccount: IAM bindings.
-	if strings.Contains(uid, "@") {
-		return Principal{Email: "user:" + uid, IsRoot: false}, true
+	if users != nil {
+		disabled, found, err := users.ToolkitUserDisabled(uid)
+		if err != nil {
+			return Principal{}, false
+		}
+		if found && disabled {
+			return Principal{}, false
+		}
 	}
-	return Principal{Email: uid, IsRoot: false}, true
+	// Namespace every Toolkit localId so raw values cannot mint wif: / SA principals.
+	return Principal{Email: toolkitPrincipalEmail(uid), IsRoot: false}, true
+}
+
+// toolkitPrincipalEmail returns the IAM member form for an Identity Toolkit localId.
+// Always uses the user: prefix (idempotent if already prefixed).
+func toolkitPrincipalEmail(localID string) string {
+	localID = strings.TrimSpace(localID)
+	if localID == "" {
+		return ""
+	}
+	if strings.HasPrefix(localID, "user:") {
+		return localID
+	}
+	return "user:" + localID
 }
 
 // HashToken returns the hex-encoded SHA-256 digest of token.

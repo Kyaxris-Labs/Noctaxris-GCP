@@ -9,7 +9,7 @@ reference a policy self link for Terraform attach; no real edge enforcement.
 ## Status
 
 **lab** — securityPolicies insert/get/list/delete; `addRule` / `removeRule`;
-`:validate` ByteMatchSet + default-rule eval.
+`:validate` ByteMatchSet + CEL `match.expr` + default-rule eval.
 
 ## Wire protocol
 
@@ -55,7 +55,9 @@ Seeded Service Usage: `compute.googleapis.com` (Armor is the Compute API).
 
 - No preconfigured WAF / Adaptive Protection / rate-limit enforcement on the dataplane
 - `SRC_IPS_V1` matches `*` or exact IP string only (no CIDR parse)
-- CEL `match.expr` is stored but not evaluated
+- CEL `match.expr` evaluates via cel-go over `request.host`, `request.path`, and
+  `request.headers` (from `:validate` `host`/`uriPath`/`headers`). Empty expression
+  matches; compile/eval errors are non-match (fail closed)
 - Private keys N/A; no DDoS dataplane
 
 ## Deferred depth

@@ -70,6 +70,7 @@ func New(cfg config.Config, st *store.Store, aud *audit.Writer) *Server {
 			RootServiceAccount: cfg.RootServiceAccount,
 			RootAccessToken:    cfg.RootAccessToken,
 			Tokens:             st,
+			ToolkitUsers:       st,
 		},
 		authz: &authz.Evaluator{Policies: st, Roles: st, Parents: st},
 		mux:   http.NewServeMux(),
@@ -191,6 +192,11 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		}
 
 		if authn.IsPublicPath(r.URL.Path) {
+			// Optional Bearer: edge handlers (/lb/, /cdn/, /run/) may Evaluate Invoker
+			// or storage IAM when a valid token is present; missing Bearer stays anonymous.
+			if p, err := s.authn.AuthenticateRequest(r); err == nil {
+				ctx = context.WithValue(ctx, ctxPrincipal, p)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -202,10 +208,9 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Lab GCS V4 signed URLs authenticate via query signature (verified in the GCS handler).
-		// Only storage JSON/media paths may skip Bearer; never open other APIs via X-Goog-*.
+		// Only object GET/PUT signed-URL paths may skip Bearer; never open IAM or other /storage/ admin.
 		if store.HasV4Signature(r.URL.Query()) && r.Header.Get("Authorization") == "" {
-			path := r.URL.Path
-			if strings.HasPrefix(path, "/storage/") || strings.HasPrefix(path, "/upload/storage/") {
+			if store.IsV4SignedURLPath(r.URL.Path) {
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}

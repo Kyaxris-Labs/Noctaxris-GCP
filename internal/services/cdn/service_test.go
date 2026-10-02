@@ -50,7 +50,7 @@ func TestCDNEdgeGCS(t *testing.T) {
 		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/cdn/lab-cdn/app.js", nil)
+	req = httptest.NewRequest(http.MethodGet, "/cdn/"+project+"/lab-cdn/app.js", nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

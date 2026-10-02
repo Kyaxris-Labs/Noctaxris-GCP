@@ -114,6 +114,9 @@ func (s *Service) createQueue(w http.ResponseWriter, r *http.Request, p authn.Pr
 		writeAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "cloudtasks.googleapis.com") {
+		return
+	}
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	queueID := r.URL.Query().Get("queueId")
