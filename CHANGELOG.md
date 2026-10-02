@@ -2,9 +2,14 @@
 
 ## Unreleased
 
-- Service Usage / VPC-SC: shared `RequireProjectAPIGates` / `CheckProjectAPIGates` on more marketed create paths (App Engine, Pub/Sub topic/subscription/snapshot, Cloud SQL, GKE, Managed Kafka, Container Analysis, Binary Authorization, Cloud Armor, Cloud Asset feeds, Security Command Center project sources/findings, Vertex AI predict, Datastore/Firestore). EnsureRoot seeds Container Analysis, Binary Authorization, Cloud Asset, Security Command Center, Organization Policy, and Access Context Manager APIs as ENABLED.
-- Custom roles with `stage=DISABLED` still do not grant at Evaluate (`GetRoleIncludedPermissions`).
-- Container Analysis: bare `noteName` ids rewrite under the occurrence project for `notes.attachOccurrence`.
+## 1.7.0
+
+Minor after 1.6.1: IAM and Service Usage gate tightening, JWT verify via go-jose, CEL helpers for condition eval, plus more tests and service docs. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.0`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Service Usage / VPC-SC: shared `RequireProjectAPIGates` / `CheckProjectAPIGates` on more marketed create paths (App Engine, Pub/Sub, Cloud SQL, GKE, Managed Kafka, Container Analysis, Binary Authorization, Cloud Armor, Cloud Asset, Security Command Center, Vertex AI predict, Datastore/Firestore). EnsureRoot seeds the matching security APIs as ENABLED
+- IAM: custom roles with `stage=DISABLED` still do not grant at Evaluate; actAs and predefined-role maps stay fail-closed; Container Analysis bare `noteName` ids rewrite under the occurrence project for attach
+- Authn: Bearer JWT verify uses go-jose; CEL condition helpers for IAM conditions
+- Tests and docs: expanded authz coverage and security-defaults / service pages aligned with the gates
 
 ## 1.6.1
 
