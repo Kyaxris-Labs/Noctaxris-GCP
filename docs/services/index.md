@@ -24,7 +24,7 @@ with honest emulator limits on each page.
 | Cloud Scheduler | lab | [cloud-scheduler.md](cloud-scheduler.md) | REST v1 jobs, 5-field cron next-run, pause/resume, OIDC audience |
 | Cloud Tasks | lab | [cloud-tasks.md](cloud-tasks.md) | REST v2 queues/tasks, rate limits, retry, App Engine fields, `:run` |
 | BigQuery | lab | [bigquery.md](bigquery.md) | REST v2 datasets/tables, insertAll, tabledata.list, jobs.query (GROUP BY / UNION / INFORMATION_SCHEMA) |
-| Firebase Auth | lab | [firebase-auth.md](firebase-auth.md) | Identity Toolkit REST, OOB reset, claims, verifyIdToken, v2 tenants |
+| Firebase Auth | lab | [firebase-auth.md](firebase-auth.md) | Identity Toolkit REST, OOB reset, claims, verifyIdToken, v2 tenants (`firebase.tenant` / `tenantId`) |
 | Cloud Monitoring | lab | [monitoring.md](monitoring.md) | REST v3 descriptors, time series, alertPolicies theatre |
 | Cloud Datastore | lab | [datastore.md](datastore.md) | gRPC Datastore v1 (`DATASTORE_EMULATOR_HOST`) |
 | Eventarc | lab | [eventarc.md](eventarc.md) | REST v1 triggers/channels; Pub/Sub and GCS delivery + retry |

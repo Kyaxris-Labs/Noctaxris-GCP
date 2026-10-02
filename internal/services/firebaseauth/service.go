@@ -125,6 +125,9 @@ func userRecord(u *store.FirebaseUser, idToken string) map[string]any {
 		"customAttributes": u.CustomAttributes,
 		"createdAt":        u.CreatedAt,
 	}
+	if strings.TrimSpace(u.TenantID) != "" {
+		out["tenantId"] = u.TenantID
+	}
 	if idToken != "" {
 		out["idToken"] = idToken
 		out["refreshToken"] = "lab-refresh-" + u.LocalID
@@ -143,7 +146,7 @@ func mintIDToken(u *store.FirebaseUser) string {
 			}
 		}
 	}
-	tok, err := authn.MintIdentityToolkitIDToken(u.ProjectID, u.LocalID, u.Email, extra)
+	tok, err := authn.MintIdentityToolkitIDToken(u.ProjectID, u.LocalID, u.Email, extra, u.TenantID)
 	if err != nil {
 		return ""
 	}

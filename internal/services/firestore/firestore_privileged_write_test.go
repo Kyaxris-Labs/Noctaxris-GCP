@@ -10,7 +10,7 @@ import (
 )
 
 func toolkitJWT(uid string) string {
-	tok, err := authn.MintIdentityToolkitIDToken("noctaxris-gcp-local", uid, uid+"@example.com", nil)
+	tok, err := authn.MintIdentityToolkitIDToken("noctaxris-gcp-local", uid, uid+"@example.com", nil, "")
 	if err != nil {
 		panic(err)
 	}

@@ -46,7 +46,7 @@ Password reset: `sendOobCode` with `requestType=PASSWORD_RESET` returns a lab `o
 
 `setCustomUserClaims` stores `customAttributes` / `claims` JSON on the user. Id tokens are HS256-signed with the process signing key (`alg: HS256`). Reserved claims (`user_id`, `sub`, `exp`, `iss`, `aud`, and related) are set by the mint path and cannot be overwritten by custom attributes. `verifyIdToken`, public lookup, and Bearer acceptance require a valid signature; unsigned tokens (`alg: none`) are rejected. Admin `createCustomToken` mints HS256 custom tokens; `:signInWithCustomToken` verifies that signature before minting an id token. Custom tokens are not accepted as control-plane Bearers. Email-shaped Toolkit localIds authenticate as `user:{uid}` so they do not match `serviceAccount:` IAM bindings.
 
-v2 tenant CRUD stores `allowPasswordSignup`. `accounts:signUp` with `tenantId` of a locked tenant (`allowPasswordSignup=false`) returns `admin-restricted-operation`. Open tenants accept email/password sign-up.
+v2 tenant CRUD stores `allowPasswordSignup`. `accounts:signUp` with `tenantId` of a locked tenant (`allowPasswordSignup=false`) returns `admin-restricted-operation`. Open tenants accept email/password sign-up. When a user belongs to a tenant, minted id tokens include `firebase.tenant` (Identity Platform multi-tenancy claim), and user records returned from sign-up / sign-in / `accounts:lookup` include `tenantId`.
 
 ## Client configuration
 

@@ -58,7 +58,8 @@ func signHS256(claims map[string]any) (string, error) {
 
 // MintIdentityToolkitIDToken builds an HS256 Identity Toolkit id token.
 // Reserved claims (user_id, sub, exp, …) are set after extra and cannot be overwritten.
-func MintIdentityToolkitIDToken(projectID, localID, email string, extra map[string]any) (string, error) {
+// When tenantID is non-empty, firebase.tenant is set (Identity Platform multi-tenancy).
+func MintIdentityToolkitIDToken(projectID, localID, email string, extra map[string]any, tenantID string) (string, error) {
 	projectID = strings.TrimSpace(projectID)
 	localID = strings.TrimSpace(localID)
 	if projectID == "" || localID == "" {
@@ -74,9 +75,13 @@ func MintIdentityToolkitIDToken(projectID, localID, email string, extra map[stri
 	claims["user_id"] = localID
 	claims["sub"] = localID
 	claims["email"] = email
-	claims["firebase"] = map[string]any{
+	firebase := map[string]any{
 		"sign_in_provider": "password",
 	}
+	if t := strings.TrimSpace(tenantID); t != "" {
+		firebase["tenant"] = t
+	}
+	claims["firebase"] = firebase
 	claims["iat"] = time.Now().Unix()
 	claims["exp"] = time.Now().Add(time.Hour).Unix()
 	claims["aud"] = projectID

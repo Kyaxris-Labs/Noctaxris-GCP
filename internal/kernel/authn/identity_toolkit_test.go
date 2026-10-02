@@ -12,13 +12,29 @@ import (
 
 func TestIdentityToolkitIDTokenRoundTrip(t *testing.T) {
 	authn.SetIdentityToolkitHMACKeyForTest([]byte("test-identity-toolkit-hmac-key!!"))
-	tok, err := authn.MintIdentityToolkitIDToken("noctaxris-gcp-local", "uid-1", "u@example.com", nil)
+	tok, err := authn.MintIdentityToolkitIDToken("noctaxris-gcp-local", "uid-1", "u@example.com", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	uid, ok := authn.LabIdentityToolkitUID(tok)
 	if !ok || uid != "uid-1" {
 		t.Fatalf("uid=%q ok=%v", uid, ok)
+	}
+}
+
+func TestIdentityToolkitIDTokenTenantClaim(t *testing.T) {
+	authn.SetIdentityToolkitHMACKeyForTest([]byte("test-identity-toolkit-hmac-key!!"))
+	tok, err := authn.MintIdentityToolkitIDToken("noctaxris-gcp-local", "uid-t", "t@example.com", nil, "tenant-open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, ok := authn.VerifyIdentityToolkitIDToken(tok)
+	if !ok {
+		t.Fatal("verify failed")
+	}
+	firebase, _ := claims["firebase"].(map[string]any)
+	if firebase["tenant"] != "tenant-open" {
+		t.Fatalf("firebase.tenant=%v", firebase["tenant"])
 	}
 }
 
@@ -45,7 +61,7 @@ func TestIdentityToolkitReservedClaimsNotOverwritten(t *testing.T) {
 		"user_id": root,
 		"sub":     root,
 		"tier":    "gold",
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +106,7 @@ func TestIdentityToolkitCustomTokenRoundTrip(t *testing.T) {
 func TestIdentityToolkitEmailShapedUIDDoesNotMatchSABinding(t *testing.T) {
 	authn.SetIdentityToolkitHMACKeyForTest([]byte("test-identity-toolkit-hmac-key!!"))
 	root := "root@noctaxris-gcp-local.iam.gserviceaccount.com"
-	tok, err := authn.MintIdentityToolkitIDToken("noctaxris-gcp-local", root, root, nil)
+	tok, err := authn.MintIdentityToolkitIDToken("noctaxris-gcp-local", root, root, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
