@@ -1,7 +1,7 @@
 # Firestore
 
 Lab-complete Firestore v1 gRPC on the shared Noctaxris-GCP port (`127.0.0.1:4588`),
-plus REST create/patch for `.../documents/users/{uid}` owner-write (same ACL as gRPC).
+plus REST create/get/patch for `.../documents/users/{uid}` owner access (same ACL as gRPC).
 
 ## Status
 
@@ -12,7 +12,7 @@ plus REST create/patch for `.../documents/users/{uid}` owner-write (same ACL as 
 | Surface | Notes |
 |---------|-------|
 | gRPC `google.firestore.v1.Firestore` | Primary |
-| REST PATCH/POST on `:4588` | Owner-write for `projects/{p}/databases/(default)/documents/users/{uid}` |
+| REST GET/PATCH/POST on `:4588` | Owner read/write for `projects/{p}/databases/(default)/documents/users/{uid}`; other principals need project IAM. GET returns 404 when the document is missing |
 | Database | `(default)` only |
 
 Document names:
@@ -56,12 +56,15 @@ Permissions checked on `projects/{project}`:
 - `datastore.entities.list`
 
 Identity Toolkit JWT principals (`iss` `https://securetoken.google.com/`) may
-write only when the path under `/documents/` is exactly `users/{uid}` matching
-the token `user_id` / `sub` (no nested suffix tricks). Other document paths and
-other users' docs are denied. REST PATCH
-`/v1/projects/{project}/databases/(default)/documents/users/{uid}` and POST
-create on `/documents/users?documentId=` use that same owner-write check. This
-is not a security-rules interpreter.
+read or write only when the path under `/documents/` is exactly `users/{uid}`
+matching the token `user_id` / `sub` (no nested suffix tricks). Other document
+paths and other users' docs are denied. gRPC `GetDocument`, REST GET and PATCH
+on `/v1/projects/{project}/databases/(default)/documents/users/{uid}`, and POST
+create on `/documents/users?documentId=` use that same owner check, without
+project IAM. REST GET returns the same JSON shape as PATCH (`name`, `fields`,
+`createTime`, `updateTime`). Other principals still need
+`datastore.entities.get` (read) or the matching write permission. This is not a
+security-rules interpreter.
 
 ## Client configuration
 

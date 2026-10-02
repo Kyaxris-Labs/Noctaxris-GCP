@@ -12,7 +12,7 @@ with honest emulator limits on each page.
 | Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL + XML HMAC List/Get/Put; bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
 | Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST topics/subscriptions/snapshots; dead-letter + exactly-once; push `oidcToken` Bearer JWT (`PUBSUB_EMULATOR_HOST`) |
 | Secret Manager | lab | [secret-manager.md](secret-manager.md) | REST + gRPC; rotation config + lab `:rotateSecret` |
-| Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1 plus REST owner-write `users/{uid}` (`FIRESTORE_EMULATOR_HOST`) |
+| Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1 plus REST GET/PATCH/POST owner access for `users/{uid}` (`FIRESTORE_EMULATOR_HOST`) |
 | Cloud KMS | lab | [kms.md](kms.md) | REST v1 symmetric + RSA_SIGN_PSS sign/verify; optional VPC-SC on `:decrypt` |
 | Cloud Logging | lab | [logging.md](logging.md) | REST v2 entries, sinks (`disabled`), view-scoped get, exclusions, `resource.type` list filter, lab logs inject |
 | Cloud Audit Logs | lab (theatre) | [cloud-audit-logs.md](cloud-audit-logs.md) | Env-gated inject + lab clock/BulkSeed; listable `protoPayload` lite via Logging `entries:list` |

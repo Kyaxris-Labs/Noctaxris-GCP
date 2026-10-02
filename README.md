@@ -150,7 +150,7 @@ Open the service matrix for detailed actions and gaps. Full notes and CLI smoke:
     </tr>
     <tr>
       <td>Firestore</td>
-      <td>gRPC Firestore v1; atomic Commit + BatchWrite (<code>FIRESTORE_EMULATOR_HOST</code>); Identity Toolkit users write only <code>users/{uid}</code>.</td>
+      <td>gRPC Firestore v1; REST GET/PATCH/POST; atomic Commit + BatchWrite (<code>FIRESTORE_EMULATOR_HOST</code>); Identity Toolkit users read/write only <code>users/{uid}</code>.</td>
       <td>Multi-database ids beyond <code>(default)</code>; Listen / realtime.</td>
     </tr>
     <tr>
@@ -365,7 +365,7 @@ Full graph and request path: [docs/architecture.md](docs/architecture.md).
 | [docs/index.md](docs/index.md) | Architecture, configuration, ops, security posture |
 | [docs/services/](docs/services/index.md) | Per-service APIs, authz notes, CLI smoke |
 | [docs/ops.md](docs/ops.md) | Backup, restore, upgrade, graceful shutdown, CI matrix |
-| [docs/release.md](docs/release.md) | Cutting a release (`v1.5.0`, Hub `latest` / semver) |
+| [docs/release.md](docs/release.md) | Cutting a release (`v1.5.1`, Hub `latest` / semver) |
 | [tests/README.md](tests/README.md) | SDK and Terraform suites (Compose required for live runs) |
 
 ## Contributors

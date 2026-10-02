@@ -126,6 +126,16 @@ func ownUsersDoc(path, uid string) bool {
 }
 
 func (s *Service) authorizeWritePrincipal(p authn.Principal, permission, projectID, path string) error {
+	return s.authorizeOwnerOrIAM(p, permission, projectID, path)
+}
+
+// authorizeReadPrincipal lets Identity Toolkit users read only users/{uid};
+// everyone else needs datastore.entities.get on the project.
+func (s *Service) authorizeReadPrincipal(p authn.Principal, projectID, path string) error {
+	return s.authorizeOwnerOrIAM(p, "datastore.entities.get", projectID, path)
+}
+
+func (s *Service) authorizeOwnerOrIAM(p authn.Principal, permission, projectID, path string) error {
 	if isIdentityToolkitUser(p) {
 		if !ownUsersDoc(path, toolkitUID(p)) {
 			return status.Error(codes.PermissionDenied, "The caller does not have permission.")
@@ -144,6 +154,18 @@ func (s *Service) authorizeWritePrincipal(p authn.Principal, permission, project
 }
 
 func (s *Service) authorizeWrite(ctx context.Context, permission, projectID, path string) error {
+	return s.authorizeCtx(ctx, func(p authn.Principal) error {
+		return s.authorizeWritePrincipal(p, permission, projectID, path)
+	})
+}
+
+func (s *Service) authorizeRead(ctx context.Context, projectID, path string) error {
+	return s.authorizeCtx(ctx, func(p authn.Principal) error {
+		return s.authorizeReadPrincipal(p, projectID, path)
+	})
+}
+
+func (s *Service) authorizeCtx(ctx context.Context, check func(authn.Principal) error) error {
 	p, err := s.principal(ctx)
 	if err != nil {
 		if err == authn.ErrUnauthenticated {
@@ -154,7 +176,7 @@ func (s *Service) authorizeWrite(ctx context.Context, permission, projectID, pat
 		}
 		return status.Error(codes.Unauthenticated, err.Error())
 	}
-	return s.authorizeWritePrincipal(p, permission, projectID, path)
+	return check(p)
 }
 
 func projectFromName(name string) (string, error) {
@@ -259,7 +281,7 @@ func (s *Service) GetDocument(ctx context.Context, req *firestorepb.GetDocumentR
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if _, err := s.require(ctx, "datastore.entities.get", projectID); err != nil {
+	if err := s.authorizeRead(ctx, projectID, req.GetName()); err != nil {
 		return nil, err
 	}
 	d, ok, err := s.Store.GetFirestoreDoc(req.GetName())

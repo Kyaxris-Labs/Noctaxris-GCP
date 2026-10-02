@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.1
+
+Patch after 1.5.0: Firestore REST GET and Identity Toolkit owner read for `users/{uid}`. Docker Hub: `kyaxris/noctaxris-gcp` (`1.5.1`, `1.5`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Firestore: REST `GET .../documents/{document}` returns the same document JSON as PATCH (404 when missing). Identity Toolkit users can read their own `users/{uid}` over REST and gRPC `GetDocument` without project IAM. Other users' documents stay denied for toolkit principals, and other callers still need `datastore.entities.get`.
+
 ## 1.5.0
 
 Minor after 1.4.4: Cloud Run nested long-lived HTTP containers with `/run/` proxy, publish-port and public URI env knobs, and image allowlist reuse of engine-local images. Docker Hub: `kyaxris/noctaxris-gcp` (`1.5.0`, `1.5`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

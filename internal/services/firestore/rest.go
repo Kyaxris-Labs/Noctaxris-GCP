@@ -17,10 +17,11 @@ import (
 
 type restPrincipalFunc func(*http.Request) (authn.Principal, bool)
 
-// MountREST registers Firestore REST document create/patch on the shared HTTP mux.
-// Owner-write ACL matches gRPC: Identity Toolkit uid may write only
+// MountREST registers Firestore REST document create/get/patch on the shared HTTP mux.
+// Owner ACL matches gRPC: Identity Toolkit uid may read or write only
 // .../documents/users/{uid}. Database id is (default) only.
 func (s *Service) MountREST(mux *http.ServeMux, principalFrom restPrincipalFunc) {
+	mux.HandleFunc("GET /v1/projects/{project}/databases/{database}/documents/{document...}", s.wrapREST(principalFrom, s.restGetDocument))
 	mux.HandleFunc("POST /v1/projects/{project}/databases/{database}/documents/{collection}", s.wrapREST(principalFrom, s.restCreateDocument))
 	mux.HandleFunc("PATCH /v1/projects/{project}/databases/{database}/documents/{document...}", s.wrapREST(principalFrom, s.restPatchDocument))
 }
@@ -76,6 +77,35 @@ func (s *Service) restCreateDocument(w http.ResponseWriter, r *http.Request, p a
 	}
 	if err := s.Store.PutFirestoreDoc(d); err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	writeJSONREST(w, http.StatusOK, restDocument(d))
+}
+
+func (s *Service) restGetDocument(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	project := r.PathValue("project")
+	database := r.PathValue("database")
+	docPath := strings.Trim(r.PathValue("document"), "/")
+	if err := requireDefaultDatabase(database); err != nil {
+		gcperrors.InvalidArgument(w, err.Error())
+		return
+	}
+	if docPath == "" || !strings.Contains(docPath, "/") {
+		gcperrors.InvalidArgument(w, "document path is required")
+		return
+	}
+	path := fmt.Sprintf("projects/%s/databases/(default)/documents/%s", project, docPath)
+	if err := s.authorizeReadPrincipal(p, project, path); err != nil {
+		writeFirestoreRESTErr(w, err)
+		return
+	}
+	d, ok, err := s.Store.GetFirestoreDoc(path)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		gcperrors.NotFound(w, "Document '"+path+"' not found")
 		return
 	}
 	writeJSONREST(w, http.StatusOK, restDocument(d))
