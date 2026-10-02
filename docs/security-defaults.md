@@ -36,6 +36,17 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   (not soft theatre). Bare process without those envs still soft-fails to theatre/mock.
 - If nested containers fail on Desktop/WSL2, add `compose.engine-privileged.yaml`
   (`privileged: true`). Keep host publish on `127.0.0.1:4588`.
+- Nested data engines (Cloud SQL, Memorystore Redis, Managed Kafka / Redpanda)
+  run on the shared DinD bridge `noctaxris-gcp-lab`. Default Compose does **not**
+  publish SQL, Redis, or Kafka ports on the host.
+- Nested Managed Kafka wire auth (Internal `noctaxris-gcp-lab` only; no host
+  publish):
+
+| Surface | Default wire auth | Notes |
+|---------|-------------------|-------|
+| Managed Kafka / Redpanda | PLAINTEXT Kafka API; no SASL / TLS client auth | Cluster `securityConfig` reports `securityProtocol=PLAINTEXT` and `aclEnforcement=CONTROL_PLANE_ONLY`. ACL CRUD is control-plane theatre only (not applied to the broker). Nested-network peers can produce/consume without broker ACLs. |
+
+  Keep nested Kafka ports unpublished on shared or multi-tenant lab hosts.
 
 ## Authentication
 
@@ -51,8 +62,9 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   `Authorization: Bearer` when the string is not the root token and is not in
   `access_tokens`. Principal email is `user:{uid}` for every Toolkit localId
   (not only email-shaped) so values cannot match `serviceAccount:` or `wif:` IAM
-  bindings. Custom tokens are not control-plane Bearers. Unsigned (`alg: none`)
-  id tokens are rejected.
+  bindings. Disabled users' id tokens are rejected. Toolkit Bearers are not
+  treated as `allUsers` / `allAuthenticatedUsers`. Custom tokens are not
+  control-plane Bearers. Unsigned (`alg: none`) id tokens are rejected.
 - Missing or invalid credentials return Google JSON `UNAUTHENTICATED` (HTTP 401).
 - GCS XML HMAC (`Authorization: GOOG4-HMAC-SHA256`) is separate from Bearer. When Host
   is `storage.googleapis.com` and the path has been rewritten to `/storage/xml/...`,
@@ -60,9 +72,13 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   [services/gcs.md](services/gcs.md)).
 - GCS V4 signed URL query auth: when `Authorization` is empty and the query has
   `X-Goog-Algorithm` + `X-Goog-Signature`, middleware skips Bearer only for
-  `/storage/` and `/upload/storage/` paths. The GCS handler still verifies the
-  signature fail-closed. Other APIs cannot be opened via `X-Goog-*` alone
+  object GET media and PUT media upload under `/storage/` and
+  `/upload/storage/`. The GCS handler still verifies the signature fail-closed.
+  Minting a PUT signed URL requires `storage.objects.create` (GET requires
+  `storage.objects.get`). Other APIs cannot be opened via `X-Goog-*` alone
   (see [services/gcs.md](services/gcs.md)).
+- Pub/Sub push OIDC mints RS256 lab JWTs with the oidc-lab key (`alg=none`
+  rejected); see [services/pubsub.md](services/pubsub.md).
 - Public paths (Bearer skipped):
   - `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`
   - Lab HTTP catcher `POST`/`GET` `/_noctaxris-gcp/http-catcher` (and `POST` under
@@ -126,9 +142,28 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
   / `.search` only, never substring `.get`, so `getAccessToken` is denied).
   Viewer and editor do **not** grant `secretmanager.versions.access` (needs
   `roles/secretmanager.secretAccessor` or owner).
-  `roles/iam.serviceAccountTokenCreator` on a service account grants
-  `getAccessToken` / `actAs` / sign methods for impersonation theatre.
-  `testIamPermissions` returns only granted permissions.
+- Impersonation is TokenCreator-only among the marketed IAM admin roles:
+  `roles/iam.serviceAccountTokenCreator` grants `getAccessToken` / `actAs` /
+  `signBlob` / `signJwt` / related mint methods.
+  `roles/iam.serviceAccountAdmin` manages service accounts and keys only (no
+  TokenCreator permissions).
+  `roles/iam.securityAdmin` covers IAM policy and custom-role admin plus
+  `*.getIamPolicy` / `*.setIamPolicy` across services, without TokenCreator /
+  actAs / mint / sign.
+- Project custom roles grant only listed `includedPermissions`. A role with
+  `stage=DISABLED` grants nothing at Evaluate (same as missing). Soft-deleted
+  roles also stop granting immediately.
+- Binary Authorization `ENFORCED` admits only Container Analysis occurrences
+  with `kind=ATTESTATION` and a non-empty `noteName` matching the image
+  `resourceUri` (see [cloud-run.md](services/cloud-run.md)).
+- Service Usage DISABLED and optional VPC-SC
+  (`NOCTAXRIS_GCP_VPCSC_ENFORCE=1`) share `RequireProjectAPIGates` /
+  `CheckProjectAPIGates` on marketed create/mutate paths (Run, Build,
+  Functions, AR, BigQuery, SQL, GKE, Kafka, Pub/Sub, KMS, Secret Manager,
+  Datastore/Firestore, App Engine, Armor, Asset, SCC, Vertex, BinAuth policy
+  update, and related). See [serviceusage.md](services/serviceusage.md) and
+  [access-context-manager.md](services/access-context-manager.md).
+- `testIamPermissions` returns only granted permissions.
 
 ## Outbound HTTP (SSRF fail-closed)
 

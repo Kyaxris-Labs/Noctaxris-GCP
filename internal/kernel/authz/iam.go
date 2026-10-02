@@ -577,8 +577,12 @@ func securityAdminGrants(permission string) bool {
 }
 
 // editorGrants mirrors GCP roles/editor: broad mutate except IAM policy admin,
-// service-account impersonation, Secret Manager payload access, Cloud KMS
+// TokenCreator-class / impersonation, Secret Manager payload access, Cloud KMS
 // cryptographic ops, and Organization Policy mutate.
+//
+// TokenCreator-class is fail-closed by prefix: unknown iam.serviceAccounts.*
+// verbs (beyond ordinary SA admin metadata/CRUD) are denied so a near-wildcard
+// residual cannot grant credential minting.
 func editorGrants(permission string) bool {
 	if permission == "" {
 		return false
@@ -586,15 +590,11 @@ func editorGrants(permission string) bool {
 	if strings.HasSuffix(permission, ".setIamPolicy") {
 		return false
 	}
+	if editorDeniesTokenCreatorClass(permission) {
+		return false
+	}
 	switch permission {
-	case "iam.serviceAccounts.getAccessToken",
-		"iam.serviceAccounts.actAs",
-		"iam.serviceAccounts.signBlob",
-		"iam.serviceAccounts.signJwt",
-		"iam.serviceAccounts.implicitDelegation",
-		"iam.serviceAccounts.generateAccessToken",
-		"iam.serviceAccounts.generateIdToken",
-		"secretmanager.versions.access",
+	case "secretmanager.versions.access",
 		"cloudkms.cryptoKeyVersions.useToEncrypt",
 		"cloudkms.cryptoKeyVersions.useToDecrypt",
 		"cloudkms.cryptoKeyVersions.useToSign",
@@ -604,6 +604,24 @@ func editorGrants(permission string) bool {
 		"orgpolicy.policies.delete":
 		return false
 	default:
+		return true
+	}
+}
+
+// editorDeniesTokenCreatorClass reports whether permission is TokenCreator-class
+// (or an unknown SA credential verb). Ordinary SA admin CRUD stays allowed.
+func editorDeniesTokenCreatorClass(permission string) bool {
+	if !strings.HasPrefix(permission, "iam.serviceAccounts.") {
+		return false
+	}
+	verb := strings.TrimPrefix(permission, "iam.serviceAccounts.")
+	switch verb {
+	case "get", "list", "create", "delete", "update", "enable", "disable", "undelete",
+		"getIamPolicy", "testIamPermissions":
+		return false
+	default:
+		// getAccessToken, actAs, signBlob/signJwt, generate*, implicitDelegation,
+		// getOpenIdToken, and any future mint verb.
 		return true
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
 // DefaultLocation is the lab default Vertex AI region.
@@ -27,6 +29,7 @@ var AllowlistedModelIDs = map[string]struct{}{
 
 // Service serves Vertex AI publisher-model predict / generateContent theatre.
 type Service struct {
+	Store *store.Store
 	Authz *authz.Evaluator
 }
 
@@ -94,6 +97,9 @@ func (s *Service) modelPost(w http.ResponseWriter, r *http.Request, p authn.Prin
 	modelID, action := splitColonAction(r.PathValue("model"))
 	if err := s.require(p, "aiplatform.endpoints.predict", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if s.Store != nil && !restlab.RequireProjectAPIGates(w, s.Store, p, project, "aiplatform.googleapis.com") {
 		return
 	}
 	if publisher != "google" {

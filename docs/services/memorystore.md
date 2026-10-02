@@ -23,6 +23,7 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 | `POST` | `/v1/projects/{p}/locations/{loc}/instances?instanceId={id}` (Instance body) |
 | `GET` | `/v1/projects/{p}/locations/{loc}/instances` |
 | `GET` | `/v1/projects/{p}/locations/{loc}/instances/{instance}` |
+| `GET` | `/v1/projects/{p}/locations/{loc}/instances/{instance}:getAuthString` |
 | `DELETE` | `/v1/projects/{p}/locations/{loc}/instances/{instance}` |
 | `GET` | `/v1/projects/{p}/locations/{loc}/operations/{operation}` |
 
@@ -48,6 +49,7 @@ The operations path is shared with Certificate Manager on the lab ServeMux
 Checked on `projects/{project}`:
 
 - `redis.instances.create|get|list|delete`
+- `redis.instances.getAuthString`
 - `redis.operations.get` (falls back to `redis.instances.get`)
 
 Seeded Service Usage: `redis.googleapis.com`.
@@ -56,17 +58,16 @@ Seeded Service Usage: `redis.googleapis.com`.
 
 - Without DinD: no Redis TCP listener; `host` is `{instanceId}.{location}.redis.noctaxris-gcp.lab`, `port` `6379`
 - With DinD: Redis listens only on `noctaxris-gcp-lab` (shared with SQL/Kafka; no host publish); nested ensure soft-fails back to theatre `host` when the engine is unreachable unless `NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED=1`/`true` (create returns `FAILED_PRECONDITION` and the instance row is rolled back)
-- Create accepts `authEnabled` / optional `authString`; when `authEnabled` is true and `authString` is empty, a UUID AUTH string is generated. Create/get JSON echoes `authEnabled` and (when enabled) `authString` (lab convenience; GCP uses `getAuthString`)
+- Create accepts `authEnabled` / optional `authString`; when `authEnabled` is true and `authString` is empty, a UUID AUTH string is generated. Create Operation `response` returns `authString` once when AUTH is on; get and list omit `authString` (they still echo `authEnabled`). Use `GET .../instances/{id}:getAuthString` for the secret (`{"authString":"..."}`; `FAILED_PRECONDITION` when AUTH is off)
 - Nested Redis with AUTH: `REDIS_PASSWORD` env plus `redis-server --requirepass` on `redis:7-alpine`
 - Create and delete return a completed LRO (`done: true`); Operations.get is immediate done theatre (no async worker)
-- No import/export, failover, maintenance, or `instances.getAuthString` path yet
+- No import/export, failover, or maintenance yet
 
 ## Deferred depth
 
 - Redis Cluster / Memorystore for Valkey surfaces
 - Connect-mode / VPC / CMEK fidelity
 - Host publish overlay for operator-loopback Redis clients (not default)
-- Dedicated `GET .../instances/{id}/authString` (auth string is already on Instance JSON when AUTH is on)
 
 ## Verification / CLI smoke
 
@@ -80,12 +81,15 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/us-central1/operations/create-lab-redis"
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/us-central1/instances/lab-redis"
+# get omits authString; fetch it explicitly:
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/locations/us-central1/instances/lab-redis:getAuthString"
 ```
 
 With default Compose, confirm `host` is `noctaxris-gcp-redis-lab-redis` and
 reach Redis from another container on `noctaxris-gcp-lab` (not from the host
 unless you add a custom publish overlay). With AUTH enabled, clients must
-`AUTH` with the instance `authString` (or `REDISCLI_AUTH`).
+`AUTH` with the string from create or `:getAuthString` (or `REDISCLI_AUTH`).
 
 ```bash
 gcloud config set api_endpoint_overrides/redis http://127.0.0.1:4588/

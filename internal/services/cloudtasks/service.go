@@ -14,6 +14,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/httpegress"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/jwtutil"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/labtoken"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
@@ -507,7 +508,7 @@ func (s *Service) dispatchHTTP(task store.CloudTask) {
 	if email := store.HTTPAuthServiceAccountEmail(task.HTTPRequestJSON); email != "" {
 		projectID := projectFromQueueName(task.QueueName)
 		_ = s.Store.EnsureServiceAccount(projectID, email, "cloud tasks dispatch SA")
-		if tok, _, merr := labtoken.Mint(s.Store, email, labtoken.DefaultLifetime); merr == nil {
+		if tok := mintHTTPDispatchAuth(s.Store, task.HTTPRequestJSON, email, hr.URL); tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
 	}
@@ -515,6 +516,31 @@ func (s *Service) dispatchHTTP(task store.CloudTask) {
 	if err == nil {
 		_ = resp.Body.Close()
 	}
+}
+
+// mintHTTPDispatchAuth mints oidcToken (RS256 lab OIDC with audience) or oauthToken (lab Bearer).
+// OIDC audience defaults to the target URL when omitted (GCP-shaped).
+func mintHTTPDispatchAuth(tokens labtoken.TokenStore, httpJSON, email, targetURL string) string {
+	if store.HTTPAuthUsesOIDC(httpJSON) {
+		aud := store.HTTPOIDCAudience(httpJSON)
+		if aud == "" {
+			aud = strings.TrimSpace(targetURL)
+		}
+		tok, err := jwtutil.SignLabOIDCRS256(map[string]any{
+			"aud":   aud,
+			"email": email,
+			"sub":   email,
+		})
+		if err != nil {
+			return ""
+		}
+		return tok
+	}
+	tok, _, err := labtoken.Mint(tokens, email, labtoken.DefaultLifetime)
+	if err != nil {
+		return ""
+	}
+	return tok
 }
 
 func projectFromQueueName(queueName string) string {

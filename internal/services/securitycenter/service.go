@@ -11,6 +11,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/gcperrors"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -128,8 +129,20 @@ func decodeBody(r *http.Request) (map[string]any, error) {
 	return body, nil
 }
 
-func orgParent(org string) string   { return "organizations/" + org }
+func orgParent(org string) string         { return "organizations/" + org }
 func projectParent(project string) string { return "projects/" + project }
+
+func projectIDFromSCCParent(parent string) (string, bool) {
+	const prefix = "projects/"
+	if !strings.HasPrefix(parent, prefix) {
+		return "", false
+	}
+	id := strings.TrimPrefix(parent, prefix)
+	if id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
+}
 
 func (s *Service) listOrgSources(w http.ResponseWriter, r *http.Request, p authn.Principal) {
 	s.listSources(w, r, p, orgParent(r.PathValue("org")))
@@ -222,6 +235,11 @@ func (s *Service) createSource(w http.ResponseWriter, r *http.Request, p authn.P
 	if err := s.require(p, "securitycenter.sources.create", parent); err != nil {
 		writeAuthzErr(w, err)
 		return
+	}
+	if projectID, ok := projectIDFromSCCParent(parent); ok {
+		if !restlab.RequireProjectAPIGates(w, s.Store, p, projectID, "securitycenter.googleapis.com") {
+			return
+		}
 	}
 	body, err := decodeBody(r)
 	if err != nil {
@@ -335,6 +353,11 @@ func (s *Service) createFinding(w http.ResponseWriter, r *http.Request, p authn.
 	if err := s.require(p, "securitycenter.findings.create", parent); err != nil {
 		writeAuthzErr(w, err)
 		return
+	}
+	if projectID, ok := projectIDFromSCCParent(parent); ok {
+		if !restlab.RequireProjectAPIGates(w, s.Store, p, projectID, "securitycenter.googleapis.com") {
+			return
+		}
 	}
 	body, err := decodeBody(r)
 	if err != nil {

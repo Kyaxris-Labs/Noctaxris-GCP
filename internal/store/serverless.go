@@ -1183,11 +1183,16 @@ func (s *Store) IncrementCloudTaskResponse(name string) error {
 
 // SchedulerOIDCAudience returns oidcToken.audience from httpTarget JSON when present.
 func SchedulerOIDCAudience(httpTargetJSON string) string {
-	if strings.TrimSpace(httpTargetJSON) == "" {
+	return HTTPOIDCAudience(httpTargetJSON)
+}
+
+// HTTPOIDCAudience returns oidcToken.audience from Scheduler/Tasks HTTP JSON when present.
+func HTTPOIDCAudience(httpJSON string) string {
+	if strings.TrimSpace(httpJSON) == "" {
 		return ""
 	}
 	var m map[string]any
-	if err := json.Unmarshal([]byte(httpTargetJSON), &m); err != nil {
+	if err := json.Unmarshal([]byte(httpJSON), &m); err != nil {
 		return ""
 	}
 	oidc, ok := m["oidcToken"].(map[string]any)
@@ -1195,7 +1200,24 @@ func SchedulerOIDCAudience(httpTargetJSON string) string {
 		return ""
 	}
 	aud, _ := oidc["audience"].(string)
-	return aud
+	return strings.TrimSpace(aud)
+}
+
+// HTTPAuthUsesOIDC reports whether httpJSON carries oidcToken.serviceAccountEmail.
+func HTTPAuthUsesOIDC(httpJSON string) bool {
+	if strings.TrimSpace(httpJSON) == "" {
+		return false
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(httpJSON), &m); err != nil {
+		return false
+	}
+	oidc, ok := m["oidcToken"].(map[string]any)
+	if !ok {
+		return false
+	}
+	email, _ := oidc["serviceAccountEmail"].(string)
+	return strings.TrimSpace(email) != ""
 }
 
 // HTTPAuthServiceAccountEmail extracts oidcToken or oauthToken serviceAccountEmail from HTTP target JSON.

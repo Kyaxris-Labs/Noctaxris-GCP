@@ -398,6 +398,9 @@ func (s *Service) createFeed(w http.ResponseWriter, r *http.Request, p authn.Pri
 		restlab.WriteAuthzErr(w, err)
 		return
 	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, projectID, "cloudasset.googleapis.com") {
+		return
+	}
 	feedID := strings.TrimSpace(r.URL.Query().Get("feedId"))
 	body, err := readJSONObject(r)
 	if err != nil {

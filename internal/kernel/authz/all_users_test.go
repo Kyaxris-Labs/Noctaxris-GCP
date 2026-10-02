@@ -35,12 +35,18 @@ func TestEvaluateAllUsersAndAllowPrincipalOrAllUsers(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("anonymous allUsers allow ok=%v err=%v", ok, err)
 	}
+	// Authenticated non-toolkit principals inherit allUsers via memberIn.
 	ok, err = e.AllowPrincipalOrAllUsers("lab@example.com", false, true, "storage.objects.get", resource)
+	if err != nil || !ok {
+		t.Fatalf("authenticated principal should inherit allUsers ok=%v err=%v", ok, err)
+	}
+	// Toolkit user: principals must not inherit allUsers.
+	ok, err = e.AllowPrincipalOrAllUsers("user:toolkit-uid", false, true, "storage.objects.get", resource)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ok {
-		t.Fatal("named principal without binding should deny even if allUsers is granted")
+		t.Fatal("toolkit principal must not inherit allUsers")
 	}
 	ok, err = e.AllowPrincipalOrAllUsers("root@noctaxris-gcp-local.iam.gserviceaccount.com", true, true, "storage.objects.get", resource)
 	if err != nil || !ok {

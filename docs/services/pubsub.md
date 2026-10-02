@@ -77,7 +77,7 @@ re-check IAM when a principal is present.
 - Snapshots are metadata-only (no backlog retention); seek-to-snapshot returns invalid argument
 - Filter language is attribute equality only (no HAS, OR, NOT)
 - Message retention and backlog quotas are not enforced
-- Push OIDC uses lab RS256 JWTs (jose / oidc-lab key), not Google-signed tokens
+- Push OIDC uses lab RS256 JWTs (jose / oidc-lab key), not Google-signed tokens; `alg=none` is rejected at mint
 - Dead-letter publishes when pull or failed-push attempt count reaches `maxDeliveryAttempts` (no separate deliveryAttempt metric API)
 - Push endpoints use the shared HTTP egress gate (metadata / link-local / private hosts fail closed even when egress is enabled)
 

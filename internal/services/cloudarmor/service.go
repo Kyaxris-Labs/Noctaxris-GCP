@@ -14,6 +14,7 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/celutil"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
@@ -132,6 +133,9 @@ func (s *Service) insertPolicy(w http.ResponseWriter, r *http.Request, p authn.P
 	project := r.PathValue("project")
 	if err := s.require(p, "compute.securityPolicies.create", project); err != nil {
 		writeAuthzErr(w, err)
+		return
+	}
+	if !restlab.RequireProjectAPIGates(w, s.Store, p, project, "compute.googleapis.com") {
 		return
 	}
 	body, err := decodeBody(r)

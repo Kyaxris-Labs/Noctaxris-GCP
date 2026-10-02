@@ -6,30 +6,30 @@ with honest emulator limits on each page.
 | Service | Status | Doc | Protocol |
 |---------|--------|-----|----------|
 | Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects (including lab-lite create), org seed, folders, tag keys/bindings lite |
-| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys (RSA PKCS#8 CreateKey), OAuth JWT bearer `/token` + `/oauth2/token`, WIF pool/provider + STS `/v1/token` (STS unrestricted under VPC-SC), TokenCreator `generateAccessToken` / `signBlob` / `signJwt` (including `iamcredentials.googleapis.com` alias; optional VPC-SC) |
-| Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable |
+| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys (RSA PKCS#8 CreateKey), OAuth JWT bearer `/token` + `/oauth2/token`, WIF pool/provider + STS `/v1/token` (STS unrestricted under VPC-SC), TokenCreator mint/sign (Admin/securityAdmin do not impersonate); custom `stage=DISABLED` grants nothing; optional VPC-SC on Credentials |
+| Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable; DISABLED gates marketed create paths (with optional VPC-SC via RequireProjectAPIGates) |
 | Organization Policy | lab | [orgpolicy.md](orgpolicy.md) | REST v2 policies get/set/list; boolean constraints theatre (SA keys + GCS public IAM) |
-| Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL + XML HMAC List/Get/Put (GOOG4 path after `storage.googleapis.com` rewrite); bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
-| Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST topics/subscriptions/snapshots; dead-letter + exactly-once; push `oidcToken` Bearer JWT (`PUBSUB_EMULATOR_HOST`) |
+| Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL (GET get / PUT create) + XML HMAC; `allUsers` anonymous get; compose create+get; bucket `retentionPolicy` (`STORAGE_EMULATOR_HOST`) |
+| Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST topics/subscriptions/snapshots; dead-letter + exactly-once; push `oidcToken` RS256 lab JWT (`alg=none` rejected; `PUBSUB_EMULATOR_HOST`) |
 | Secret Manager | lab | [secret-manager.md](secret-manager.md) | REST + gRPC; rotation config + lab `:rotateSecret` |
-| Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1 plus REST GET/PATCH/POST owner access for `users/{uid}` (`FIRESTORE_EMULATOR_HOST`) |
+| Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1 (BatchGet/Commit/BatchWrite path project bind) plus REST owner access for `users/{uid}` (`FIRESTORE_EMULATOR_HOST`) |
 | Cloud KMS | lab | [kms.md](kms.md) | REST v1 symmetric + RSA_SIGN_PSS sign/verify; optional VPC-SC on `:decrypt` |
 | Cloud Logging | lab | [logging.md](logging.md) | REST v2 entries, sinks (`disabled`), view-scoped get, exclusions, `resource.type` list filter, lab logs inject |
 | Cloud Audit Logs | lab (theatre) | [cloud-audit-logs.md](cloud-audit-logs.md) | Env-gated inject + lab clock/BulkSeed; listable `protoPayload` lite via Logging `entries:list` |
 | Security Command Center | lab | [security-command-center.md](security-command-center.md) | Sources/findings CRUD lite; lab InjectFindings (`NOCTAXRIS_GCP_SCC_INJECT`) |
 | Cloud Asset Inventory | lab (theatre) | [cloud-asset-inventory.md](cloud-asset-inventory.md) | searchAllResources / listAssets / exportAssets lite over store resources; feeds + history |
-| Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke`; nested long-lived HTTP + `/run/` proxy when ports/command/args set; Binary Authorization admit; IMDS metadata |
-| Container Analysis | lab | [container-analysis.md](container-analysis.md) | REST v1 occurrences list/create/get, filter + pagination, vulnerabilitySummary; BinAuth exact URI admit |
+| Cloud Run | lab | [cloud-run.md](cloud-run.md) | REST Admin API v2 services/jobs, traffic, IAM, `:invoke`; nested `/run/` proxy with Invoker (principal or `allUsers`); Binary Authorization `ENFORCED` ATTESTATION+noteName; IMDS metadata |
+| Container Analysis | lab | [container-analysis.md](container-analysis.md) | REST v1 occurrences list/create/get, filter + pagination, vulnerabilitySummary; BinAuth `ENFORCED` requires ATTESTATION + noteName + exact URI |
 | Cloud Functions | lab | [cloud-functions.md](cloud-functions.md) | REST Functions v2, upload/download URL + source accept, IAM, `:invoke` stub |
 | Cloud Scheduler | lab | [cloud-scheduler.md](cloud-scheduler.md) | REST v1 jobs, 5-field cron next-run, pause/resume, OIDC audience |
 | Cloud Tasks | lab | [cloud-tasks.md](cloud-tasks.md) | REST v2 queues/tasks, rate limits, retry, App Engine fields, `:run` |
 | BigQuery | lab | [bigquery.md](bigquery.md) | REST v2 datasets/tables, insertAll, tabledata.list, jobs.query (GROUP BY / UNION / INFORMATION_SCHEMA) |
-| Firebase Auth | lab | [firebase-auth.md](firebase-auth.md) | Identity Toolkit REST, OOB reset, claims, verifyIdToken, v2 tenants (`firebase.tenant` / `tenantId`) |
+| Firebase Auth | lab | [firebase-auth.md](firebase-auth.md) | Identity Toolkit REST, OOB reset, claims, verifyIdToken, `user:{uid}` Bearer namespace, v2 tenants (`firebase.tenant` / `tenantId`) |
 | Cloud Monitoring | lab | [monitoring.md](monitoring.md) | REST v3 descriptors, time series, alertPolicies theatre |
 | Cloud Datastore | lab | [datastore.md](datastore.md) | gRPC Datastore v1 (`DATASTORE_EMULATOR_HOST`) |
 | Eventarc | lab | [eventarc.md](eventarc.md) | REST v1 triggers/channels; Pub/Sub and GCS delivery + retry |
-| Artifact Registry | lab | [artifact-registry.md](artifact-registry.md) | REST v1 repos/packages/versions plus Docker Registry HTTP API V2 on `:4588` (in-process blobs) |
-| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild nested step execution (build SA `CLOUDSDK_AUTH_ACCESS_TOKEN`, ExtraHosts when inject is on) + buffered `/logs` + `availableSecrets`/`secretEnv` + triggers CRUD lite + worker pools (`NO_PUBLIC_EGRESS` via httpegress: WAN deny, `:4588` and `host.docker.internal:4588` allow) |
+| Artifact Registry | lab | [artifact-registry.md](artifact-registry.md) | REST v1 repos/packages/versions (repo-then-project IAM) plus Docker Registry HTTP API V2 on `:4588` (in-process blobs) |
+| Cloud Build | lab | [cloud-build.md](cloud-build.md) | REST v1 createBuild/retry/:run actAs + nested step execution (build SA `CLOUDSDK_AUTH_ACCESS_TOKEN`, ExtraHosts when inject is on) + buffered `/logs` + `availableSecrets`/`secretEnv` + triggers CRUD lite + worker pools (`NO_PUBLIC_EGRESS` via httpegress: WAN deny, `:4588` and `host.docker.internal:4588` allow) |
 | Workflows | lab | [workflows.md](workflows.md) | REST v1 workflows CRUD + executions SUCCEEDED theatre |
 | Cloud Spanner | lab | [spanner.md](spanner.md) | REST v1 instances/databases; session commit insert + ExecuteSql/Read rows |
 | App Engine | lab | [app-engine.md](app-engine.md) | REST Admin API v1 apps/services/versions (control-plane theatre) |
@@ -45,9 +45,9 @@ with honest emulator limits on each page.
 | Cloud Armor | lab | [cloud-armor.md](cloud-armor.md) | Compute securityPolicies CRUD + ByteMatchSet `:validate` |
 | Certificate Manager | lab | [certificate-manager.md](certificate-manager.md) | certificates + certificateMaps CRUD; create returns completed Operation (`done:true`; `global` OK) |
 | GKE | lab | [gke.md](gke.md) | Container API v1 clusters CRUD; optional k3s one-shot with nested engine |
-| HTTP(S) load balancing | lab | [load-balancing.md](load-balancing.md) | Global LB metadata + public `/lb/{project}/{rule}/...` GCS dataplane |
-| Cloud CDN | lab | [cloud-cdn.md](cloud-cdn.md) | Distributions CRUD + public `/cdn/{project}/{id}/...` edge |
-| Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC membership deny on GCS/Pub/Sub/KMS decrypt and IAM Credentials (same-project is not a skip; STS unrestricted) |
+| HTTP(S) load balancing | lab | [load-balancing.md](load-balancing.md) | Global LB metadata + `/lb/{project}/{rule}/...` GCS dataplane (`storage.objects.get` via principal or `allUsers`) |
+| Cloud CDN | lab | [cloud-cdn.md](cloud-cdn.md) | Distributions CRUD + project-bound `/cdn/{project}/{id}/...` edge (GCS origin needs `storage.objects.get`) |
+| Access Context Manager | lab | [access-context-manager.md](access-context-manager.md) | accessPolicies + servicePerimeters CRUD; optional VPC-SC membership deny on marketed gated APIs (GCS/Pub/Sub/KMS decrypt, IAM Credentials, and create paths using RequireProjectAPIGates; same-project is not a skip; STS unrestricted) |
 
 Default project id: `noctaxris-gcp-local` (`NOCTAXRIS_GCP_PROJECT`).
 Seeded organization: `organizations/noctaxris-gcp-org`.

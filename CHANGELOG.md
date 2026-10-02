@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Service Usage / VPC-SC: shared `RequireProjectAPIGates` / `CheckProjectAPIGates` on more marketed create paths (App Engine, Pub/Sub topic/subscription/snapshot, Cloud SQL, GKE, Managed Kafka, Container Analysis, Binary Authorization, Cloud Armor, Cloud Asset feeds, Security Command Center project sources/findings, Vertex AI predict, Datastore/Firestore). EnsureRoot seeds Container Analysis, Binary Authorization, Cloud Asset, Security Command Center, Organization Policy, and Access Context Manager APIs as ENABLED.
+- Custom roles with `stage=DISABLED` still do not grant at Evaluate (`GetRoleIncludedPermissions`).
+- Container Analysis: bare `noteName` ids rewrite under the occurrence project for `notes.attachOccurrence`.
+
 ## 1.6.1
 
 Patch after 1.6.0: Cloud Build buffered logs and `availableSecrets` / `secretEnv` inject, GCS XML GOOG4 path after host rewrite, CRM `testIamPermissions` custom-role coverage. Docker Hub: `kyaxris/noctaxris-gcp` (`1.6.1`, `1.6`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

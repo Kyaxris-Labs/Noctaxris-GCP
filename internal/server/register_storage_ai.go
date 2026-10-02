@@ -17,6 +17,6 @@ func (s *Server) registerStorageAI() {
 	fs := &filestore.Service{Store: s.store, Authz: s.authz}
 	fs.Mount(s.mux, principalFrom)
 
-	vai := &vertexai.Service{Authz: s.authz}
+	vai := &vertexai.Service{Store: s.store, Authz: s.authz}
 	vai.Mount(s.mux, principalFrom)
 }

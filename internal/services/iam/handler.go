@@ -451,8 +451,19 @@ func (h *Handler) undeleteServiceAccount(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) signBlob(w http.ResponseWriter, r *http.Request, projectResource string, sa store.ServiceAccount) {
-	p, ok := h.require(w, r, "iam.serviceAccounts.signBlob", projectResource)
+	saResource := fmt.Sprintf("projects/%s/serviceAccounts/%s", sa.ProjectID, sa.Email)
+	p, ok := h.principal(r)
 	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return
+	}
+	allowed, err := h.Authz.EvaluateAny(p.Email, p.IsRoot, "iam.serviceAccounts.signBlob", saResource, projectResource)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !allowed {
+		gcperrors.PermissionDenied(w, "")
 		return
 	}
 	if !h.checkVPCSCCredentials(w, p, sa) {
@@ -501,8 +512,19 @@ func (h *Handler) signBlob(w http.ResponseWriter, r *http.Request, projectResour
 // signJwt mints an unsigned lab JWT (alg=none, empty signature). Not real asymmetric signing.
 // Shape matches IAM Credentials projects.serviceAccounts.signJwt (payload + keyId + signedJwt).
 func (h *Handler) signJwt(w http.ResponseWriter, r *http.Request, projectResource string, sa store.ServiceAccount) {
-	p, ok := h.require(w, r, "iam.serviceAccounts.signJwt", projectResource)
+	saResource := fmt.Sprintf("projects/%s/serviceAccounts/%s", sa.ProjectID, sa.Email)
+	p, ok := h.principal(r)
 	if !ok {
+		gcperrors.Unauthenticated(w, "")
+		return
+	}
+	allowed, err := h.Authz.EvaluateAny(p.Email, p.IsRoot, "iam.serviceAccounts.signJwt", saResource, projectResource)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !allowed {
+		gcperrors.PermissionDenied(w, "")
 		return
 	}
 	if !h.checkVPCSCCredentials(w, p, sa) {

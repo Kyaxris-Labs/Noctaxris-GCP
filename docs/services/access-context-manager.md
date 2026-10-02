@@ -1,16 +1,23 @@
 # Access Context Manager (VPC Service Controls lite)
 
 Lab Access Context Manager REST for access policies and service perimeters.
-Optional enforce (`NOCTAXRIS_GCP_VPCSC_ENFORCE=1`) denies GCS
-object upload/copy, Pub/Sub publish (including GCS notification fanout), Cloud
-KMS `:decrypt`, and IAM Credentials `generateAccessToken` / `signBlob` /
-`signJwt` when a perimeter restricts those APIs and the caller is not a
-perimeter member. Same-project is not a skip: unresolved WIF, host/user tokens,
-and other callers whose project is not listed in `resources` are outside even
-when the resource project matches. Perimeter members in that project still
-allow (IAM and Token Creator `request.time` CEL still apply). STS is not
-perimeter-restricted. Official IAM Credentials is often not VPC-SC
-restricted; this emulator still enforces it.
+Optional enforce (`NOCTAXRIS_GCP_VPCSC_ENFORCE=1`) denies calls when a
+perimeter restricts the API and the caller is not a perimeter member. Marketed
+create/mutate paths that use `restlab.RequireProjectAPIGates` (or gRPC
+`CheckProjectAPIGates`) run Service Usage then the same VPC-SC membership check
+used on GCS object upload, Pub/Sub publish, Cloud KMS `:decrypt`, and IAM
+Credentials `generateAccessToken` / `signBlob` / `signJwt`. Covered create
+surfaces include Cloud Build, Cloud Run, Functions, Artifact Registry,
+BigQuery, Spanner/Bigtable/Filestore/Memorystore/SQL, GKE, Managed Kafka,
+Pub/Sub, KMS, Secret Manager, DNS, Certificate Manager, Workflows, Cloud Tasks,
+Eventarc, Scheduler, Dataflow, Monitoring, Logging sinks, Cloud Asset, Container
+Analysis, App Engine, Cloud Armor, SCC, Vertex AI, Datastore/Firestore (gRPC),
+and Binary Authorization policy update. Same-project is not a skip: unresolved
+WIF, host/user tokens, and other callers whose project is not listed in
+`resources` are outside even when the resource project matches. Perimeter
+members in that project still allow (IAM and Token Creator `request.time` CEL
+still apply). STS is not perimeter-restricted. Official IAM Credentials is often
+not VPC-SC restricted; this emulator still enforces it.
 
 ## Status
 

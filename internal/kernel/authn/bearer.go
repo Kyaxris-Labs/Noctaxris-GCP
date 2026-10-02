@@ -8,6 +8,8 @@ import (
 	urlpath "path"
 	"strings"
 	"time"
+
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/jwtutil"
 )
 
 // ErrUnauthenticated is returned when Bearer credentials are missing or invalid.
@@ -64,6 +66,9 @@ func (a *Authenticator) AuthenticateToken(token string) (Principal, error) {
 		return Principal{Email: email, IsRoot: true}, nil
 	}
 	if a.Tokens == nil {
+		if p, ok := labOIDCPrincipal(token); ok {
+			return p, nil
+		}
 		if p, ok := identityToolkitPrincipalWithStatus(token, a.ToolkitUsers); ok {
 			return p, nil
 		}
@@ -78,12 +83,39 @@ func (a *Authenticator) AuthenticateToken(token string) (Principal, error) {
 		return Principal{}, err
 	}
 	if !ok || email == "" {
+		if p, ok := labOIDCPrincipal(token); ok {
+			return p, nil
+		}
 		if p, ok := identityToolkitPrincipalWithStatus(token, a.ToolkitUsers); ok {
 			return p, nil
 		}
 		return Principal{}, ErrUnauthenticated
 	}
 	return Principal{Email: email, IsRoot: false}, nil
+}
+
+// labOIDCPrincipal accepts RS256 lab OIDC JWTs (jose; alg=none rejected).
+// Used by Scheduler/Tasks oidcToken dispatch into emulator APIs.
+func labOIDCPrincipal(token string) (Principal, bool) {
+	if strings.Count(token, ".") != 2 {
+		return Principal{}, false
+	}
+	jwks, err := jwtutil.MarshalLabOIDCJWKS()
+	if err != nil {
+		return Principal{}, false
+	}
+	claims, err := jwtutil.VerifyCompactRS256(token, jwks)
+	if err != nil {
+		return Principal{}, false
+	}
+	email := strings.TrimSpace(jwtutil.ClaimString(claims, "email"))
+	if email == "" {
+		email = strings.TrimSpace(jwtutil.ClaimString(claims, "sub"))
+	}
+	if email == "" || !strings.Contains(email, "@") {
+		return Principal{}, false
+	}
+	return Principal{Email: email, IsRoot: false}, true
 }
 
 func identityToolkitPrincipal(token string) (Principal, bool) {

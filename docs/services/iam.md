@@ -57,6 +57,18 @@ and organization allow policies (same inheritance model as GCP resource
 hierarchy). Org/folder bindings use the existing CRM getIamPolicy/setIamPolicy
 documents.
 
+### Predefined IAM admin roles
+
+| Role | Grants | Does not grant |
+|------|--------|----------------|
+| `roles/iam.serviceAccountTokenCreator` | `getAccessToken`, `actAs`, `signBlob`, `signJwt`, related mint methods | SA/key CRUD admin |
+| `roles/iam.serviceAccountAdmin` | SA create/update/delete/enable/disable/undelete, get/setIamPolicy, key CRUD | TokenCreator / actAs / mint / sign |
+| `roles/iam.securityAdmin` | Custom roles CRUD, SA get/list and get/setIamPolicy, key get/list, WIF pool/provider CRUD, Resource Manager get/setIamPolicy, plus any `*.getIamPolicy` / `*.setIamPolicy` | TokenCreator / actAs / mint / sign |
+
+Bind TokenCreator on the target service account (or grant impersonation via
+`roles/owner` / an explicit permission) when a principal must mint or actAs.
+Admin or securityAdmin alone is not enough.
+
 ### Custom roles
 
 Project custom roles use Google IAM Admin shapes under
@@ -65,6 +77,8 @@ Project custom roles use Google IAM Admin shapes under
 Role resource names are `projects/{project}/roles/{roleId}` and may be bound in
 CRM/IAM policies. Authz evaluates only the listed `includedPermissions` (no
 `{svc}.*` catch-all for unknown predefined roles such as `roles/xyz.admin`).
+A role with `stage=DISABLED` returns no permissions at Evaluate (`ok=false`),
+so bindings to that role grant nothing until the stage is changed.
 Delete is soft-delete (`deleted: true`); list omits deleted rows unless
 `showDeleted=true`. Get on a soft-deleted role returns HTTP 200 with
 `deleted: true` (not 404). Soft-deleted roles stop granting immediately.
@@ -229,7 +243,9 @@ Create service account fails with `FAILED_PRECONDITION` when
 - Soft-delete has no 30-day purge timer; rows remain until process data is wiped.
 - CreateKey emits real RSA PKCS#8 PEM in credentials JSON; access tokens come from the JWT bearer grant (or `generateAccessToken`), not from using the PEM as a Bearer.
 - Custom roles are project-scoped only (no organization custom roles CRUD).
+- `stage=DISABLED` custom roles grant nothing; soft-deleted roles also grant nothing.
 - Marketed predefined roles (IAM, Resource Manager, Pub/Sub, BigQuery, Logging, Monitoring, Run, Functions, Service Usage, ACM, Binary Authorization, Cloud Asset, Container Analysis, Cloud Tasks, Org Policy, Secret Manager, Cloud KMS, Cloud Storage, Artifact Registry, Datastore/Firestore, Spanner, Cloud Scheduler, Eventarc, Cloud Build, Firebase Auth, Identity Toolkit) use explicit permission sets. Unknown `roles/{svc}.*` fail closed (no residual `{svc}.*` shortcut).
+- `roles/iam.serviceAccountAdmin` and `roles/iam.securityAdmin` do not grant TokenCreator impersonation.
 - Basic `roles/editor` does not grant Secret Manager payload access, Cloud KMS cryptographic ops, Organization Policy mutate, `setIamPolicy`, or service-account impersonation.
 - gRPC `IAM` admin service is not registered yet; use REST.
 

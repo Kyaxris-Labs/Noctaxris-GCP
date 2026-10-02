@@ -197,6 +197,14 @@ func TestEditorDeniesIAMAdminAndImpersonation(t *testing.T) {
 		"resourcemanager.projects.setIamPolicy",
 		"iam.serviceAccounts.getAccessToken",
 		"iam.serviceAccounts.signBlob",
+		"iam.serviceAccounts.signJwt",
+		"iam.serviceAccounts.actAs",
+		"iam.serviceAccounts.generateAccessToken",
+		"iam.serviceAccounts.generateIdToken",
+		"iam.serviceAccounts.implicitDelegation",
+		"iam.serviceAccounts.getOpenIdToken",
+		// Near-wildcard residual: unknown SA credential verb must fail closed.
+		"iam.serviceAccounts.mintFutureCredential",
 	} {
 		ok, err := e.Evaluate(email, false, perm, resource)
 		if err != nil {
@@ -204,6 +212,20 @@ func TestEditorDeniesIAMAdminAndImpersonation(t *testing.T) {
 		}
 		if ok {
 			t.Fatalf("editor must not grant %s", perm)
+		}
+	}
+	for _, perm := range []string{
+		"iam.serviceAccounts.get",
+		"iam.serviceAccounts.list",
+		"iam.serviceAccounts.create",
+		"iam.serviceAccounts.enable",
+	} {
+		ok, err := e.Evaluate(email, false, perm, resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Fatalf("editor should still grant ordinary SA admin %s", perm)
 		}
 	}
 }

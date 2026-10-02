@@ -21,6 +21,15 @@ func TestHTTPAuthServiceAccountEmail(t *testing.T) {
 	if store.HTTPAuthServiceAccountEmail(`{"url":"http://example"}`) != "" {
 		t.Fatal("expected empty")
 	}
+	if !store.HTTPAuthUsesOIDC(`{"oidcToken":{"serviceAccountEmail":"a@x","audience":"https://aud"}}`) {
+		t.Fatal("expected OIDC")
+	}
+	if store.HTTPAuthUsesOIDC(`{"oauthToken":{"serviceAccountEmail":"b@x"}}`) {
+		t.Fatal("oauth-only must not report OIDC")
+	}
+	if store.HTTPOIDCAudience(`{"oidcToken":{"serviceAccountEmail":"a@x","audience":"https://aud"}}`) != "https://aud" {
+		t.Fatal("expected OIDC audience")
+	}
 }
 
 func TestServerlessStoreCRUD(t *testing.T) {

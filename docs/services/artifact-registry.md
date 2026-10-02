@@ -58,7 +58,8 @@ stored blob length when that digest exists; otherwise `"0"`.
 
 ## Authz
 
-v1 methods are checked on `projects/{project}`:
+Repository-scoped methods use `EvaluateAny` on the repository resource name
+first, then `projects/{project}`:
 
 - `artifactregistry.repositories.create|get|list|update|delete|getIamPolicy|setIamPolicy`
 - `artifactregistry.packages.create|get|list|delete`
@@ -66,9 +67,13 @@ v1 methods are checked on `projects/{project}`:
 - `artifactregistry.files.list`
 - `artifactregistry.tags.list`
 
-Registry V2 uses the same Bearer principal as v1 (`PrincipalFromContext`). Root
-skips IAM. Missing Bearer is `401` with `WWW-Authenticate: Bearer`. Denied is
-`403`.
+Bindings on `.../repositories/{repo}:setIamPolicy` therefore authorize package,
+version, file, and Docker V2 access for that repo without a project-wide grant.
+Create still needs project-level `repositories.create`.
+
+Registry V2 uses the same Bearer principal as v1 (`PrincipalFromContext`) and
+the same repo-then-project EvaluateAny. Root skips IAM. Missing Bearer is `401`
+with `WWW-Authenticate: Bearer`. Denied is `403`.
 
 The first path segment of `name` is the project when it matches a CRM project
 row; otherwise the default project is `noctaxris-gcp-local`.

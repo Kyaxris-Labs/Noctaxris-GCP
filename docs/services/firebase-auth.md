@@ -44,7 +44,7 @@ Admin (Bearer required):
 
 Password reset: `sendOobCode` with `requestType=PASSWORD_RESET` returns a lab `oobCode` (no email send). `resetPassword` consumes the code and sets `newPassword`.
 
-`setCustomUserClaims` stores `customAttributes` / `claims` JSON on the user. Id tokens are HS256-signed with the process signing key (`alg: HS256`). Reserved claims (`user_id`, `sub`, `exp`, `iss`, `aud`, and related) are set by the mint path and cannot be overwritten by custom attributes. `verifyIdToken`, public lookup, and Bearer acceptance require a valid signature; unsigned tokens (`alg: none`) are rejected. Admin `createCustomToken` mints HS256 custom tokens; `:signInWithCustomToken` verifies that signature before minting an id token. Custom tokens are not accepted as control-plane Bearers. All Toolkit localIds authenticate as `user:{uid}` so they do not match `serviceAccount:` or `wif:` IAM bindings.
+`setCustomUserClaims` stores `customAttributes` / `claims` JSON on the user. Id tokens are HS256-signed with the process signing key (`alg: HS256`). Reserved claims (`user_id`, `sub`, `exp`, `iss`, `aud`, and related) are set by the mint path and cannot be overwritten by custom attributes. `verifyIdToken`, public lookup, and Bearer acceptance require a valid signature; unsigned tokens (`alg: none`) are rejected. Admin `createCustomToken` mints HS256 custom tokens; `:signInWithCustomToken` verifies that signature before minting an id token. Custom tokens are not accepted as control-plane Bearers. Every Toolkit localId (email-shaped or not) authenticates as principal `user:{uid}` so raw values cannot match `serviceAccount:` or `wif:` IAM bindings. Disabled users' id tokens fail Bearer acceptance and verify. Toolkit Bearers are not treated as `allUsers` / `allAuthenticatedUsers`.
 
 v2 tenant CRUD stores `allowPasswordSignup`. `accounts:signUp` with `tenantId` of a locked tenant (`allowPasswordSignup=false`) returns `admin-restricted-operation`. Open tenants accept email/password sign-up. When a user belongs to a tenant, minted id tokens include `firebase.tenant` (Identity Platform multi-tenancy claim), and user records returned from sign-up / sign-in / `accounts:lookup` include `tenantId`.
 
@@ -69,6 +69,7 @@ Admin calls still need `Authorization: Bearer <token>`.
 - Client `accounts:lookup` with `idToken` only is public self-lookup; `email[]` / `localId[]` / phone / federated need admin Bearer as above
 - Client `accounts:update` / `accounts:delete` require lab `idToken` matching `localId` when provided; admin project CRUD remains Bearer-only
 - Id tokens and custom tokens use process HS256 keys (not Google public keys); custom-token exchange requires a verified custom token
+- Control-plane Bearers from Toolkit always use the `user:` principal namespace; disabled accounts reject id tokens
 - `sendOobCode` returns an `oobCode` only (no email delivery)
 - No phone / OAuth / SAML / OIDC providers, MFA, or blocking functions
 

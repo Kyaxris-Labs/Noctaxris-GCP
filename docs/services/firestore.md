@@ -55,6 +55,11 @@ Permissions checked on `projects/{project}`:
 - `datastore.entities.delete`
 - `datastore.entities.list`
 
+`BatchGetDocuments`, `BatchWrite`, and `Commit` bind every document name to the
+authorized project: a path under `projects/{other}/databases/...` is
+`InvalidArgument` even when the caller has IAM on the request project. Single-doc
+RPCs already take the project from the resource name.
+
 Identity Toolkit JWT principals (`iss` `https://securetoken.google.com/`) may
 read or write only when the path under `/documents/` is exactly `users/{uid}`
 matching the token `user_id` / `sub` (no nested suffix tricks). Other document

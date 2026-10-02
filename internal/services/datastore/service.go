@@ -3,6 +3,7 @@ package datastore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"cloud.google.com/go/datastore/apiv1/datastorepb"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/restlab"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -69,6 +71,15 @@ func (s *Service) require(ctx context.Context, permission, projectID string) err
 			return st.Err()
 		}
 		return status.Error(codes.Unauthenticated, err.Error())
+	}
+	if err := restlab.CheckProjectAPIGates(s.Store, p, projectID, "datastore.googleapis.com"); err != nil {
+		if errors.Is(err, store.ErrServiceDisabled) {
+			return status.Error(codes.FailedPrecondition, restlab.ServiceDisabledMessage("datastore.googleapis.com"))
+		}
+		if errors.Is(err, store.ErrVPCSCPerimeter) {
+			return status.Error(codes.PermissionDenied, err.Error())
+		}
+		return status.Errorf(codes.Internal, "%v", err)
 	}
 	ok, err := s.Authz.Evaluate(p.Email, p.IsRoot, permission, "projects/"+projectID)
 	if err != nil {

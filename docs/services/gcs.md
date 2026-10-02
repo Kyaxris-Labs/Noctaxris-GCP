@@ -68,6 +68,15 @@ Eventarc finalize hooks remain separate and unchanged.
 project resource `projects/{projectId}` when the bucket is known (OR). Bucket IAM
 documents are stored under `buckets/{name}` via get/set IAM.
 
+Unauthenticated callers are allowed only when `allUsers` is granted the needed
+permission (for example `storage.objects.get` for anonymous media reads). Without
+that binding, missing Bearer stays deny. `allAuthenticatedUsers` is not treated as
+a blanket anonymous allow.
+
+Compose (`POST .../o/{dest}/compose`) requires `storage.objects.create` on the
+destination and `storage.objects.get` for each source object (fail closed if any
+source get is denied).
+
 When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, JSON object upload also checks VPC Service
 Controls for `storage.googleapis.com`. The caller project is the SA email project,
 or the WIF pool project for `wif:{providerId}:{subject}`. A caller that cannot be
@@ -84,18 +93,20 @@ projects. STS is not perimeter-restricted. See
 {"method":"GET","expires":600,"alt":"media"}
 ```
 
-`method` is `GET` or `PUT`. Response includes `signedUrl`, `algorithm=GOOG4-HMAC-SHA256`,
-and lab `accessId=noctaxris-gcp-lab`.
+`method` is `GET` or `PUT`. Minting requires `storage.objects.get` for GET URLs
+and `storage.objects.create` for PUT URLs. Response includes `signedUrl`,
+`algorithm=GOOG4-HMAC-SHA256`, and lab `accessId=noctaxris-gcp-lab`.
 
 Signing uses a fixed lab HMAC secret (`noctaxris-gcp-lab-hmac-secret`) and the
 official V4 HMAC key-derivation / string-to-sign shape. This is not a real Cloud
 Storage HMAC key or RSA service-account signature.
 
 Requests that carry `X-Goog-Algorithm` + `X-Goog-Signature` query parameters may
-omit `Authorization`. The GCS handler verifies the signature (host, path, method,
-expiry) fail-closed before serving GET media or PUT media upload. Official Cloud
-Storage signed URLs target the XML API; this lab verifies on the JSON/upload paths
-returned by `:generateSignedUrl`.
+omit `Authorization` only for object GET media and PUT media upload under
+`/storage/` and `/upload/storage/`. The GCS handler verifies the signature (host,
+path, method, expiry) fail-closed before serving. Other `/storage/` control-plane
+paths still need Bearer. Official Cloud Storage signed URLs target the XML API;
+this lab verifies on the JSON/upload paths returned by `:generateSignedUrl`.
 
 ### XML HMAC (lab)
 
@@ -120,9 +131,10 @@ GOOG4 HMAC verify accepts the client wire path (`/{bucket}/{object}`) when Host 
 - Multipart upload supports metadata JSON + media parts only
 - Resumable uploads are single-chunk lab complete (no multi-chunk / status resume)
 - Max upload body size in this lab: 64 MiB per request
-- Compose is same-bucket only; max 32 sources
+- Compose is same-bucket only; max 32 sources; requires create on dest and get on each source
 - Rewrite always finishes in one request (no rewriteToken continuation)
-- Signed URLs use lab HMAC only (no RSA / IAM signBlob path)
+- Signed URLs use lab HMAC only (no RSA / IAM signBlob path); PUT mint checks `objects.create`
+- Anonymous JSON/media access requires an `allUsers` binding for the permission
 - NotificationConfigs: `OBJECT_FINALIZE` + `OBJECT_DELETE` only (no ARCHIVE / METADATA_UPDATE / INITIALIZE); no GCS SA publisher IAM on deliver
 - When Organization Policy constraint `storage.publicAccessPrevention` is enforced on the project (or ancestor), bucket `setIamPolicy` with `allUsers` / `allAuthenticatedUsers` returns `FAILED_PRECONDITION` (see [orgpolicy.md](orgpolicy.md))
 

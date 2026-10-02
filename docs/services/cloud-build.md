@@ -124,6 +124,11 @@ Checked on `projects/{project}`:
 identity (or the parent project): a named `serviceAccount`, or the default
 Compute Engine SA when `serviceAccount` is omitted.
 
+Trigger `create` and `:run` also require `iam.serviceAccounts.actAs` on the
+trigger's service account (or the default Compute Engine SA when the trigger
+omits one). A principal with only `cloudbuild.builds.create` cannot start a
+build as another SA without actAs.
+
 Worker pools live in a host project that must exist as a CRM row
 (`POST /v3/projects` or store create). Create stores `NO_PUBLIC_EGRESS=true` on
 the pool. Missing host project on pool create or on pooled `createBuild` /

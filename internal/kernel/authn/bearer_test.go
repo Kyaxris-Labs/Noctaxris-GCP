@@ -1,12 +1,14 @@
 package authn_test
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authn"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/jwtutil"
 )
 
 type memTokens struct {
@@ -67,6 +69,31 @@ func TestAuthenticateRegisteredToken(t *testing.T) {
 	}
 	if p.IsRoot || p.Email != "sa@noctaxris-gcp-local.iam.gserviceaccount.com" {
 		t.Fatalf("principal = %+v", p)
+	}
+}
+
+func TestAuthenticateLabOIDCBearer(t *testing.T) {
+	email := "oidc-sa@noctaxris-gcp-local.iam.gserviceaccount.com"
+	tok, err := jwtutil.SignLabOIDCRS256(map[string]any{
+		"aud":   "https://aud.example",
+		"email": email,
+		"sub":   email,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &authn.Authenticator{Tokens: memTokens{}}
+	p, err := a.AuthenticateToken(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.IsRoot || p.Email != email {
+		t.Fatalf("principal = %+v", p)
+	}
+	noneHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"email":"` + email + `"}`))
+	if _, err := a.AuthenticateToken(noneHeader + "." + payload + "."); err != authn.ErrUnauthenticated {
+		t.Fatalf("alg=none must be rejected: err=%v", err)
 	}
 }
 
@@ -134,5 +161,17 @@ func TestIsPublicPath(t *testing.T) {
 	}
 	if authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/token") {
 		t.Fatal("oidc-lab must not expose mint paths as public")
+	}
+	if !authn.IsPublicPath("/computeMetadata/v1/") {
+		t.Fatal("computeMetadata root should be public")
+	}
+	if !authn.IsPublicPath("/computeMetadata/v1") {
+		t.Fatal("computeMetadata without trailing slash should be public")
+	}
+	if !authn.IsPublicPath("/computeMetadata/v1/instance/service-accounts/default/token") {
+		t.Fatal("computeMetadata token path should be public")
+	}
+	if authn.IsPublicPath("/computeMetadata/../v1/projects") {
+		t.Fatal("computeMetadata path traversal must not skip auth")
 	}
 }

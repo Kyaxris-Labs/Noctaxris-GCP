@@ -79,4 +79,25 @@ func TestCreateJobRequiresActAs(t *testing.T) {
 		t.Fatalf("with actAs status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	
+	// Default Compute Engine SA when environment.serviceAccountEmail is omitted.
+	req = httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{"name":"j2"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("default SA without actAs status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := st.PutIAMPolicyJSON("projects/"+project+"/serviceAccounts/"+computeSA, authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/iam.serviceAccountUser",
+			Members: []string{"serviceAccount:" + caller},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{"name":"j2"}`)))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default SA with actAs status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}

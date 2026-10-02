@@ -11,12 +11,18 @@ failures soft-fail back to theatre bootstrap unless
 
 Topic create persists in SQLite. When the cluster has a nested `container_id`,
 create best-effort runs `rpk topic create` inside the Redpanda container and
-soft-fails if the engine is off or exec fails. ACLs are metadata-only theatre
-(not applied to the broker).
+soft-fails if the engine is off or exec fails. Nested wire is PLAINTEXT (no SASL
+or TLS client auth). Cluster JSON reports
+`securityConfig.securityProtocol=PLAINTEXT` and
+`securityConfig.aclEnforcement=CONTROL_PLANE_ONLY`. ACL CRUD is control-plane
+theatre only (`aclEnforcement=CONTROL_PLANE_ONLY` on ACL rows); entries are not
+pushed to the broker authorizer. Peers on `noctaxris-gcp-lab` can produce and
+consume without broker ACLs.
 
 ## Status
 
-**lab** — location-scoped cluster/topic CRUD; ACL metadata theatre; optional nested Redpanda per cluster.
+**lab** — location-scoped cluster/topic CRUD; PLAINTEXT nested wire;
+CONTROL_PLANE_ONLY ACL theatre; optional nested Redpanda per cluster.
 
 ## Wire protocol
 
@@ -65,8 +71,12 @@ refuses with `FAILED_PRECONDITION` when that API is DISABLED.
 
 ## Emulator limits
 
-- No host publish of Kafka ports; nested brokers listen on `noctaxris-gcp-lab` (shared with SQL/Redis)
-- ACLs are SQLite metadata only (not pushed to Redpanda/Kafka authorizer)
+- No host publish of Kafka ports; nested brokers listen on `noctaxris-gcp-lab` only (shared with SQL/Redis)
+- Nested wire is PLAINTEXT; `securityConfig` declares `PLAINTEXT` /
+  `CONTROL_PLANE_ONLY` so clients see the theatre posture on get/list/create
+- ACLs are SQLite metadata only (`aclEnforcement=CONTROL_PLANE_ONLY`); not pushed
+  to Redpanda/Kafka authorizer. Lab-network peers can produce/consume without
+  matching ACL rows
 - No Connect or Schema Registry APIs
 - Create and delete cluster return completed LRO (`done: true`); Operations.get is immediate done theatre (no async worker)
 - Nested Redpanda image: `docker.redpanda.com/redpandadata/redpanda:v24.2.4` (allowlisted)

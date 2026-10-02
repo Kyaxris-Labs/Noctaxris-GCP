@@ -89,9 +89,12 @@ func (s *Service) requirePermissions(ctx context.Context, projectID string, perm
 		}
 		return authn.Principal{}, status.Error(codes.Unauthenticated, err.Error())
 	}
-	if err := restlab.CheckServiceEnabled(s.Store, projectID, "firestore.googleapis.com"); err != nil {
+	if err := restlab.CheckProjectAPIGates(s.Store, p, projectID, "firestore.googleapis.com"); err != nil {
 		if errors.Is(err, store.ErrServiceDisabled) {
 			return authn.Principal{}, status.Error(codes.FailedPrecondition, restlab.ServiceDisabledMessage("firestore.googleapis.com"))
+		}
+		if errors.Is(err, store.ErrVPCSCPerimeter) {
+			return authn.Principal{}, status.Error(codes.PermissionDenied, err.Error())
 		}
 		return authn.Principal{}, status.Errorf(codes.Internal, "%v", err)
 	}

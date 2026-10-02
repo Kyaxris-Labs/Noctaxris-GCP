@@ -123,6 +123,9 @@ func TestPubSubCreateRequiresTopicAttach(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.SetServiceUsageState(attacker, "pubsub.googleapis.com", "ENABLED"); err != nil {
+		t.Fatal(err)
+	}
 
 	topic := "projects/" + victim + "/topics/secrets"
 	if _, ok, err := st.CreateTopic(topic, victim); err != nil || !ok {

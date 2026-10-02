@@ -10,8 +10,8 @@ Container Analysis through `gcloud artifacts …` with an endpoint override.
 **lab** — project-scoped (and location-scoped alias) occurrence CRUD lite,
 Grafeas-style `filter` parsing for list and summary, `pageSize` / `pageToken`
 pagination, and `occurrences:vulnerabilitySummary` counts. Binary Authorization
-admit still requires an exact stored `resourceUri` match (see
-[cloud-run.md](cloud-run.md)).
+`ENFORCED` admit requires an exact stored `resourceUri` match, `kind=ATTESTATION`,
+and a non-empty `noteName` (see [cloud-run.md](cloud-run.md)).
 
 ## Wire protocol
 
@@ -69,7 +69,8 @@ Checked on `projects/{project}`:
 - `containeranalysis.occurrences.create`
 
 Occurrence create also evaluates `containeranalysis.notes.attachOccurrence` on
-the request `noteName` (for example `projects/{provider}/notes/{id}`).
+the request `noteName` (for example `projects/{provider}/notes/{id}`). Empty
+`noteName` is rejected (`InvalidArgument`); attach does not skip that field.
 
 Root bypasses. Viewer suffix grants cover get/list.
 
@@ -78,8 +79,9 @@ Root bypasses. Viewer suffix grants cover get/list.
 - Notes, discoveries, and On-Demand Scanning are not implemented
 - No attestation signature verification
 - Vulnerability fields are stored JSON theatre only (no scanner)
-- Binary Authorization admit is exact `resource_uri` equality in the store
-  (list filters may match https/bare; admit does not)
+- Binary Authorization `ENFORCED` admits only `ATTESTATION` rows with non-empty
+  `noteName` and exact `resource_uri` equality (list filters may match
+  https/bare; admit does not)
 
 ## Deferred depth
 

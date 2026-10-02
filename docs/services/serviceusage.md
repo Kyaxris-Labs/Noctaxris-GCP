@@ -39,22 +39,42 @@ Logging, Run, Functions, Scheduler, Tasks, BigQuery, Identity Toolkit,
 Monitoring, Datastore, Eventarc, App Engine, Artifact Registry, Cloud Build,
 Workflows, Spanner, Compute Engine, Cloud DNS, Dataflow, Bigtable Admin,
 Memorystore Redis, Cloud SQL Admin, Certificate Manager, Filestore, Vertex AI,
-GKE Container, Managed Kafka).
+GKE Container, Managed Kafka, Container Analysis, Binary Authorization, Cloud
+Asset, Security Command Center, Organization Policy, Access Context Manager).
 
 Primary create mutators refuse with `FAILED_PRECONDITION` when the matching API
-is DISABLED (same shape as IAM create service account):
+is DISABLED (same shape as IAM create service account). Representative paths:
 
 | Mutator | Service Usage name |
 |---------|-------------------|
 | IAM create service account | `iam.googleapis.com` |
 | Cloud Storage create bucket | `storage.googleapis.com` |
-| Pub/Sub create topic | `pubsub.googleapis.com` |
+| Pub/Sub create topic / subscription / snapshot | `pubsub.googleapis.com` |
+| Cloud Build create build / trigger | `cloudbuild.googleapis.com` |
+| Cloud Run create service / job | `run.googleapis.com` |
+| Cloud Functions create function | `cloudfunctions.googleapis.com` |
+| Artifact Registry create repository | `artifactregistry.googleapis.com` |
+| BigQuery create dataset | `bigquery.googleapis.com` |
 | Cloud SQL create instance | `sqladmin.googleapis.com` |
+| Spanner / Bigtable / Filestore / Memorystore create | `spanner.googleapis.com` / `bigtableadmin.googleapis.com` / `file.googleapis.com` / `redis.googleapis.com` |
 | GKE create cluster | `container.googleapis.com` |
-| Managed Kafka create cluster | `managedkafka.googleapis.com` |
+| Managed Kafka create cluster / topic / ACL | `managedkafka.googleapis.com` |
+| KMS create key ring / Secret Manager create secret | `cloudkms.googleapis.com` / `secretmanager.googleapis.com` |
+| DNS / Certificate Manager create | `dns.googleapis.com` / `certificatemanager.googleapis.com` |
+| Workflows / Tasks / Eventarc / Scheduler / Dataflow create | matching `*.googleapis.com` |
+| App Engine create app / version | `appengine.googleapis.com` |
+| Container Analysis create occurrence | `containeranalysis.googleapis.com` |
+| Binary Authorization update policy | `binaryauthorization.googleapis.com` |
+| Cloud Armor insert security policy | `compute.googleapis.com` |
+| Cloud Asset create feed | `cloudasset.googleapis.com` |
+| Security Command Center project source / finding | `securitycenter.googleapis.com` |
+| Vertex AI predict / generateContent | `aiplatform.googleapis.com` |
+| Datastore / Firestore (gRPC require) | `datastore.googleapis.com` / `firestore.googleapis.com` |
 
-Handlers call `store.IsServiceEnabled` via `internal/kernel/restlab.RequireServiceEnabled`
-(REST) or `CheckServiceEnabled` (gRPC).
+Handlers call `store.IsServiceEnabled` via `internal/kernel/restlab.RequireProjectAPIGates`
+or `RequireServiceEnabled` (REST) or `CheckProjectAPIGates` / `CheckServiceEnabled` (gRPC).
+When `NOCTAXRIS_GCP_VPCSC_ENFORCE` is on, `RequireProjectAPIGates` also runs the
+shared VPC-SC membership check.
 
 ## Emulator limits
 

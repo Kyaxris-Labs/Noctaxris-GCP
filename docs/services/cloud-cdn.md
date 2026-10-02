@@ -36,14 +36,21 @@ Origin examples:
 
 ## Authz
 
-Uses lab CDN permissions mapped to compute backend bucket verbs on `projects/{project}`:
+Control plane uses lab CDN permissions mapped to compute backend bucket verbs on
+`projects/{project}`:
 
 - `compute.backendBuckets.create|get|list|delete`
+
+Edge lookup is project-bound (`/cdn/{project}/{id}/...`). GCS origins require
+`storage.objects.get` via the caller principal or `allUsers` on the bucket (or
+project), same fail-closed shape as the LB dataplane. LB-backed origins follow
+the forwarding-rule chain (which applies the same GCS check at the bucket).
 
 ## Emulator limits
 
 - No cache invalidation API; `Cache-Control: public, max-age=3600` on edge responses only
 - No geographic PoPs; single-process edge on the API listener
+- Edge GCS reads honor `storage.objects.get` (principal or `allUsers`)
 
 ## Deferred depth
 

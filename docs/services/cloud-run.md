@@ -37,13 +37,14 @@ those keeps the one-shot nested `:invoke` path above.
 
 `:invoke` on a nested service keeps IAM (`run.routes.invoke`) and proxies the
 method, query, and body to `/` on the container. The browser route
-`ANY /run/{project}/{location}/{service}/{path...}` is unauthenticated by design
-(the `/run/` prefix is a public path, like the load balancer and CDN edge
-routes). It is served only while a nested container is recorded for the service,
-otherwise 404. Anything reachable at the emulator listener can therefore reach
-the container, so keep the listener on loopback or behind your own access
-control. `Authorization` and `Proxy-Authorization` are stripped before the
-request reaches the container, and client `X-Forwarded-*` headers are replaced.
+`ANY /run/{project}/{location}/{service}/{path...}` skips required Bearer in
+middleware (same public-path shape as `/lb/` and `/cdn/`), but Invoker is still
+enforced before proxy: a Bearer with `run.routes.invoke` on the service or
+project, or an `allUsers` Invoker binding. Anonymous callers without `allUsers`
+Invoker get 403. The route is served only while a nested container is recorded
+for the service, otherwise 404. Keep the listener on loopback on shared hosts.
+`Authorization` and `Proxy-Authorization` are stripped only after Invoker allow,
+and client `X-Forwarded-*` headers are replaced.
 
 The recorded engine port is stable only while the engine keeps its bindings.
 Set `NOCTAXRIS_GCP_RUN_PUBLISH_PORT` to pin it. A pinned port supports one
@@ -118,11 +119,14 @@ Jobs are control-plane theatre only (template stored; no execution).
 Create and patch on services and jobs consult Binary Authorization for every
 non-empty container image in the template, including job
 `template.template.containers` (Google Cloud applies an `ENFORCED` policy to
-both). Any image without a matching Container Analysis occurrence
-(`resourceUri`) is 403. Empty container list (or no image) under `ENFORCED` is
-also deny. The lab does not verify attestation signatures. Default (no policy,
-or a mode without `ENFORCED`) admits. Occurrence `POST` still requires a Bearer
-principal with `containeranalysis.occurrences.create` (not a public path).
+both). Under `ENFORCED`, admit requires a Container Analysis occurrence with
+exact `resourceUri` match, `kind=ATTESTATION`, and a non-empty `noteName`
+(optional attestor note match when configured). Non-attestation kinds and empty
+`noteName` deny. Empty container list (or no image) under `ENFORCED` is also
+deny. The lab does not verify attestation signatures. Default (no policy, or a
+mode without `ENFORCED`) admits. Occurrence `POST` still requires a Bearer
+principal with `containeranalysis.occurrences.create` (not a public path);
+create rejects empty `noteName` for attach.
 
 Metadata IMDS accepts `Metadata-Flavor: Google`. Identity is
 `runtime@{project}.iam.gserviceaccount.com`. Email and account listing are
@@ -154,10 +158,12 @@ Checked on `projects/{project}` for control-plane actions:
 - `run.revisions.get|list|delete` (Knative revision paths; viewer gets get/list)
 - `run.jobs.create|get|list|update|delete`
 
-`:invoke` uses `EvaluateAny` on the **service resource** and the project
-(`run.routes.invoke`). A non-root principal with only
-`roles/run.invoker` on the service IAM policy can invoke; without a project or
-service Invoker binding, invoke is denied. Root skips IAM evaluation.
+`:invoke` and the `/run/` nested browser proxy both use Invoker
+(`run.routes.invoke`) via `EvaluateAny` / `AllowPrincipalOrAllUsers` on the
+**service resource** and the project. A non-root principal with only
+`roles/run.invoker` on the service IAM policy can invoke; anonymous `/run/`
+callers need an `allUsers` Invoker binding. Without a project or service
+Invoker binding, invoke and `/run/` are denied. Root skips IAM evaluation.
 
 Knative create/replace runs the same Binary Authorization `admitTemplate` check
 as Admin API v2.
@@ -173,10 +179,11 @@ as Admin API v2.
 - Nested long-lived HTTP has no readiness probe, scale-to-zero, revision traffic
   split, or request timeout beyond the proxy defaults. Requests sent before the
   app listens return 502
-- The `/run/` browser route has no IAM check by design (see Nested long-lived HTTP)
+- The `/run/` browser route skips middleware Bearer but still requires Invoker
+  (principal or `allUsers`) before proxy (see Nested long-lived HTTP)
 - Domain mappings and worker pools are not implemented
-- Service IAM get/set is stored; Invoker is evaluated on `:invoke` only (no
-  public unauthenticated invoke without a binding)
+- Service IAM get/set is stored; Invoker is evaluated on `:invoke` and on `/run/`
+  (no unauthenticated invoke without an Invoker binding)
 
 ## Deferred depth
 

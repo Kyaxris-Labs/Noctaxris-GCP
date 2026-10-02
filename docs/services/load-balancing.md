@@ -44,10 +44,16 @@ Control plane permissions on `projects/{project}`:
 
 - `compute.backendServices.*`, `compute.urlMaps.*`, `compute.targetHttpsProxies.*`, `compute.forwardingRules.*`
 
+Dataplane `GET`/`HEAD` `/lb/...` skips required Bearer in middleware. GCS-backed
+origins still require `storage.objects.get` via the caller principal or an
+`allUsers` binding on the bucket (or project). Without that grant the edge
+returns 403 even on loopback.
+
 ## Emulator limits
 
 - Global scope only; no health checks, SSL cert provisioning, or regional L7 proxies
 - Dataplane serves lab GCS bytes only (no Internet origin fetch); Armor attach is metadata only
+- Edge GCS reads honor bucket/project `storage.objects.get` (principal or `allUsers`)
 
 ## Deferred depth
 
