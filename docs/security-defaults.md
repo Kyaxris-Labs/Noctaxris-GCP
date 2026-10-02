@@ -41,13 +41,19 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 
 - API requests require `Authorization: Bearer <token>`.
 - Root token comes from `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` and maps to `NOCTAXRIS_GCP_ROOT_SERVICE_ACCOUNT`.
-- Other tokens are SHA-256 hashed and looked up in `access_tokens` (minted when IAM creates a service account key, `generateAccessToken`, STS exchange, Cloud Build nested step identity, or interservice dispatch via `labtoken.Mint` for Scheduler/Tasks/Eventarc).
+- Other tokens are SHA-256 hashed and looked up in `access_tokens` (minted by
+  SA JWT bearer grant at `POST /token` / `POST /oauth2/token`, IAM Credentials
+  `generateAccessToken`, STS exchange, metadata token mint, Cloud Build nested
+  step identity, or interservice dispatch via `labtoken.Mint` for
+  Scheduler/Tasks/Eventarc). CreateKey returns RSA PEM credentials and does not
+  register the PEM as a Bearer.
 - Missing or invalid credentials return Google JSON `UNAUTHENTICATED` (HTTP 401).
 - Public paths (Bearer skipped):
   - `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`
   - Lab HTTP catcher `POST`/`GET` `/_noctaxris-gcp/http-catcher` (and `POST` under
     `/_noctaxris-gcp/http-catcher/…`); dump returns `{"deliveries":[…]}`
   - STS `POST /v1/token` (WIF subject_token exchange)
+  - SA OAuth JWT bearer grant `POST /token` and `POST /oauth2/token`
   - OIDC lab discovery/JWKS `GET /_noctaxris-gcp/oidc-lab/.well-known/...` (no mint route)
   - Identity Toolkit client methods under `/identitytoolkit.googleapis.com/v1/accounts…`
     skip middleware Bearer (`idToken` self-lookup stays public). `accounts:lookup` with

@@ -183,6 +183,13 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		rewriteLabHostPath(r)
 		ctx := context.WithValue(r.Context(), ctxRequestID, reqID)
 
+		// GOOG4 HMAC authenticates only the GCS XML plane. Reject it elsewhere before
+		// public-path short-circuit so HMAC cannot mint OAuth or reach other APIs.
+		if isGOOG4HMACAuth(r.Header.Get("Authorization")) && !strings.HasPrefix(r.URL.Path, "/storage/xml/") {
+			gcperrors.Unauthenticated(w, "")
+			return
+		}
+
 		if authn.IsPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return

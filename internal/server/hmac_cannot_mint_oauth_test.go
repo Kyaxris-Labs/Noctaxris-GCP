@@ -41,6 +41,21 @@ func TestHMACAuthCannotMintOAuthOrIAMCredentials(t *testing.T) {
 			path: "/v1/projects/-/serviceAccounts/" + email + ":signBlob",
 			host: host,
 		},
+		{
+			name: "oauth2 token grant",
+			path: "/token",
+			host: host,
+		},
+		{
+			name: "oauth2 token alias",
+			path: "/oauth2/token",
+			host: host,
+		},
+		{
+			name: "oauth2.googleapis.com host rewrite",
+			path: "/token",
+			host: "oauth2.googleapis.com",
+		},
 	}
 
 	for _, tc := range cases {

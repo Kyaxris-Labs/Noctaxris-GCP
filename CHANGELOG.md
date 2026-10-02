@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.6.0
+
+Minor after 1.5.1: RSA PKCS#8 service-account keys and OAuth JWT bearer grant for access tokens. Docker Hub: `kyaxris/noctaxris-gcp` (`1.6.0`, `1.6`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- IAM CreateKey: credentials JSON `private_key` is RSA-2048 PKCS#8 PEM (`BEGIN PRIVATE KEY`). PEM is not registered as a Bearer.
+- OAuth: `POST /token` and `POST /oauth2/token` accept `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`, verify RS256 assertion against sealed key material, and mint a hashed access token for that SA. Host aliases `oauth2.googleapis.com` and `accounts.google.com/o/oauth2/token` rewrite onto those paths. GOOG4 HMAC outside `/storage/xml/` is rejected before public-path short-circuit.
+
 ## 1.5.1
 
 Patch after 1.5.0: Firestore REST GET and Identity Toolkit owner read for `users/{uid}`, nested DinD IPv6 sysctls for Docker Engine 29 Desktop, and Identity Platform tenant claims on id tokens. Docker Hub: `kyaxris/noctaxris-gcp` (`1.5.1`, `1.5`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

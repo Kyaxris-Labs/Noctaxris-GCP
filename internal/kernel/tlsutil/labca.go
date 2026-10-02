@@ -27,6 +27,7 @@ func DefaultCloudHostSANs() []string {
 		"logging.googleapis.com",
 		"iamcredentials.googleapis.com",
 		"oauth2.googleapis.com",
+		"accounts.google.com",
 		"www.googleapis.com",
 		"localhost",
 	}

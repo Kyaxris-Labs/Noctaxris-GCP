@@ -2,17 +2,24 @@ package server_test
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/config"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/server"
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/services/iam"
 )
 
 func TestCRMGetProject(t *testing.T) {
@@ -528,7 +535,7 @@ func createLabServiceAccount(t *testing.T, srv *server.Server, cfg config.Config
 	return email
 }
 
-// mintLabSABearer creates a user-managed key and returns the lab Bearer token from private_key.
+// mintLabSABearer creates a user-managed RSA key, exchanges a JWT bearer grant, and returns the access token.
 func mintLabSABearer(t *testing.T, srv *server.Server, cfg config.Config, email string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+cfg.ProjectID+"/serviceAccounts/"+email+"/keys", bytes.NewReader([]byte("{}")))
@@ -548,13 +555,64 @@ func mintLabSABearer(t *testing.T, srv *server.Server, cfg config.Config, email 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cred map[string]any
+	var cred map[string]string
 	if err := json.Unmarshal(raw, &cred); err != nil {
 		t.Fatal(err)
 	}
-	token, _ := cred["private_key"].(string)
-	if token == "" {
-		t.Fatalf("missing private_key in %#v", cred)
+	pemStr := cred["private_key"]
+	if !strings.Contains(pemStr, "BEGIN PRIVATE KEY") {
+		preview := pemStr
+		if len(preview) > 80 {
+			preview = preview[:80]
+		}
+		t.Fatalf("private_key not PKCS#8 PEM: %q", preview)
 	}
-	return token
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		t.Fatal("no PEM block in private_key")
+	}
+	keyAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, ok := keyAny.(*rsa.PrivateKey)
+	if !ok {
+		t.Fatal("private_key is not RSA")
+	}
+	now := time.Now().UTC()
+	header, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": cred["private_key_id"]})
+	claims, _ := json.Marshal(map[string]any{
+		"iss": email,
+		"sub": email,
+		"aud": "https://oauth2.googleapis.com/token",
+		"iat": now.Unix(),
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	sum := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, priv, crypto.SHA256, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertion := signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+
+	form := url.Values{}
+	form.Set("grant_type", iam.GrantTypeJWTBearer)
+	form.Set("assertion", assertion)
+	tokReq := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	tokReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tokRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(tokRec, tokReq)
+	if tokRec.Code != http.StatusOK {
+		t.Fatalf("jwt bearer grant status = %d body=%s", tokRec.Code, tokRec.Body.String())
+	}
+	var tok map[string]any
+	if err := json.Unmarshal(tokRec.Body.Bytes(), &tok); err != nil {
+		t.Fatal(err)
+	}
+	access, _ := tok["access_token"].(string)
+	if access == "" {
+		t.Fatalf("missing access_token in %#v", tok)
+	}
+	return access
 }

@@ -18,6 +18,8 @@ func TestDefaultCloudHostSANsIncludeProwlerHosts(t *testing.T) {
 		"compute.googleapis.com":              true,
 		"logging.googleapis.com":              true,
 		"iamcredentials.googleapis.com":       true,
+		"oauth2.googleapis.com":               true,
+		"accounts.google.com":                 true,
 	}
 	for _, s := range sans {
 		delete(want, s)

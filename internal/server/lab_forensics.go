@@ -320,6 +320,16 @@ func rewriteLabHostPath(r *http.Request) {
 		if !strings.HasPrefix(path, "/storage/xml/") {
 			r.URL.Path = "/storage/xml" + path
 		}
+	case "oauth2.googleapis.com":
+		// SA key JWT grant: POST https://oauth2.googleapis.com/token
+		if path == "" || path == "/" {
+			r.URL.Path = "/token"
+		}
+	case "accounts.google.com":
+		// Legacy token endpoint alias used by some clients.
+		if path == "/o/oauth2/token" {
+			r.URL.Path = "/oauth2/token"
+		}
 	}
 }
 

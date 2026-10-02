@@ -44,6 +44,7 @@ per-service-account IAM policies are stored on the SA resource name.
 | Delete custom role | `DELETE` | `/v1/projects/{project}/roles/{roleId}` |
 | Undelete custom role | `POST` | `/v1/projects/{project}/roles/{roleId}:undelete` |
 | STS token exchange (lab) | `POST` | `/v1/token` |
+| SA OAuth JWT bearer grant (lab) | `POST` | `/token` and `/oauth2/token` (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`) |
 
 Permissions: `iam.serviceAccounts.*`, `iam.serviceAccountKeys.*`,
 `iam.roles.*`, `iam.workloadIdentityPools.*`, `iam.workloadIdentityPoolProviders.*` on
@@ -70,10 +71,15 @@ Delete is soft-delete (`deleted: true`); list omits deleted rows unless
 `:undelete` restores the role; creating the same `roleId` fails until undelete
 (`iam.roles.undelete` on the project).
 
-Creating a key seals the credentials JSON at rest, returns `privateKeyData`
-(base64) once, and registers a hashed access token so
-`Authorization: Bearer <token>` authenticates as that service account. The lab
-token is stored in the credentials JSON `private_key` field.
+Creating a key seals Google-shaped credentials JSON at rest and returns
+`privateKeyData` (base64) once. The credentials JSON `private_key` field is an
+RSA PKCS#8 PEM (`BEGIN PRIVATE KEY`), not an access token. Clients mint a
+Bearer with a JWT bearer grant (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`)
+at `POST /token` or `POST /oauth2/token` (also via host aliases
+`oauth2.googleapis.com` and `accounts.google.com/o/oauth2/token` on the shared
+listener). Success registers a hashed access token for
+`Authorization: Bearer <token>` as that service account. PEM alone does not
+authenticate.
 
 When Organization Policy constraint `iam.disableServiceAccountKeyCreation` is
 enforced on the project (or an ancestor), create key returns
@@ -211,7 +217,7 @@ Create service account fails with `FAILED_PRECONDITION` when
 - `signBlob` is SHA-256 theatre, not PKCS#1 / RSA signing.
 - `signJwt` is unsigned lab JWT theatre (`alg=none`), not RSA/ES256.
 - Soft-delete has no 30-day purge timer; rows remain until process data is wiped.
-- Key material is a lab credentials JSON (not a PKCS#8 RSA PEM).
+- CreateKey emits real RSA PKCS#8 PEM in credentials JSON; access tokens come from the JWT bearer grant (or `generateAccessToken`), not from using the PEM as a Bearer.
 - Custom roles are project-scoped only (no organization custom roles CRUD).
 - Marketed predefined roles (IAM, Resource Manager, Pub/Sub, BigQuery, Logging, Monitoring, Run, Functions, Service Usage, ACM, Binary Authorization, Cloud Asset, Container Analysis, Cloud Tasks, Org Policy, Secret Manager, Cloud KMS, Cloud Storage, Artifact Registry, Datastore/Firestore, Spanner, Cloud Scheduler, Eventarc, Cloud Build, Firebase Auth, Identity Toolkit) use explicit permission sets. Unknown `roles/{svc}.*` fail closed (no residual `{svc}.*` shortcut).
 - Basic `roles/editor` does not grant Secret Manager payload access, Cloud KMS cryptographic ops, Organization Policy mutate, `setIamPolicy`, or service-account impersonation.
@@ -226,7 +232,7 @@ Create service account fails with `FAILED_PRECONDITION` when
 ## Verification / CLI smoke
 
 ```bash
-go test ./internal/kernel/authz/ ./internal/services/iam/ ./internal/store/ ./internal/kernel/authn/ ./internal/server/ -count=1 -run 'CustomRole|UnknownRole|TokenCreator|STS|WIF|GenerateAccess|IAM|Token|OrgIAM|FolderIAM|VPCSC'
+go test ./internal/kernel/authz/ ./internal/services/iam/ ./internal/store/ ./internal/kernel/authn/ ./internal/server/ -count=1 -run 'CustomRole|UnknownRole|TokenCreator|STS|WIF|GenerateAccess|IAM|Token|OrgIAM|FolderIAM|VPCSC|JWTBearer|OAuthJWT|CreateKey'
 gcloud config set api_endpoint_overrides/iam http://127.0.0.1:4588/
 gcloud iam service-accounts create lab-runner \
   --display-name="Lab Runner" --project=noctaxris-gcp-local
@@ -253,6 +259,11 @@ curl -s -H "Content-Type: application/x-www-form-urlencoded" \
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"],"lifetime":"600s"}' \
   "http://127.0.0.1:4588/v1/projects/-/serviceAccounts/lab-runner@noctaxris-gcp-local.iam.gserviceaccount.com:generateAccessToken"
+# After CreateKey: sign an RS256 JWT assertion with the PEM and exchange:
+# curl -s -H "Content-Type: application/x-www-form-urlencoded" \
+#   --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+#   --data-urlencode "assertion=<RS256 JWT>" \
+#   "http://127.0.0.1:4588/token"
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{}' \
   "http://127.0.0.1:4588/v1/projects/noctaxris-gcp-local/roles/bucketLister:undelete"

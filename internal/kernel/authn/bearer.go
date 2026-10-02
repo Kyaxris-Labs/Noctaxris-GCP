@@ -109,7 +109,9 @@ func IsPublicPath(raw string) bool {
 	}
 	switch path {
 	case "/_noctaxris-gcp/health", "/_noctaxris-gcp/ready", "/_noctaxris-gcp/version",
-		"/v1/token": // STS token exchange (subject_token authenticates)
+		"/v1/token",     // STS token exchange (subject_token authenticates)
+		"/token",        // OAuth2 SA key JWT grant (assertion authenticates)
+		"/oauth2/token": // accounts.google.com OAuth2 token alias (assertion authenticates)
 		return true
 	default:
 		// Lab HTTP catcher accept + dump (Pub/Sub / Eventarc / Scheduler / Tasks theatre).

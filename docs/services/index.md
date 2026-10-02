@@ -6,7 +6,7 @@ with honest emulator limits on each page.
 | Service | Status | Doc | Protocol |
 |---------|--------|-----|----------|
 | Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects (including lab-lite create), org seed, folders, tag keys/bindings lite |
-| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys, WIF pool/provider + STS `/v1/token` (STS unrestricted under VPC-SC), TokenCreator `generateAccessToken` / `signBlob` / `signJwt` (including `iamcredentials.googleapis.com` alias; optional VPC-SC) |
+| IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys (RSA PKCS#8 CreateKey), OAuth JWT bearer `/token` + `/oauth2/token`, WIF pool/provider + STS `/v1/token` (STS unrestricted under VPC-SC), TokenCreator `generateAccessToken` / `signBlob` / `signJwt` (including `iamcredentials.googleapis.com` alias; optional VPC-SC) |
 | Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable |
 | Organization Policy | lab | [orgpolicy.md](orgpolicy.md) | REST v2 policies get/set/list; boolean constraints theatre (SA keys + GCS public IAM) |
 | Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL + XML HMAC List/Get/Put; bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |

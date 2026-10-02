@@ -86,6 +86,18 @@ func TestIsPublicPath(t *testing.T) {
 	if !authn.IsPublicPath("/v1/token") {
 		t.Fatal("STS /v1/token should be public")
 	}
+	if !authn.IsPublicPath("/token") {
+		t.Fatal("OAuth2 /token should be public")
+	}
+	if !authn.IsPublicPath("/oauth2/token") {
+		t.Fatal("OAuth2 /oauth2/token should be public")
+	}
+	if authn.IsPublicPath("/token/../v1/projects") {
+		t.Fatal("token path traversal must not skip auth")
+	}
+	if authn.IsPublicPath("/oauth2/token/../v1/projects") {
+		t.Fatal("oauth2/token path traversal must not skip auth")
+	}
 	if !authn.IsPublicPath("/lb/p/fr/obj") {
 		t.Fatal("expected public lb dataplane")
 	}

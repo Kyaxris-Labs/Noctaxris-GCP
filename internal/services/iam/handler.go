@@ -2,10 +2,13 @@ package iam
 
 import (
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +52,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	h.MountRoles(mux)
 	h.MountWIF(mux)
 	h.MountSTS(mux)
+	h.MountOAuth(mux)
 	mux.HandleFunc("POST /iamcredentials.googleapis.com/v1/projects/{project}/serviceAccounts/{account}", h.serviceAccountPost)
 }
 
@@ -724,7 +728,17 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	keyID := newKeyID()
-	accessToken := newAccessToken()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	pemKey := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 	now := h.now()
 	validAfter := now.Format(time.RFC3339)
 	validBefore := "9999-12-31T23:59:59Z"
@@ -734,7 +748,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		"type":                        "service_account",
 		"project_id":                  projectID,
 		"private_key_id":              keyID,
-		"private_key":                 accessToken,
+		"private_key":                 pemKey,
 		"client_email":                sa.Email,
 		"client_id":                   sa.UniqueID,
 		"auth_uri":                    "https://accounts.google.com/o/oauth2/auth",
@@ -765,10 +779,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	if err := h.Store.PutAccessToken(authn.HashToken(accessToken), sa.Email, now.Add(365*24*time.Hour)); err != nil {
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return
-	}
+	// PEM alone must not authenticate as Bearer; clients exchange a signed JWT via MountOAuth.
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":            keyName,
