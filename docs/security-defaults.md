@@ -48,6 +48,10 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
   Scheduler/Tasks/Eventarc). CreateKey returns RSA PEM credentials and does not
   register the PEM as a Bearer.
 - Missing or invalid credentials return Google JSON `UNAUTHENTICATED` (HTTP 401).
+- GCS XML HMAC (`Authorization: GOOG4-HMAC-SHA256`) is separate from Bearer. When Host
+  is `storage.googleapis.com` and the path has been rewritten to `/storage/xml/...`,
+  signature verify still accepts the wire path `/{bucket}/{object}` (see
+  [services/gcs.md](services/gcs.md)).
 - Public paths (Bearer skipped):
   - `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`
   - Lab HTTP catcher `POST`/`GET` `/_noctaxris-gcp/http-catcher` (and `POST` under

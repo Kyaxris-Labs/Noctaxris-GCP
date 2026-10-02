@@ -56,9 +56,9 @@ func TestNestedStepInjectsBuildSAAccessToken(t *testing.T) {
 			var seen cloudbuild.BuildStep
 			svc.StepRunner = &cloudbuild.EngineRunner{
 				Store: st,
-				ExecuteStep: func(_ context.Context, step cloudbuild.BuildStep) error {
+				ExecuteStep: func(_ context.Context, step cloudbuild.BuildStep) (string, error) {
 					seen = step
-					return nil
+					return "", nil
 				},
 			}
 			created := postBuild(t, mux, tc.body)
@@ -104,9 +104,9 @@ func TestNestedStepHostGatewayEndpointOverrides(t *testing.T) {
 	var seen cloudbuild.BuildStep
 	svc.StepRunner = &cloudbuild.EngineRunner{
 		Store: st,
-		ExecuteStep: func(_ context.Context, step cloudbuild.BuildStep) error {
+		ExecuteStep: func(_ context.Context, step cloudbuild.BuildStep) (string, error) {
 			seen = step
-			return nil
+			return "", nil
 		},
 	}
 	created := postBuild(t, mux, `{"serviceAccount":"builder@noctaxris-gcp-local.iam.gserviceaccount.com","steps":[{"name":"alpine:3.23"}]}`)

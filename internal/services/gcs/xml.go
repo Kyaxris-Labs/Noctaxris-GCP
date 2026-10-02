@@ -45,19 +45,57 @@ func (h *Handler) requireXMLHMAC(w http.ResponseWriter, r *http.Request) (authn.
 		gcperrors.Unauthenticated(w, "unknown HMAC access id")
 		return authn.Principal{}, false
 	}
-	host := r.Host
-	if host == "" {
-		host = "127.0.0.1:4588"
-	}
+	host := goog4HMACVerifyHost(r.Host)
 	googDate := r.Header.Get("x-goog-date")
 	if googDate == "" {
 		googDate = r.Header.Get("X-Goog-Date")
 	}
-	if err := store.VerifyGOOG4HMACHeader(r.Method, host, r.URL.Path, auth, googDate, secret, time.Time{}, r.URL.Query()); err != nil {
-		gcperrors.Unauthenticated(w, "invalid HMAC signature: "+err.Error())
-		return authn.Principal{}, false
+	paths := goog4HMACVerifyPaths(r.Host, r.URL.Path)
+	var verifyErr error
+	for _, path := range paths {
+		verifyErr = store.VerifyGOOG4HMACHeader(r.Method, host, path, auth, googDate, secret, time.Time{}, r.URL.Query())
+		if verifyErr == nil {
+			return authn.Principal{Email: "hmac:" + accessID, IsRoot: false}, true
+		}
 	}
-	return authn.Principal{Email: "hmac:" + accessID, IsRoot: false}, true
+	if verifyErr == nil {
+		verifyErr = fmt.Errorf("signature mismatch")
+	}
+	gcperrors.Unauthenticated(w, "invalid HMAC signature: "+verifyErr.Error())
+	return authn.Principal{}, false
+}
+
+// goog4HMACVerifyHost is the Host value used in the GOOG4 canonical request.
+// Clients sign the request Host; strip :443 (HTTPS default) so Host matches.
+func goog4HMACVerifyHost(host string) string {
+	if host == "" {
+		return "127.0.0.1:4588"
+	}
+	lower := strings.ToLower(host)
+	if h, port, ok := strings.Cut(lower, ":"); ok && port == "443" {
+		return h
+	}
+	return host
+}
+
+// goog4HMACVerifyPaths returns candidate canonical paths for GOOG4 verify.
+// When Host is storage.googleapis.com, rewriteLabHostPath prefixes /storage/xml
+// onto the wire path clients signed; try the wire path first, then the rewritten path.
+func goog4HMACVerifyPaths(host, path string) []string {
+	hostKey := strings.ToLower(strings.TrimSpace(host))
+	if i := strings.IndexByte(hostKey, ':'); i >= 0 {
+		hostKey = hostKey[:i]
+	}
+	if hostKey == "storage.googleapis.com" && strings.HasPrefix(path, "/storage/xml") {
+		wire := strings.TrimPrefix(path, "/storage/xml")
+		if wire == "" {
+			wire = "/"
+		}
+		if wire != path {
+			return []string{wire, path}
+		}
+	}
+	return []string{path}
 }
 
 // authorizeHMACStorage evaluates JSON-equivalent storage IAM as the HMAC key's

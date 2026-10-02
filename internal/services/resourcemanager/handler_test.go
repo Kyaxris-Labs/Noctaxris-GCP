@@ -32,7 +32,7 @@ func openCRM(t *testing.T) (*http.ServeMux, *store.Store) {
 	mux := http.NewServeMux()
 	h := &resourcemanager.Handler{
 		Store: st,
-		Authz: &authz.Evaluator{Policies: st},
+		Authz: &authz.Evaluator{Policies: st, Roles: st},
 		Principal: func(*http.Request) (authn.Principal, bool) {
 			return authn.Principal{Email: "root@noctaxris-gcp-local.iam.gserviceaccount.com", IsRoot: true}, true
 		},
@@ -256,7 +256,7 @@ func TestCRMAuthzDenyNonRoot(t *testing.T) {
 	mux := http.NewServeMux()
 	h := &resourcemanager.Handler{
 		Store: st,
-		Authz: &authz.Evaluator{Policies: st},
+		Authz: &authz.Evaluator{Policies: st, Roles: st},
 		Principal: func(*http.Request) (authn.Principal, bool) {
 			return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
 		},

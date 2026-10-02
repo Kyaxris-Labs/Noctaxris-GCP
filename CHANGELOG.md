@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.6.1
+
+Patch after 1.6.0: Cloud Build buffered logs and `availableSecrets` / `secretEnv` inject, GCS XML GOOG4 path after host rewrite, CRM `testIamPermissions` custom-role coverage. Docker Hub: `kyaxris/noctaxris-gcp` (`1.6.1`, `1.6`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Cloud Build: buffered `GET .../builds/{id}/logs` (`text/plain`, `cloudbuild.builds.get`). `availableSecrets.secretManager` plus step `secretEnv` inject matches real Cloud Build (`secretEnv` required; access as the build SA with `secretmanager.versions.access`). `listBuilds` / `getBuild` stay IAM project-scoped like real GCP (`creator_email` / `seed_visible` stored for operators only; they do not filter API list/get).
+- GCS XML: GOOG4 HMAC verify accepts the wire path (`/{bucket}/{object}`) when Host is `storage.googleapis.com` after the shared-listener rewrite onto `/storage/xml/...`.
+- Resource Manager: CRM harness wires IAM custom `Roles` into `testIamPermissions`; coverage for custom-role permission intersection across project, service-account, and worker-pool host scopes.
+
 ## 1.6.0
 
 Minor after 1.5.1: RSA PKCS#8 service-account keys and OAuth JWT bearer grant for access tokens. Docker Hub: `kyaxris/noctaxris-gcp` (`1.6.0`, `1.6`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

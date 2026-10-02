@@ -17,6 +17,23 @@ Step images must be pinned lab bases (`alpine:3.23` and the other entries in
 `AllowImagePull`) or listed in
 `NOCTAXRIS_GCP_IMAGE_PULL_ALLOWLIST`. Unallowlisted images fail the step.
 
+## Build list and get (GCP-shaped)
+
+`listBuilds` and `getBuild` follow real Cloud Build IAM: any principal with
+`cloudbuild.builds.list` / `cloudbuild.builds.get` on the project sees every
+build in that project. There is no per-creator ACL. Create still records
+`creator_email` and a lab `seed_visible` flag (root create or tag
+`noctaxris-seed-history`) for operators; those fields do not filter API list/get.
+
+## Buffered logs
+
+Each build stores a default `logUrl` of
+`http://127.0.0.1:4588/v1/projects/{p}/builds/{id}/logs` (regional paths use
+`.../locations/{loc}/builds/{id}/logs`). Real GCP `logUrl` points at Cloud
+Logging / Console; the emulator serves buffered step stdout at that path instead
+(`GET` with `cloudbuild.builds.get`, `text/plain`). The runner appends a short
+per-step header and stdout; secret env values are never written into the buffer.
+
 ## Nested step identity
 
 Each nested step runs as the build service account. The runner parses
@@ -29,6 +46,13 @@ IAM `generateAccessToken`. That token is set as
 `CLOUDSDK_AUTH_ACCESS_TOKEN` on the step env (overwriting a stale value so
 in-step `iamcredentials` calls authenticate as the builder). Operator root
 `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is never injected.
+
+Build `availableSecrets.secretManager` entries (`versionName` + `env`) map
+Secret Manager versions to env names, matching real Cloud Build. A step receives
+a secret only when it lists that name in `secretEnv`. Resolution runs as the
+build service account and requires `secretmanager.versions.access` on the secret
+resource. Missing bindings, missing `secretEnv` names, or IAM deny fail the
+build. `availableSecrets` alone does not inject into steps that omit `secretEnv`.
 
 When host-gateway inject is on, the step also gets gcloud endpoint overrides
 pointing at `http://host.docker.internal:4588/`
@@ -58,9 +82,10 @@ REST on the shared listener (`http://127.0.0.1:4588`).
 | `POST` | `/v1/projects/{p}/builds` |
 | `GET` | `/v1/projects/{p}/builds` |
 | `GET` | `/v1/projects/{p}/builds/{id}` |
+| `GET` | `/v1/projects/{p}/builds/{id}/logs` |
 | `POST` | `/v1/projects/{p}/builds/{id}:cancel` |
 | `POST` | `/v1/projects/{p}/builds/{id}:retry` |
-| `POST`/`GET` | `/v1/projects/{p}/locations/{loc}/builds` (+ `/{id}`, `/{id}:cancel`, `/{id}:retry`) |
+| `POST`/`GET` | `/v1/projects/{p}/locations/{loc}/builds` (+ `/{id}`, `/{id}/logs`, `/{id}:cancel`, `/{id}:retry`) |
 | `POST`/`GET` | `/v1/projects/{p}/triggers` |
 | `GET`/`DELETE` | `/v1/projects/{p}/triggers/{id}` |
 | `POST` | `/v1/projects/{p}/triggers/{id}:run` |
@@ -119,7 +144,7 @@ and denies the open internet unless
 - Host `docker.sock` is never mounted
 - Nested steps get a minted build-SA `CLOUDSDK_AUTH_ACCESS_TOKEN`, not the operator root token
 - `:run` does not check out SCM; it creates a WORKING build and runs the same step path
-- Logs URL is stored and echoed; there is no live stream
+- Logs URL points at buffered `GET .../builds/{id}/logs`; there is no live stream
 - Regional create shares the path with Eventarc (body-shape dispatch); list merges both inventories when authorized
 
 ## Deferred depth
@@ -127,7 +152,7 @@ and denies the open internet unless
 - SCM webhooks, GitHub/GitLab triggers, and source fetch
 - Build attestations and SLSA/provenance
 - Build approvals
-- Live log streaming
+- Live log streaming beyond the buffered stdout text
 
 ## Verification / CLI smoke
 

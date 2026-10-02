@@ -34,11 +34,13 @@ type principalFunc func(*http.Request) (authn.Principal, bool)
 func (s *Service) Mount(mux *http.ServeMux, principalFrom principalFunc) {
 	mux.HandleFunc("POST /v1/projects/{project}/builds", s.wrap(principalFrom, s.createBuildGlobal))
 	mux.HandleFunc("GET /v1/projects/{project}/builds", s.wrap(principalFrom, s.listBuildsGlobal))
+	mux.HandleFunc("GET /v1/projects/{project}/builds/{build}/logs", s.wrap(principalFrom, s.getBuildLogsGlobal))
 	mux.HandleFunc("GET /v1/projects/{project}/builds/{build}", s.wrap(principalFrom, s.getBuildGlobal))
 	mux.HandleFunc("POST /v1/projects/{project}/builds/{build}", s.wrap(principalFrom, s.buildPOSTActionGlobal))
 
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/builds", s.wrap(principalFrom, s.createBuildRegional))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/builds", s.wrap(principalFrom, s.listBuildsRegional))
+	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/builds/{build}/logs", s.wrap(principalFrom, s.getBuildLogsRegional))
 	mux.HandleFunc("GET /v1/projects/{project}/locations/{location}/builds/{build}", s.wrap(principalFrom, s.getBuildRegional))
 	mux.HandleFunc("POST /v1/projects/{project}/locations/{location}/builds/{build}", s.wrap(principalFrom, s.buildPOSTActionRegional))
 
@@ -148,9 +150,13 @@ func (s *Service) createBuild(w http.ResponseWriter, r *http.Request, p authn.Pr
 	if v, ok := body["logUrl"].(string); ok {
 		logURL = strings.TrimSpace(v)
 	}
+	if logURL == "" {
+		logURL = fmt.Sprintf("http://127.0.0.1:4588/v1/%s/logs", name)
+	}
 	created, err := s.Store.CreateCbBuild(store.CbBuild{
 		Name: name, ProjectID: project, Location: location, BuildID: buildID,
 		Status: "WORKING", StatusDetail: "build accepted", BuildJSON: string(raw), LogURL: logURL,
+		CreatorEmail: p.Email, SeedVisible: seedVisibleForPrincipal(p, body),
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -191,6 +197,7 @@ func (s *Service) listBuilds(w http.ResponseWriter, r *http.Request, p authn.Pri
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
+	// Real GCP: any principal with cloudbuild.builds.list sees all project builds.
 	items := make([]map[string]any, 0, len(list))
 	for _, b := range list {
 		items = append(items, toBuildJSON(b))
@@ -230,7 +237,54 @@ func (s *Service) getBuild(w http.ResponseWriter, _ *http.Request, p authn.Princ
 			return
 		}
 	}
+	// Real GCP: cloudbuild.builds.get on the project is sufficient (no per-creator ACL).
 	writeJSON(w, http.StatusOK, toBuildJSON(b))
+}
+
+func (s *Service) getBuildLogsGlobal(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	s.getBuildLogs(w, r, p, r.PathValue("project"), "global", r.PathValue("build"))
+}
+
+func (s *Service) getBuildLogsRegional(w http.ResponseWriter, r *http.Request, p authn.Principal) {
+	s.getBuildLogs(w, r, p, r.PathValue("project"), r.PathValue("location"), r.PathValue("build"))
+}
+
+func (s *Service) getBuildLogs(w http.ResponseWriter, _ *http.Request, p authn.Principal, project, location, buildSeg string) {
+	if err := s.require(p, "cloudbuild.builds.get", project); err != nil {
+		writeAuthzErr(w, err)
+		return
+	}
+	id, _ := splitColonAction(buildSeg)
+	name := buildName(project, location, id)
+	b, ok, err := s.Store.GetCbBuild(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !ok {
+		b, ok, err = s.Store.GetCbBuildByID(project, id)
+		if err != nil {
+			gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+			return
+		}
+		if !ok {
+			gcperrors.NotFound(w, "Build not found")
+			return
+		}
+		name = b.Name
+	}
+	text, found, err := s.Store.GetCbBuildLogs(name)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !found {
+		gcperrors.NotFound(w, "Build not found")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(text))
 }
 
 func (s *Service) buildPOSTActionGlobal(w http.ResponseWriter, r *http.Request, p authn.Principal) {
@@ -329,6 +383,8 @@ func (s *Service) retryBuild(w http.ResponseWriter, r *http.Request, p authn.Pri
 	created, err := s.Store.CreateCbBuild(store.CbBuild{
 		Name: newName, ProjectID: project, Location: retryLoc, BuildID: buildID,
 		Status: "WORKING", StatusDetail: "retry of " + src.BuildID, BuildJSON: src.BuildJSON,
+		CreatorEmail: p.Email, SeedVisible: seedVisibleForPrincipal(p, cfg),
+		LogURL:       fmt.Sprintf("http://127.0.0.1:4588/v1/%s/logs", newName),
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -580,6 +636,8 @@ func (s *Service) runTrigger(w http.ResponseWriter, r *http.Request, p authn.Pri
 	created, err := s.Store.CreateCbBuild(store.CbBuild{
 		Name: name, ProjectID: project, Location: "global", BuildID: buildID,
 		Status: "WORKING", StatusDetail: "trigger run (no webhook)", BuildJSON: string(raw),
+		CreatorEmail: p.Email, SeedVisible: seedVisibleForPrincipal(p, buildCfg),
+		LogURL:       fmt.Sprintf("http://127.0.0.1:4588/v1/%s/logs", name),
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -634,6 +692,26 @@ func (s *Service) deleteTrigger(w http.ResponseWriter, r *http.Request, p authn.
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+func seedVisibleForPrincipal(p authn.Principal, body map[string]any) bool {
+	// Stored for lab operators / seed tagging only. list/get use IAM like real GCP.
+	if p.IsRoot {
+		return true
+	}
+	return bodyHasSeedHistoryTag(body)
+}
+
+func bodyHasSeedHistoryTag(body map[string]any) bool {
+	if body == nil {
+		return false
+	}
+	for _, tag := range stringList(body["tags"]) {
+		if tag == "noctaxris-seed-history" {
+			return true
+		}
+	}
+	return false
 }
 
 func toBuildJSON(b store.CbBuild) map[string]any {

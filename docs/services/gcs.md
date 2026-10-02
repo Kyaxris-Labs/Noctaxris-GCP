@@ -108,6 +108,9 @@ resource or project, fail closed) as the HMAC key's service account. HMAC
 Authorization cannot mint OAuth tokens or call IAM.
 
 Host `storage.googleapis.com` rewrites onto `/storage/xml/...` on the shared listener.
+GOOG4 HMAC verify accepts the client wire path (`/{bucket}/{object}`) when Host is
+`storage.googleapis.com`, even though the request path after rewrite is
+`/storage/xml/{bucket}/{object}`.
 
 ## Emulator limits
 

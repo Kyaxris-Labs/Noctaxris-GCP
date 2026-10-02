@@ -3,6 +3,7 @@ package store_test
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
@@ -66,6 +67,53 @@ func TestArtifactRegistryStoreCRUD(t *testing.T) {
 	ok, err = st.DeleteArRepository(repoName)
 	if err != nil || !ok {
 		t.Fatalf("delete repo: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestCloudBuildStoreLogsAndVisibilityFields(t *testing.T) {
+	dir := t.TempDir()
+	key, err := store.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	buildID := store.NewCbBuildID()
+	name := "projects/p/builds/" + buildID
+	ok, err := st.CreateCbBuild(store.CbBuild{
+		Name: name, ProjectID: "p", Location: "global", BuildID: buildID,
+		Status: "WORKING", BuildJSON: `{}`, CreatorEmail: "a@example.com", SeedVisible: true,
+	})
+	if err != nil || !ok {
+		t.Fatalf("create: ok=%v err=%v", ok, err)
+	}
+	got, found, err := st.GetCbBuild(name)
+	if err != nil || !found {
+		t.Fatalf("get: found=%v err=%v", found, err)
+	}
+	if got.CreatorEmail != "a@example.com" || !got.SeedVisible {
+		t.Fatalf("visibility fields: %#v", got)
+	}
+	if !strings.HasSuffix(got.LogURL, name+"/logs") {
+		t.Fatalf("logUrl=%q", got.LogURL)
+	}
+	if err := st.AppendCbBuildLogs(name, "=== Step 0 ===\nhi\n"); err != nil {
+		t.Fatal(err)
+	}
+	text, found, err := st.GetCbBuildLogs(name)
+	if err != nil || !found || text != "=== Step 0 ===\nhi\n" {
+		t.Fatalf("logs=%q found=%v err=%v", text, found, err)
+	}
+	if err := st.PutCbBuildLogs(name, "replaced"); err != nil {
+		t.Fatal(err)
+	}
+	text, _, err = st.GetCbBuildLogs(name)
+	if err != nil || text != "replaced" {
+		t.Fatalf("put logs=%q err=%v", text, err)
 	}
 }
 

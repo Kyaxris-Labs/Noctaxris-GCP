@@ -122,7 +122,7 @@ func TestCRMErrorPathsAndAuthz(t *testing.T) {
 	}
 	deny := http.NewServeMux()
 	h := &resourcemanager.Handler{
-		Store: st, Authz: &authz.Evaluator{Policies: st},
+		Store: st, Authz: &authz.Evaluator{Policies: st, Roles: st},
 		Principal: func(*http.Request) (authn.Principal, bool) {
 			return authn.Principal{Email: "nobody@example.com", IsRoot: false}, true
 		},

@@ -22,20 +22,28 @@ type StepRunner interface {
 
 // BuildStep is one Cloud Build step from the request JSON.
 type BuildStep struct {
-	Image  string
-	Args   []string
-	Env    []string
-	Script string
+	Image     string
+	Args      []string
+	Env       []string
+	Script    string
+	SecretEnv []string
 }
 
 // EngineRunner runs steps on the nested engine (same family as Cloud Run :invoke).
 // ExecuteStep, when set, skips Docker and is used by unit tests after egress checks.
+// The returned string is treated as step stdout for buffered build logs (never log secret values).
 type EngineRunner struct {
 	Store       *store.Store
+	Authz       authzEvaluator
 	Invoker     compute.Invoker
 	DockerHost  string
 	TLSCertDir  string
-	ExecuteStep func(ctx context.Context, step BuildStep) error
+	ExecuteStep func(ctx context.Context, step BuildStep) (stdout string, err error)
+}
+
+// authzEvaluator is the subset of authz.Evaluator used for build-SA Secret Manager access.
+type authzEvaluator interface {
+	Evaluate(principalEmail string, isRoot bool, permission, resource string) (bool, error)
 }
 
 var httpURLRe = regexp.MustCompile(`https?://[^\s"'\\<>]+`)
@@ -67,10 +75,12 @@ func (s *Service) runner() StepRunner {
 		cert = strings.TrimSpace(os.Getenv(compute.EnvDockerCertPath))
 	}
 	var st *store.Store
+	var az authzEvaluator
 	if s != nil {
 		st = s.Store
+		az = s.Authz
 	}
-	return &EngineRunner{Store: st, Invoker: inv, DockerHost: host, TLSCertDir: cert}
+	return &EngineRunner{Store: st, Authz: az, Invoker: inv, DockerHost: host, TLSCertDir: cert}
 }
 
 func (r *EngineRunner) Run(ctx context.Context, build store.CbBuild) error {
@@ -92,6 +102,11 @@ func (r *EngineRunner) Run(ctx context.Context, build store.CbBuild) error {
 		return err
 	}
 	steps := parseBuildSteps(cur.BuildJSON)
+	buildSA := parseBuildServiceAccountEmail(cur.BuildJSON, cur.ProjectID)
+	secretVals, err := r.resolveStepSecrets(cur.BuildJSON, steps, buildSA)
+	if err != nil {
+		return r.failBuild(cur, err.Error())
+	}
 	token, extraHosts, err := r.buildStepIdentity(cur)
 	if err != nil {
 		return r.failBuild(cur, err.Error())
@@ -108,10 +123,20 @@ func (r *EngineRunner) Run(ctx context.Context, build store.CbBuild) error {
 			return nil
 		}
 		cur = live
-		step = withBuildIdentityEnv(step, token, extraHosts)
-		if err := r.runOneStep(ctx, step, extraHosts); err != nil {
+		step, err = withSecretEnv(step, secretVals)
+		if err != nil {
 			cur.BuildJSON = markStepStatusAt(cur.BuildJSON, i, "FAILURE")
 			return r.failBuild(cur, err.Error())
+		}
+		step = withBuildIdentityEnv(step, token, extraHosts)
+		stdout, err := r.runOneStep(ctx, step, extraHosts)
+		if err != nil {
+			_ = r.Store.AppendCbBuildLogs(cur.Name, fmt.Sprintf("=== Step %d ===\n%s\n", i, stdout))
+			cur.BuildJSON = markStepStatusAt(cur.BuildJSON, i, "FAILURE")
+			return r.failBuild(cur, err.Error())
+		}
+		if err := r.Store.AppendCbBuildLogs(cur.Name, fmt.Sprintf("=== Step %d ===\n%s\n", i, stdout)); err != nil {
+			return err
 		}
 		cur.BuildJSON = markStepStatusAt(cur.BuildJSON, i, "SUCCESS")
 		if _, _, err := r.Store.PutCbBuildProgress(cur.Name, "WORKING", "running steps", cur.BuildJSON, ""); err != nil {
@@ -124,18 +149,18 @@ func (r *EngineRunner) Run(ctx context.Context, build store.CbBuild) error {
 	return err
 }
 
-func (r *EngineRunner) runOneStep(ctx context.Context, step BuildStep, extraHosts []string) error {
+func (r *EngineRunner) runOneStep(ctx context.Context, step BuildStep, extraHosts []string) (string, error) {
 	if r.ExecuteStep != nil {
 		return r.ExecuteStep(ctx, step)
 	}
 	host, cert := r.engineDial()
 	cli, err := compute.Dial(host, cert)
 	if err != nil {
-		return fmt.Errorf("nested engine not configured: %w", err)
+		return "", fmt.Errorf("nested engine not configured: %w", err)
 	}
 	defer cli.Close()
 	if !cli.Enabled() {
-		return fmt.Errorf("nested engine not configured")
+		return "", fmt.Errorf("nested engine not configured")
 	}
 	res, err := cli.RunBuildStep(ctx, compute.BuildStepRun{
 		Image:      step.Image,
@@ -145,12 +170,128 @@ func (r *EngineRunner) runOneStep(ctx context.Context, step BuildStep, extraHost
 		ExtraHosts: extraHosts,
 	})
 	if err != nil {
-		return err
+		return res.Stdout, err
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("step exit %d", res.ExitCode)
+		return res.Stdout, fmt.Errorf("step exit %d", res.ExitCode)
+	}
+	return res.Stdout, nil
+}
+
+type secretManagerBinding struct {
+	Env         string
+	VersionName string
+}
+
+func parseAvailableSecrets(buildJSON string) []secretManagerBinding {
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(buildJSON), &cfg); err != nil || cfg == nil {
+		return nil
+	}
+	avail, _ := cfg["availableSecrets"].(map[string]any)
+	if avail == nil {
+		return nil
+	}
+	list, _ := avail["secretManager"].([]any)
+	out := make([]secretManagerBinding, 0, len(list))
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		env := stringField(m["env"])
+		ver := stringField(m["versionName"])
+		if env == "" || ver == "" {
+			continue
+		}
+		out = append(out, secretManagerBinding{Env: env, VersionName: ver})
+	}
+	return out
+}
+
+// resolveStepSecrets loads Secret Manager values referenced by step secretEnv.
+// Matches real Cloud Build: availableSecrets only maps names; a step must list
+// secretEnv to receive them. Access is authorized as the build service account
+// (secretmanager.versions.access on the secret resource).
+func (r *EngineRunner) resolveStepSecrets(buildJSON string, steps []BuildStep, buildSA string) (map[string]string, error) {
+	needed := map[string]struct{}{}
+	for _, step := range steps {
+		for _, name := range step.SecretEnv {
+			if name != "" {
+				needed[name] = struct{}{}
+			}
+		}
+	}
+	if len(needed) == 0 {
+		return nil, nil
+	}
+	bindings := parseAvailableSecrets(buildJSON)
+	byEnv := make(map[string]secretManagerBinding, len(bindings))
+	for _, b := range bindings {
+		byEnv[b.Env] = b
+	}
+	if r == nil || r.Store == nil {
+		return nil, fmt.Errorf("secret manager store required")
+	}
+	out := make(map[string]string, len(needed))
+	for name := range needed {
+		b, ok := byEnv[name]
+		if !ok {
+			return nil, fmt.Errorf("secretEnv %q not in availableSecrets", name)
+		}
+		secretName, versionID, ok := store.ParseSecretVersionName(b.VersionName)
+		if !ok {
+			return nil, fmt.Errorf("invalid secret versionName %q", b.VersionName)
+		}
+		if err := r.requireBuildSASecretAccess(buildSA, secretName); err != nil {
+			return nil, err
+		}
+		plain, _, err := r.Store.AccessSecretVersion(secretName, versionID)
+		if err != nil {
+			return nil, fmt.Errorf("access secret %s: %w", b.Env, err)
+		}
+		out[name] = string(plain)
+	}
+	return out, nil
+}
+
+func (r *EngineRunner) requireBuildSASecretAccess(buildSA, secretName string) error {
+	if strings.TrimSpace(buildSA) == "" {
+		return fmt.Errorf("build service account required for secretEnv")
+	}
+	if r.Authz == nil {
+		// Fail closed when Authz is unset outside tests that inject secrets without IAM.
+		return fmt.Errorf("secretmanager.versions.access denied for %s on %s", buildSA, secretName)
+	}
+	ok, err := r.Authz.Evaluate(buildSA, false, "secretmanager.versions.access", secretName)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("secretmanager.versions.access denied for %s on %s", buildSA, secretName)
 	}
 	return nil
+}
+
+// withSecretEnv injects Secret Manager values listed in step.secretEnv only
+// (real Cloud Build: availableSecrets alone does not populate step env).
+func withSecretEnv(step BuildStep, secrets map[string]string) (BuildStep, error) {
+	if len(step.SecretEnv) == 0 {
+		return step, nil
+	}
+	if len(secrets) == 0 {
+		return step, fmt.Errorf("secretEnv requires availableSecrets")
+	}
+	env := append([]string(nil), step.Env...)
+	for _, name := range step.SecretEnv {
+		val, ok := secrets[name]
+		if !ok {
+			return step, fmt.Errorf("secretEnv %q not in availableSecrets", name)
+		}
+		env = upsertEnv(env, name, val)
+	}
+	step.Env = env
+	return step, nil
 }
 
 func (r *EngineRunner) failBuild(cur store.CbBuild, detail string) error {
@@ -327,10 +468,11 @@ func parseBuildSteps(buildJSON string) []BuildStep {
 			continue
 		}
 		bs := BuildStep{
-			Image:  stringField(sm["name"]),
-			Script: stringField(sm["script"]),
-			Args:   stringList(sm["args"]),
-			Env:    stringList(sm["env"]),
+			Image:     stringField(sm["name"]),
+			Script:    stringField(sm["script"]),
+			Args:      stringList(sm["args"]),
+			Env:       stringList(sm["env"]),
+			SecretEnv: stringList(sm["secretEnv"]),
 		}
 		out = append(out, bs)
 	}

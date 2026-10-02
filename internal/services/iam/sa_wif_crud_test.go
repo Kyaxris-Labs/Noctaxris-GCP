@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
 func TestIAMServiceAccountKeysAndWIFCRUD(t *testing.T) {
@@ -90,14 +92,41 @@ func TestIAMServiceAccountKeysAndWIFCRUD(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("getIamPolicy: %d %s", rec.Code, rec.Body.String())
 	}
-	rec = do(http.MethodPost, base+"/"+email+":setIamPolicy", `{"policy":{"etag":"ACAB","bindings":[{"role":"roles/iam.serviceAccountUser","members":["user:a@b.c"]}]}}`)
+	caller := "caller@" + project + ".iam.gserviceaccount.com"
+	if err := h.store.CreateServiceAccount(store.ServiceAccount{
+		ProjectID: project, Email: caller, UniqueID: "caller", DisplayName: "Caller",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec = do(http.MethodPost, base+"/"+email+":setIamPolicy",
+		`{"policy":{"etag":"ACAB","bindings":[{"role":"roles/iam.serviceAccountUser","members":["serviceAccount:`+caller+`"]}]}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("setIamPolicy: %d %s", rec.Code, rec.Body.String())
 	}
+	h.setWho(caller, false)
 	rec = do(http.MethodPost, base+"/"+email+":testIamPermissions", `{"permissions":["iam.serviceAccounts.get","iam.serviceAccounts.actAs"]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("testIamPermissions: %d %s", rec.Code, rec.Body.String())
 	}
+	var tip map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &tip); err != nil {
+		t.Fatal(err)
+	}
+	rawPerms, _ := tip["permissions"].([]any)
+	foundActAs := false
+	for _, p := range rawPerms {
+		s, _ := p.(string)
+		if s == "iam.serviceAccounts.get" {
+			t.Fatalf("serviceAccountUser must not grant get via testIamPermissions: %v", rawPerms)
+		}
+		if s == "iam.serviceAccounts.actAs" {
+			foundActAs = true
+		}
+	}
+	if !foundActAs {
+		t.Fatalf("non-root testIamPermissions missing actAs: %v", rawPerms)
+	}
+	h.setWho("root@noctaxris-gcp-local.iam.gserviceaccount.com", true)
 
 	keysPath := base + "/" + email + "/keys"
 	rec = do(http.MethodPost, keysPath, `{"keyAlgorithm":"KEY_ALG_RSA_2048","privateKeyType":"TYPE_GOOGLE_CREDENTIALS_FILE"}`)

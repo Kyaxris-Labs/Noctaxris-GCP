@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,7 +80,10 @@ CREATE TABLE IF NOT EXISTS cb_builds (
   create_time TEXT NOT NULL,
   start_time TEXT NOT NULL DEFAULT '',
   finish_time TEXT NOT NULL DEFAULT '',
-  log_url TEXT NOT NULL DEFAULT ''
+  log_url TEXT NOT NULL DEFAULT '',
+  creator_email TEXT NOT NULL DEFAULT '',
+  seed_visible INTEGER NOT NULL DEFAULT 0,
+  logs_text TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS cb_triggers (
@@ -96,6 +100,18 @@ CREATE TABLE IF NOT EXISTS cb_triggers (
 func (s *Store) migrateArtifactCloudbuild() error {
 	if _, err := s.db.Exec(artifactCloudbuildSchema); err != nil {
 		return fmt.Errorf("apply artifact registry/cloud build schema: %w", err)
+	}
+	alters := []string{
+		`ALTER TABLE cb_builds ADD COLUMN creator_email TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cb_builds ADD COLUMN seed_visible INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE cb_builds ADD COLUMN logs_text TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range alters {
+		if _, err := s.db.Exec(stmt); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return fmt.Errorf("migrate cb_builds columns: %w", err)
+			}
+		}
 	}
 	return nil
 }
@@ -475,6 +491,9 @@ type CbBuild struct {
 	StartTime     string
 	FinishTime    string
 	LogURL        string
+	CreatorEmail  string
+	SeedVisible   bool
+	LogsText      string
 }
 
 // CbTrigger is a Cloud Build trigger metadata row.
@@ -515,12 +534,18 @@ func (s *Store) CreateCbBuild(b CbBuild) (bool, error) {
 	if b.LogURL == "" {
 		b.LogURL = fmt.Sprintf("http://127.0.0.1:4588/v1/%s/logs", b.Name)
 	}
+	seedVisible := 0
+	if b.SeedVisible {
+		seedVisible = 1
+	}
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO cb_builds
-		 (name, project_id, location, build_id, status, status_detail, project_number, build_json, create_time, start_time, finish_time, log_url)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (name, project_id, location, build_id, status, status_detail, project_number, build_json,
+		  create_time, start_time, finish_time, log_url, creator_email, seed_visible, logs_text)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		b.Name, b.ProjectID, b.Location, b.BuildID, b.Status, b.StatusDetail, b.ProjectNumber,
 		b.BuildJSON, b.CreateTime, b.StartTime, b.FinishTime, b.LogURL,
+		b.CreatorEmail, seedVisible, b.LogsText,
 	)
 	if err != nil {
 		return false, err
@@ -529,15 +554,31 @@ func (s *Store) CreateCbBuild(b CbBuild) (bool, error) {
 	return n > 0, err
 }
 
+func scanCbBuild(scanner interface {
+	Scan(dest ...any) error
+}) (CbBuild, error) {
+	var b CbBuild
+	var seedVisible int
+	err := scanner.Scan(
+		&b.Name, &b.ProjectID, &b.Location, &b.BuildID, &b.Status, &b.StatusDetail, &b.ProjectNumber,
+		&b.BuildJSON, &b.CreateTime, &b.StartTime, &b.FinishTime, &b.LogURL,
+		&b.CreatorEmail, &seedVisible, &b.LogsText,
+	)
+	if err != nil {
+		return CbBuild{}, err
+	}
+	b.SeedVisible = seedVisible != 0
+	return b, nil
+}
+
+const cbBuildSelectCols = `name, project_id, location, build_id, status, status_detail, project_number, build_json,
+		        create_time, start_time, finish_time, log_url, creator_email, seed_visible, logs_text`
+
 // GetCbBuild returns a build by resource name.
 func (s *Store) GetCbBuild(name string) (CbBuild, bool, error) {
-	var b CbBuild
-	err := s.db.QueryRow(
-		`SELECT name, project_id, location, build_id, status, status_detail, project_number, build_json,
-		        create_time, start_time, finish_time, log_url
-		 FROM cb_builds WHERE name = ?`, name,
-	).Scan(&b.Name, &b.ProjectID, &b.Location, &b.BuildID, &b.Status, &b.StatusDetail, &b.ProjectNumber,
-		&b.BuildJSON, &b.CreateTime, &b.StartTime, &b.FinishTime, &b.LogURL)
+	b, err := scanCbBuild(s.db.QueryRow(
+		`SELECT `+cbBuildSelectCols+` FROM cb_builds WHERE name = ?`, name,
+	))
 	if err == sql.ErrNoRows {
 		return CbBuild{}, false, nil
 	}
@@ -549,14 +590,10 @@ func (s *Store) GetCbBuild(name string) (CbBuild, bool, error) {
 
 // GetCbBuildByID looks up a build by project and build id (any location).
 func (s *Store) GetCbBuildByID(projectID, buildID string) (CbBuild, bool, error) {
-	var b CbBuild
-	err := s.db.QueryRow(
-		`SELECT name, project_id, location, build_id, status, status_detail, project_number, build_json,
-		        create_time, start_time, finish_time, log_url
-		 FROM cb_builds WHERE project_id = ? AND build_id = ? ORDER BY create_time DESC LIMIT 1`,
+	b, err := scanCbBuild(s.db.QueryRow(
+		`SELECT `+cbBuildSelectCols+` FROM cb_builds WHERE project_id = ? AND build_id = ? ORDER BY create_time DESC LIMIT 1`,
 		projectID, buildID,
-	).Scan(&b.Name, &b.ProjectID, &b.Location, &b.BuildID, &b.Status, &b.StatusDetail, &b.ProjectNumber,
-		&b.BuildJSON, &b.CreateTime, &b.StartTime, &b.FinishTime, &b.LogURL)
+	))
 	if err == sql.ErrNoRows {
 		return CbBuild{}, false, nil
 	}
@@ -574,15 +611,11 @@ func (s *Store) ListCbBuilds(projectID, location string) ([]CbBuild, error) {
 	)
 	if location == "" || location == "-" {
 		rows, err = s.db.Query(
-			`SELECT name, project_id, location, build_id, status, status_detail, project_number, build_json,
-			        create_time, start_time, finish_time, log_url
-			 FROM cb_builds WHERE project_id = ? ORDER BY create_time DESC`, projectID,
+			`SELECT `+cbBuildSelectCols+` FROM cb_builds WHERE project_id = ? ORDER BY create_time DESC`, projectID,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT name, project_id, location, build_id, status, status_detail, project_number, build_json,
-			        create_time, start_time, finish_time, log_url
-			 FROM cb_builds WHERE project_id = ? AND location = ? ORDER BY create_time DESC`,
+			`SELECT `+cbBuildSelectCols+` FROM cb_builds WHERE project_id = ? AND location = ? ORDER BY create_time DESC`,
 			projectID, location,
 		)
 	}
@@ -592,14 +625,44 @@ func (s *Store) ListCbBuilds(projectID, location string) ([]CbBuild, error) {
 	defer rows.Close()
 	var out []CbBuild
 	for rows.Next() {
-		var b CbBuild
-		if err := rows.Scan(&b.Name, &b.ProjectID, &b.Location, &b.BuildID, &b.Status, &b.StatusDetail, &b.ProjectNumber,
-			&b.BuildJSON, &b.CreateTime, &b.StartTime, &b.FinishTime, &b.LogURL); err != nil {
+		b, err := scanCbBuild(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// PutCbBuildLogs replaces the buffered build log text.
+func (s *Store) PutCbBuildLogs(name, text string) error {
+	_, err := s.db.Exec(`UPDATE cb_builds SET logs_text = ? WHERE name = ?`, text, name)
+	return err
+}
+
+// GetCbBuildLogs returns buffered build log text.
+func (s *Store) GetCbBuildLogs(name string) (string, bool, error) {
+	var text string
+	err := s.db.QueryRow(`SELECT logs_text FROM cb_builds WHERE name = ?`, name).Scan(&text)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return text, true, nil
+}
+
+// AppendCbBuildLogs appends text to the buffered build log.
+func (s *Store) AppendCbBuildLogs(name, text string) error {
+	if text == "" {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`UPDATE cb_builds SET logs_text = logs_text || ? WHERE name = ?`,
+		text, name,
+	)
+	return err
 }
 
 // AdvanceCbBuildToSuccess flips WORKING builds to SUCCESS and returns the updated row.

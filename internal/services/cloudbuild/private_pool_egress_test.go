@@ -27,9 +27,9 @@ func TestPrivatePoolNoPublicEgressDeniesWANAllowsLabGCS(t *testing.T) {
 	var ran atomic.Int32
 	svc.StepRunner = &cloudbuild.EngineRunner{
 		Store: st,
-		ExecuteStep: func(context.Context, cloudbuild.BuildStep) error {
+		ExecuteStep: func(context.Context, cloudbuild.BuildStep) (string, error) {
 			ran.Add(1)
-			return nil
+			return "", nil
 		},
 	}
 

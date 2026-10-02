@@ -103,7 +103,7 @@ func TestCreateBuildStaysWorkingUntilRunnerFinishes(t *testing.T) {
 	}
 	svc.StepRunner = &cloudbuild.EngineRunner{
 		Store:       st,
-		ExecuteStep: func(context.Context, cloudbuild.BuildStep) error { return nil },
+		ExecuteStep: func(context.Context, cloudbuild.BuildStep) (string, error) { return "", nil },
 	}
 	if err := svc.StepRunner.Run(context.Background(), b); err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestGetBuildSuccessAfterInjectedRunner(t *testing.T) {
 	st, mux, svc := setupStepExec(t)
 	svc.StepRunner = &cloudbuild.EngineRunner{
 		Store:       st,
-		ExecuteStep: func(context.Context, cloudbuild.BuildStep) error { return nil },
+		ExecuteStep: func(context.Context, cloudbuild.BuildStep) (string, error) { return "", nil },
 	}
 	created := postBuild(t, mux, `{"steps":[{"name":"alpine:3.23"}]}`)
 	id, _ := created["id"].(string)

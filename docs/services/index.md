@@ -9,7 +9,7 @@ with honest emulator limits on each page.
 | IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys (RSA PKCS#8 CreateKey), OAuth JWT bearer `/token` + `/oauth2/token`, WIF pool/provider + STS `/v1/token` (STS unrestricted under VPC-SC), TokenCreator `generateAccessToken` / `signBlob` / `signJwt` (including `iamcredentials.googleapis.com` alias; optional VPC-SC) |
 | Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable |
 | Organization Policy | lab | [orgpolicy.md](orgpolicy.md) | REST v2 policies get/set/list; boolean constraints theatre (SA keys + GCS public IAM) |
-| Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL + XML HMAC List/Get/Put; bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
+| Cloud Storage | lab | [gcs.md](gcs.md) | JSON API v1 + V4 HMAC signed URL + XML HMAC List/Get/Put (GOOG4 path after `storage.googleapis.com` rewrite); bucket `retentionPolicy` fail-closed delete/overwrite (`STORAGE_EMULATOR_HOST`) |
 | Pub/Sub | lab | [pubsub.md](pubsub.md) | gRPC + REST topics/subscriptions/snapshots; dead-letter + exactly-once; push `oidcToken` Bearer JWT (`PUBSUB_EMULATOR_HOST`) |
 | Secret Manager | lab | [secret-manager.md](secret-manager.md) | REST + gRPC; rotation config + lab `:rotateSecret` |
 | Firestore | lab | [firestore.md](firestore.md) | gRPC Firestore v1 plus REST GET/PATCH/POST owner access for `users/{uid}` (`FIRESTORE_EMULATOR_HOST`) |
