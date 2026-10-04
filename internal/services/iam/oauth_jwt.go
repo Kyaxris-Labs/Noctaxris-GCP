@@ -114,7 +114,11 @@ func (h *Handler) verifySAJWTBearer(assertion string) (saEmail string, err error
 	}
 	iss := claimString(claims, "iss")
 	sub := claimString(claims, "sub")
-	if iss == "" || sub == "" || iss != sub {
+	// google-auth / gcloud SA JWT grants often omit sub and only set iss.
+	if sub == "" {
+		sub = iss
+	}
+	if iss == "" || iss != sub {
 		return "", fmt.Errorf("oauth jwt: iss and sub must equal an SA email")
 	}
 	sa, ok, err := h.Store.GetServiceAccount(iss)

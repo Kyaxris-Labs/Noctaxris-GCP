@@ -120,6 +120,29 @@ func TestOAuthJWTBearerGrant(t *testing.T) {
 	}
 }
 
+func TestOAuthJWTBearerGrantOmitsSubLikeGcloud(t *testing.T) {
+	h := openIAM(t)
+	const project = "noctaxris-gcp-local"
+	email := seedServiceAccount(t, h.store, project, "jwt-nosub")
+	h.setWho("root@"+project+".iam.gserviceaccount.com", true)
+	cred := createSACredentials(t, h, project, email)
+	priv := parsePKCS8PEM(t, cred["private_key"])
+	now := time.Now().UTC()
+	assertion := signSAJWTNoSub(t, priv, email, cred["private_key_id"], "https://oauth2.googleapis.com/token", now, now.Add(time.Hour))
+
+	form := url.Values{}
+	form.Set("grant_type", iam.GrantTypeJWTBearer)
+	form.Set("assertion", assertion)
+	form.Set("scope", "https://www.googleapis.com/auth/cloud-platform")
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gcloud-shaped JWT (no sub) status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestOAuthJWTBearerRejects(t *testing.T) {
 	h := openIAM(t)
 	const project = "noctaxris-gcp-local"
@@ -218,14 +241,30 @@ func parsePKCS8PEM(t *testing.T, pemStr string) *rsa.PrivateKey {
 
 func signSAJWT(t *testing.T, priv *rsa.PrivateKey, email, kid, aud string, iat, exp time.Time) string {
 	t.Helper()
-	header := map[string]string{"alg": "RS256", "typ": "JWT", "kid": kid}
-	claims := map[string]any{
+	return signSAJWTClaims(t, priv, kid, map[string]any{
 		"iss": email,
 		"sub": email,
 		"aud": aud,
 		"iat": iat.Unix(),
 		"exp": exp.Unix(),
-	}
+	})
+}
+
+func signSAJWTNoSub(t *testing.T, priv *rsa.PrivateKey, email, kid, aud string, iat, exp time.Time) string {
+	t.Helper()
+	// Matches google.oauth2.service_account / gcloud activate-service-account.
+	return signSAJWTClaims(t, priv, kid, map[string]any{
+		"iss":   email,
+		"aud":   aud,
+		"iat":   iat.Unix(),
+		"exp":   exp.Unix(),
+		"scope": "https://www.googleapis.com/auth/cloud-platform",
+	})
+}
+
+func signSAJWTClaims(t *testing.T, priv *rsa.PrivateKey, kid string, claims map[string]any) string {
+	t.Helper()
+	header := map[string]string{"alg": "RS256", "typ": "JWT", "kid": kid}
 	hb, _ := json.Marshal(header)
 	cb, _ := json.Marshal(claims)
 	signingInput := base64.RawURLEncoding.EncodeToString(hb) + "." + base64.RawURLEncoding.EncodeToString(cb)

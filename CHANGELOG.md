@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.7.1
+
+Patch after 1.7.0: OAuth JWT bearer accepts google-auth / gcloud assertions that omit `sub`, plus CI gate alignment. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.1`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- IAM OAuth: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` treats a missing assertion `sub` as the `iss` service-account email (matches google-auth and `gcloud auth activate-service-account`)
 - CI: PR `smoke-core` matches `ci-required` (object upload + Secret Manager version + audit JSONL hygiene); `docker-nightly` runs `ci-required` before Hub push
 
 ## 1.7.0
