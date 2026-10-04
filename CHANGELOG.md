@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.7.2
+
+Patch after 1.7.1: opt-in product strip for challenge images. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.2`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Ops: `NOCTAXRIS_GCP_STRIP_PRODUCT=1` (or `true`) serves readiness/liveness/version only at `/_lab/health|ready|version`, uses root SA display name `Root`, and labels the lab CA `Lab CA` / Org `Lab`. Default unset keeps `/_noctaxris-gcp/...`, root display name `Noctaxris-GCP root`, and product CA subject. Compose `healthcheck` follows the active ready path.
+
 ## 1.7.1
 
 Patch after 1.7.0: OAuth JWT bearer accepts google-auth / gcloud assertions that omit `sub`, plus CI gate alignment. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.1`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

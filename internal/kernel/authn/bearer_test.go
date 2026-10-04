@@ -98,80 +98,104 @@ func TestAuthenticateLabOIDCBearer(t *testing.T) {
 }
 
 func TestIsPublicPath(t *testing.T) {
-	if !authn.IsPublicPath("/_noctaxris-gcp/health") {
+	if !authn.IsPublicPath("/_noctaxris-gcp/health", false) {
 		t.Fatal("health should be public")
 	}
-	if !authn.IsPublicPath("/_noctaxris-gcp/http-catcher") {
+	if !authn.IsPublicPath("/_noctaxris-gcp/http-catcher", false) {
 		t.Fatal("http-catcher dump should be public")
 	}
-	if !authn.IsPublicPath("/_noctaxris-gcp/http-catcher/push") {
+	if !authn.IsPublicPath("/_noctaxris-gcp/http-catcher/push", false) {
 		t.Fatal("http-catcher accept prefix should be public")
 	}
-	if !authn.IsPublicPath("/identitytoolkit.googleapis.com/v1/accounts:signUp") {
+	if !authn.IsPublicPath("/identitytoolkit.googleapis.com/v1/accounts:signUp", false) {
 		t.Fatal("Identity Toolkit client paths should be public")
 	}
-	if !authn.IsPublicPath("/v1/token") {
+	if !authn.IsPublicPath("/v1/token", false) {
 		t.Fatal("STS /v1/token should be public")
 	}
-	if !authn.IsPublicPath("/token") {
+	if !authn.IsPublicPath("/token", false) {
 		t.Fatal("OAuth2 /token should be public")
 	}
-	if !authn.IsPublicPath("/oauth2/token") {
+	if !authn.IsPublicPath("/oauth2/token", false) {
 		t.Fatal("OAuth2 /oauth2/token should be public")
 	}
-	if authn.IsPublicPath("/token/../v1/projects") {
+	if authn.IsPublicPath("/token/../v1/projects", false) {
 		t.Fatal("token path traversal must not skip auth")
 	}
-	if authn.IsPublicPath("/oauth2/token/../v1/projects") {
+	if authn.IsPublicPath("/oauth2/token/../v1/projects", false) {
 		t.Fatal("oauth2/token path traversal must not skip auth")
 	}
-	if !authn.IsPublicPath("/lb/p/fr/obj") {
+	if !authn.IsPublicPath("/lb/p/fr/obj", false) {
 		t.Fatal("expected public lb dataplane")
 	}
-	if !authn.IsPublicPath("/run/noctaxris-gcp-local/us-central1/web/") {
+	if !authn.IsPublicPath("/run/noctaxris-gcp-local/us-central1/web/", false) {
 		t.Fatal("cloud run nested browser route should be public")
 	}
-	if authn.IsPublicPath("/run/../v1/projects") {
+	if authn.IsPublicPath("/run/../v1/projects", false) {
 		t.Fatal("run prefix must not allow traversal into authenticated APIs")
 	}
-	if !authn.IsPublicPath("/cdn/dist-id/obj") {
+	if !authn.IsPublicPath("/cdn/dist-id/obj", false) {
 		t.Fatal("expected public cdn edge")
 	}
-	if authn.IsPublicPath("/v1/projects") {
+	if authn.IsPublicPath("/v1/projects", false) {
 		t.Fatal("API path should require auth")
 	}
-	if authn.IsPublicPath("/identitytoolkit.googleapis.com/v1/projects/p/accounts") {
+	if authn.IsPublicPath("/identitytoolkit.googleapis.com/v1/projects/p/accounts", false) {
 		t.Fatal("admin Identity Toolkit paths should require auth")
 	}
 	// Prefix checks must use a cleaned path so /cdn/../ or /lb/../ cannot skip Bearer.
-	if authn.IsPublicPath("/cdn/../v1/projects") {
+	if authn.IsPublicPath("/cdn/../v1/projects", false) {
 		t.Fatal("cdn path traversal must not skip auth")
 	}
-	if authn.IsPublicPath("/lb/../storage/v1/b") {
+	if authn.IsPublicPath("/lb/../storage/v1/b", false) {
 		t.Fatal("lb path traversal must not skip auth")
 	}
-	if !authn.IsPublicPath("/cdn/dist/../dist/obj") {
+	if !authn.IsPublicPath("/cdn/dist/../dist/obj", false) {
 		t.Fatal("cleaned cdn edge path should stay public")
 	}
-	if !authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/.well-known/openid-configuration") {
+	if !authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/.well-known/openid-configuration", false) {
 		t.Fatal("oidc-lab discovery should be public")
 	}
-	if !authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/.well-known/jwks.json") {
+	if !authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/.well-known/jwks.json", false) {
 		t.Fatal("oidc-lab JWKS should be public")
 	}
-	if authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/token") {
+	if authn.IsPublicPath("/_noctaxris-gcp/oidc-lab/token", false) {
 		t.Fatal("oidc-lab must not expose mint paths as public")
 	}
-	if !authn.IsPublicPath("/computeMetadata/v1/") {
+	if !authn.IsPublicPath("/computeMetadata/v1/", false) {
 		t.Fatal("computeMetadata root should be public")
 	}
-	if !authn.IsPublicPath("/computeMetadata/v1") {
+	if !authn.IsPublicPath("/computeMetadata/v1", false) {
 		t.Fatal("computeMetadata without trailing slash should be public")
 	}
-	if !authn.IsPublicPath("/computeMetadata/v1/instance/service-accounts/default/token") {
+	if !authn.IsPublicPath("/computeMetadata/v1/instance/service-accounts/default/token", false) {
 		t.Fatal("computeMetadata token path should be public")
 	}
-	if authn.IsPublicPath("/computeMetadata/../v1/projects") {
+	if authn.IsPublicPath("/computeMetadata/../v1/projects", false) {
 		t.Fatal("computeMetadata path traversal must not skip auth")
+	}
+	if authn.IsPublicPath("/_lab/health", false) {
+		t.Fatal("lab health must not be public when strip is off")
+	}
+	if !authn.IsPublicPath("/_lab/health", true) {
+		t.Fatal("lab health should be public when strip is on")
+	}
+	if !authn.IsPublicPath("/_lab/ready", true) || !authn.IsPublicPath("/_lab/version", true) {
+		t.Fatal("lab ready/version should be public when strip is on")
+	}
+	if authn.IsPublicPath("/_noctaxris-gcp/health", true) {
+		t.Fatal("product health must not be public when strip is on")
+	}
+	if authn.IsPublicPath("/_noctaxris-gcp/ready", true) || authn.IsPublicPath("/_noctaxris-gcp/version", true) {
+		t.Fatal("product ready/version must not be public when strip is on")
+	}
+	if !authn.IsInactiveHealthPath("/_noctaxris-gcp/health", true) {
+		t.Fatal("product health inactive when strip on")
+	}
+	if !authn.IsInactiveHealthPath("/_lab/ready", false) {
+		t.Fatal("lab ready inactive when strip off")
+	}
+	if authn.IsInactiveHealthPath("/_lab/health", true) {
+		t.Fatal("active lab health must not be inactive")
 	}
 }

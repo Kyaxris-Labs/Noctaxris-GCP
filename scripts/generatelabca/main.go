@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/tlsutil"
@@ -19,7 +20,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "lab ca path: %v\n", err)
 		os.Exit(1)
 	}
-	paths, err := tlsutil.EnsureServerCert(abs, time.Time{})
+	v := os.Getenv("NOCTAXRIS_GCP_STRIP_PRODUCT")
+	strip := strings.EqualFold(v, "1") || strings.EqualFold(v, "true")
+	paths, err := tlsutil.EnsureServerCert(abs, time.Time{}, strip)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "generate lab ca: %v\n", err)
 		os.Exit(1)

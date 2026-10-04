@@ -80,7 +80,7 @@ Noctaxris-GCP fails closed. Defaults favor a loopback lab on a single laptop.
 - Pub/Sub push OIDC mints RS256 lab JWTs with the oidc-lab key (`alg=none`
   rejected); see [services/pubsub.md](services/pubsub.md).
 - Public paths (Bearer skipped):
-  - `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version`
+  - Ops probes: `/_noctaxris-gcp/health`, `/_noctaxris-gcp/ready`, `/_noctaxris-gcp/version` by default. With `NOCTAXRIS_GCP_STRIP_PRODUCT=1`, only `/_lab/health`, `/_lab/ready`, `/_lab/version` are public and registered; the product trio is absent (404)
   - Lab HTTP catcher `POST`/`GET` `/_noctaxris-gcp/http-catcher` (and `POST` under
     `/_noctaxris-gcp/http-catcher/…`); dump returns `{"deliveries":[…]}`
   - STS `POST /v1/token` (WIF subject_token exchange)

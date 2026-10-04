@@ -59,7 +59,7 @@ func run(args []string) error {
 	}
 	defer st.Close()
 
-	if err := st.EnsureRoot(cfg.ProjectID, cfg.RootServiceAccount); err != nil {
+	if err := st.EnsureRoot(cfg.ProjectID, cfg.RootServiceAccount, cfg.RootSADisplayName()); err != nil {
 		return fmt.Errorf("ensure root: %w", err)
 	}
 
@@ -84,7 +84,10 @@ func runHealthcheck() error {
 	if strings.HasPrefix(addr, "0.0.0.0:") {
 		addr = "127.0.0.1:" + strings.TrimPrefix(addr, "0.0.0.0:")
 	}
-	url := "http://" + addr + "/_noctaxris-gcp/ready"
+	strip := strings.EqualFold(os.Getenv(config.EnvStripProduct), "1") ||
+		strings.EqualFold(os.Getenv(config.EnvStripProduct), "true")
+	_, readyPath, _ := config.HealthPaths(strip)
+	url := "http://" + addr + readyPath
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {

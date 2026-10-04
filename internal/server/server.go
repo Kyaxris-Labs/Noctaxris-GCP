@@ -31,9 +31,6 @@ import (
 )
 
 const (
-	healthPath      = "/_noctaxris-gcp/health"
-	readyPath       = "/_noctaxris-gcp/ready"
-	versionPath     = "/_noctaxris-gcp/version"
 	requestIDHeader = "X-Request-Id"
 	shutdownTimeout = 10 * time.Second
 	catcherMaxBody  = 1 << 20 // 1 MiB
@@ -118,6 +115,7 @@ func RequestIDFromContext(ctx context.Context) string {
 }
 
 func (s *Server) registerREST() {
+	healthPath, readyPath, versionPath := s.cfg.HealthPaths()
 	s.mux.HandleFunc(healthPath, s.handleHealth)
 	s.mux.HandleFunc(readyPath, s.handleReady)
 	s.mux.HandleFunc(versionPath, s.handleVersion)
@@ -191,7 +189,12 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if authn.IsPublicPath(r.URL.Path) {
+		if authn.IsInactiveHealthPath(r.URL.Path, s.cfg.StripProduct) {
+			http.NotFound(w, r)
+			return
+		}
+
+		if authn.IsPublicPath(r.URL.Path, s.cfg.StripProduct) {
 			// Optional Bearer: edge handlers (/lb/, /cdn/, /run/) may Evaluate Invoker
 			// or storage IAM when a valid token is present; missing Bearer stays anonymous.
 			if p, err := s.authn.AuthenticateRequest(r); err == nil {
@@ -259,7 +262,7 @@ func (s *Server) ListenAndServeContext(ctx context.Context) error {
 			secretsDir = filepath.Dir(s.cfg.MasterKeyPath)
 		}
 		var err error
-		cloudPaths, err = tlsutil.EnsureServerCert(secretsDir, time.Time{})
+		cloudPaths, err = tlsutil.EnsureServerCert(secretsDir, time.Time{}, s.cfg.StripProduct)
 		if err != nil {
 			return fmt.Errorf("cloud-hosts cert: %w", err)
 		}

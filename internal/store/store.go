@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/config"
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
 
 	_ "modernc.org/sqlite"
@@ -275,12 +276,17 @@ func (s *Store) Unseal(ciphertext []byte) ([]byte, error) {
 
 // EnsureRoot seeds the default project and binds root SA as roles/owner on the project.
 // Root access tokens are held in process memory from config (not persisted).
-func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
+// Optional displayName overrides the root SA label; empty uses "Noctaxris-GCP root".
+func (s *Store) EnsureRoot(projectID, rootSAEmail string, displayName ...string) error {
 	if projectID == "" {
 		return fmt.Errorf("project id required")
 	}
 	if rootSAEmail == "" {
 		return fmt.Errorf("root service account required")
+	}
+	rootDisplay := config.RootSADisplayNameProduct
+	if len(displayName) > 0 && strings.TrimSpace(displayName[0]) != "" {
+		rootDisplay = displayName[0]
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.Begin()
@@ -299,8 +305,8 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string) error {
 	uniqueID := fmt.Sprintf("1%019d", time.Now().UnixNano()%1_000_000_000_000_000_000)
 	if _, err := tx.Exec(
 		`INSERT OR IGNORE INTO service_accounts (project_id, email, unique_id, display_name, disabled, created_at)
-		 VALUES (?, ?, ?, 'Noctaxris-GCP root', 0, ?)`,
-		projectID, rootSAEmail, uniqueID, now,
+		 VALUES (?, ?, ?, ?, 0, ?)`,
+		projectID, rootSAEmail, uniqueID, rootDisplay, now,
 	); err != nil {
 		return fmt.Errorf("seed root service account: %w", err)
 	}

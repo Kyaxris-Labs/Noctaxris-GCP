@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/config"
 )
 
 // DefaultCloudHostSANs are googleapis hostnames Prowler and similar tools call on 443.
@@ -67,7 +69,8 @@ func DefaultPaths(secretsDir string) Paths {
 }
 
 // EnsureServerCert writes a lab CA and server cert with cloud-host SANs when missing.
-func EnsureServerCert(secretsDir string, notAfter time.Time) (Paths, error) {
+// When stripProduct is true, the CA subject uses generic Lab CA / Lab labels.
+func EnsureServerCert(secretsDir string, notAfter time.Time, stripProduct bool) (Paths, error) {
 	if err := os.MkdirAll(secretsDir, 0o700); err != nil {
 		return Paths{}, err
 	}
@@ -78,6 +81,8 @@ func EnsureServerCert(secretsDir string, notAfter time.Time) (Paths, error) {
 	if notAfter.IsZero() {
 		notAfter = time.Now().UTC().Add(365 * 24 * time.Hour)
 	}
+	caCN := config.LabCACommonName(stripProduct)
+	caOrg := config.LabCAOrganization(stripProduct)
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return Paths{}, err
@@ -88,7 +93,7 @@ func EnsureServerCert(secretsDir string, notAfter time.Time) (Paths, error) {
 	}
 	caTpl := &x509.Certificate{
 		SerialNumber:          caSerial,
-		Subject:               pkix.Name{CommonName: "Noctaxris-GCP Lab CA", Organization: []string{"Noctaxris-GCP"}},
+		Subject:               pkix.Name{CommonName: caCN, Organization: []string{caOrg}},
 		NotBefore:             time.Now().UTC().Add(-time.Hour),
 		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,

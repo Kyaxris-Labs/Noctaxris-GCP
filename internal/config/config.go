@@ -24,8 +24,21 @@ const (
 	EnvLogsInject = "NOCTAXRIS_GCP_LOGS_INJECT"
 	// EnvCloudHosts enables the second loopback TLS listener with googleapis SANs.
 	EnvCloudHosts = "NOCTAXRIS_GCP_CLOUD_HOSTS"
+	// EnvStripProduct replaces product branding on ops health paths, root SA display name, and lab CA subject.
+	EnvStripProduct = "NOCTAXRIS_GCP_STRIP_PRODUCT"
 
 	DefaultCloudHostsListenAddr = "127.0.0.1:8443"
+
+	OpsPathPrefixProduct = "/_noctaxris-gcp"
+	OpsPathPrefixLab     = "/_lab"
+
+	RootSADisplayNameProduct = "Noctaxris-GCP root"
+	RootSADisplayNameStrip   = "Root"
+
+	LabCACommonNameProduct = "Noctaxris-GCP Lab CA"
+	LabCACommonNameStrip   = "Lab CA"
+	LabCAOrgProduct        = "Noctaxris-GCP"
+	LabCAOrgStrip          = "Lab"
 )
 
 // Shipped docker/.env.example root pair. Refused when listen is non-loopback.
@@ -58,6 +71,8 @@ type Config struct {
 	CloudHosts bool
 	// CloudHostsListen is the TLS bind when CloudHosts is on.
 	CloudHostsListen string
+	// StripProduct uses /_lab ops paths and generic CA/root labels (default off).
+	StripProduct bool
 }
 
 // LoadFromEnv reads configuration from the process environment.
@@ -78,6 +93,7 @@ func LoadFromEnv() (Config, error) {
 		LogsInject:             envTruthy(EnvLogsInject),
 		CloudHosts:             envTruthy(EnvCloudHosts),
 		CloudHostsListen:       getenv("NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN", ""),
+		StripProduct:           envTruthy(EnvStripProduct),
 	}
 	if cfg.CloudHosts && strings.TrimSpace(cfg.CloudHostsListen) == "" {
 		cfg.CloudHostsListen = DefaultCloudHostsListenAddr
@@ -142,6 +158,69 @@ func ListenIsLoopback(addr string) bool {
 // TLSEnabled reports whether both TLS PEM paths are set.
 func (c Config) TLSEnabled() bool {
 	return strings.TrimSpace(c.TLSCertFile) != "" && strings.TrimSpace(c.TLSKeyFile) != ""
+}
+
+// OpsPathPrefix returns the ops health/version path prefix.
+func (c Config) OpsPathPrefix() string {
+	return OpsPathPrefix(c.StripProduct)
+}
+
+// OpsPathPrefix returns /_noctaxris-gcp or /_lab when stripProduct is set.
+func OpsPathPrefix(stripProduct bool) string {
+	if stripProduct {
+		return OpsPathPrefixLab
+	}
+	return OpsPathPrefixProduct
+}
+
+// HealthPaths returns liveness, readiness, and version paths for the ops prefix.
+func (c Config) HealthPaths() (health, ready, version string) {
+	return HealthPaths(c.StripProduct)
+}
+
+// HealthPaths returns liveness, readiness, and version paths.
+func HealthPaths(stripProduct bool) (health, ready, version string) {
+	p := OpsPathPrefix(stripProduct)
+	return p + "/health", p + "/ready", p + "/version"
+}
+
+// RootSADisplayName returns the EnsureRoot service account display name.
+func (c Config) RootSADisplayName() string {
+	return RootSADisplayName(c.StripProduct)
+}
+
+// RootSADisplayName returns product or strip root SA display name.
+func RootSADisplayName(stripProduct bool) string {
+	if stripProduct {
+		return RootSADisplayNameStrip
+	}
+	return RootSADisplayNameProduct
+}
+
+// LabCACommonName returns the lab CA certificate common name.
+func (c Config) LabCACommonName() string {
+	return LabCACommonName(c.StripProduct)
+}
+
+// LabCACommonName returns product or strip lab CA common name.
+func LabCACommonName(stripProduct bool) string {
+	if stripProduct {
+		return LabCACommonNameStrip
+	}
+	return LabCACommonNameProduct
+}
+
+// LabCAOrganization returns the lab CA certificate organization.
+func (c Config) LabCAOrganization() string {
+	return LabCAOrganization(c.StripProduct)
+}
+
+// LabCAOrganization returns product or strip lab CA organization.
+func LabCAOrganization(stripProduct bool) string {
+	if stripProduct {
+		return LabCAOrgStrip
+	}
+	return LabCAOrgProduct
 }
 
 // ValidateListenSecurity fails closed when listen is a concrete non-loopback

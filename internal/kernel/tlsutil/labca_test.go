@@ -37,7 +37,7 @@ func TestDefaultCloudHostSANsIncludeProwlerHosts(t *testing.T) {
 
 func TestEnsureServerCertWritesSANCert(t *testing.T) {
 	dir := t.TempDir()
-	p, err := EnsureServerCert(dir, time.Now().UTC().Add(24*time.Hour))
+	p, err := EnsureServerCert(dir, time.Now().UTC().Add(24*time.Hour), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +65,53 @@ func TestEnsureServerCertWritesSANCert(t *testing.T) {
 	if _, err := LoadTLSConfig(p); err != nil {
 		t.Fatal(err)
 	}
-	p2, err := EnsureServerCert(dir, time.Time{})
+	p2, err := EnsureServerCert(dir, time.Time{}, false)
 	if err != nil || p2.ServerCert != p.ServerCert {
 		t.Fatal(err)
+	}
+
+	caRaw, err := os.ReadFile(p.CACert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caBlock, _ := pem.Decode(caRaw)
+	if caBlock == nil {
+		t.Fatal("ca pem")
+	}
+	caCert, err := x509.ParseCertificate(caBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caCert.Subject.CommonName != "Noctaxris-GCP Lab CA" {
+		t.Fatalf("CA CN = %q", caCert.Subject.CommonName)
+	}
+	if len(caCert.Subject.Organization) != 1 || caCert.Subject.Organization[0] != "Noctaxris-GCP" {
+		t.Fatalf("CA Org = %v", caCert.Subject.Organization)
+	}
+}
+
+func TestEnsureServerCertStripProduct(t *testing.T) {
+	dir := t.TempDir()
+	p, err := EnsureServerCert(dir, time.Now().UTC().Add(24*time.Hour), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caRaw, err := os.ReadFile(p.CACert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caBlock, _ := pem.Decode(caRaw)
+	if caBlock == nil {
+		t.Fatal("ca pem")
+	}
+	caCert, err := x509.ParseCertificate(caBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caCert.Subject.CommonName != "Lab CA" {
+		t.Fatalf("CA CN = %q", caCert.Subject.CommonName)
+	}
+	if len(caCert.Subject.Organization) != 1 || caCert.Subject.Organization[0] != "Lab" {
+		t.Fatalf("CA Org = %v", caCert.Subject.Organization)
 	}
 }

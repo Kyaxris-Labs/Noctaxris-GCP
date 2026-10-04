@@ -18,6 +18,7 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv(config.EnvLabForensics, "")
 	t.Setenv(config.EnvLogsInject, "")
 	t.Setenv(config.EnvCloudHosts, "")
+	t.Setenv(config.EnvStripProduct, "")
 	t.Setenv("NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN", "")
 
 	cfg, err := config.LoadFromEnv()
@@ -32,6 +33,15 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.CloudHosts {
 		t.Fatal("CloudHosts must default off")
+	}
+	if cfg.StripProduct {
+		t.Fatal("StripProduct must default off")
+	}
+	if cfg.OpsPathPrefix() != config.OpsPathPrefixProduct {
+		t.Fatalf("OpsPathPrefix = %q", cfg.OpsPathPrefix())
+	}
+	if cfg.RootSADisplayName() != config.RootSADisplayNameProduct {
+		t.Fatalf("RootSADisplayName = %q", cfg.RootSADisplayName())
 	}
 	if cfg.ListenAddr != config.DefaultListenAddr {
 		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, config.DefaultListenAddr)
@@ -220,5 +230,28 @@ func TestValidateCloudHostsListen(t *testing.T) {
 		AllowNonLoopbackListen: true,
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadFromEnvStripProduct(t *testing.T) {
+	t.Setenv("NOCTAXRIS_GCP_LISTEN", "127.0.0.1:4588")
+	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "")
+	t.Setenv(config.EnvStripProduct, "1")
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.StripProduct {
+		t.Fatal("StripProduct")
+	}
+	h, r, v := cfg.HealthPaths()
+	if h != "/_lab/health" || r != "/_lab/ready" || v != "/_lab/version" {
+		t.Fatalf("HealthPaths = %q %q %q", h, r, v)
+	}
+	if cfg.RootSADisplayName() != config.RootSADisplayNameStrip {
+		t.Fatalf("RootSADisplayName = %q", cfg.RootSADisplayName())
+	}
+	if cfg.LabCACommonName() != config.LabCACommonNameStrip || cfg.LabCAOrganization() != config.LabCAOrgStrip {
+		t.Fatalf("Lab CA labels = %q / %q", cfg.LabCACommonName(), cfg.LabCAOrganization())
 	}
 }

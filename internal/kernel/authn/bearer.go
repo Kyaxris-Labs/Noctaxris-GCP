@@ -159,9 +159,28 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// IsInactiveHealthPath reports ops probe paths that must 404 without auth
+// when they are not the active strip/product trio.
+func IsInactiveHealthPath(raw string, stripProduct bool) bool {
+	if raw == "" {
+		return false
+	}
+	path := urlpath.Clean(raw)
+	switch path {
+	case "/_noctaxris-gcp/health", "/_noctaxris-gcp/ready", "/_noctaxris-gcp/version":
+		return stripProduct
+	case "/_lab/health", "/_lab/ready", "/_lab/version":
+		return !stripProduct
+	default:
+		return false
+	}
+}
+
 // IsPublicPath reports whether path skips authentication.
+// When stripProduct is true, only /_lab/health|ready|version are public for ops probes;
+// product /_noctaxris-gcp/health|ready|version are not. Other public routes are unchanged.
 // The path is cleaned first so prefix checks cannot be bypassed with /cdn/../… or /lb/../….
-func IsPublicPath(raw string) bool {
+func IsPublicPath(raw string, stripProduct bool) bool {
 	if raw == "" {
 		return false
 	}
@@ -170,8 +189,11 @@ func IsPublicPath(raw string) bool {
 		return false
 	}
 	switch path {
-	case "/_noctaxris-gcp/health", "/_noctaxris-gcp/ready", "/_noctaxris-gcp/version",
-		"/v1/token",     // STS token exchange (subject_token authenticates)
+	case "/_noctaxris-gcp/health", "/_noctaxris-gcp/ready", "/_noctaxris-gcp/version":
+		return !stripProduct
+	case "/_lab/health", "/_lab/ready", "/_lab/version":
+		return stripProduct
+	case "/v1/token", // STS token exchange (subject_token authenticates)
 		"/token",        // OAuth2 SA key JWT grant (assertion authenticates)
 		"/oauth2/token": // accounts.google.com OAuth2 token alias (assertion authenticates)
 		return true
