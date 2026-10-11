@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.7.4
+
+Patch after 1.7.3: bump `golang.org/x/net` to v0.60.0 for govulncheck clear (HTTP/2 findings). Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.4`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Dependencies: `golang.org/x/net` v0.60.0 (GO-2026-6603 / 6610 / 6611 / 6612 / 6617).
+
 ## 1.7.3
 
 Patch after 1.7.2: Go 1.27.2 for stdlib net/http govulncheck clear. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.3`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
