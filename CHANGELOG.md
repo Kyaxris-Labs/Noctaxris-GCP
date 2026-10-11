@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.7.3
+
+Patch after 1.7.2: Go 1.27.2 for stdlib net/http govulncheck clear. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.3`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Toolchain: Go 1.27.2. Digest-pinned `golang:1.27.2-bookworm` (GO-2026-6603 through GO-2026-6613 / GO-2026-6617 and related net/http findings fixed in the patch toolchain).
+
 ## 1.7.2
 
 Patch after 1.7.1: opt-in product strip for challenge images. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.2`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).

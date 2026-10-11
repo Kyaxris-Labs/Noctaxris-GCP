@@ -1,7 +1,6 @@
 module github.com/Kyaxris-Labs/Noctaxris-GCP
 
-go 1.27.1
-
+go 1.27.2
 require (
 	cel.dev/cel-go v0.32.0
 	cloud.google.com/go/bigtable v1.57.0
