@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.7.5
+
+Patch after 1.7.4: Go 1.27.3 for stdlib crypto/x509 govulncheck clear, plus Go module refreshes. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.5`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Dependencies: `cel-go` v0.33.1, Google Cloud client libs (bigtable/datastore/firestore/iam/longrunning/pubsub/secretmanager), `go-jose/v4` v4.1.6, `golang.org/x/crypto` v0.58.0, `golang.org/x/net` v0.62.0, `google.golang.org/grpc` v1.85.0, `moby/moby` client v0.6.2 / api v1.56.1, `modernc.org/sqlite` v1.61.0, and related indirects.
+- Toolchain: Go 1.27.3. Digest-pinned `golang:1.27.3-bookworm` (GO-2026-6809).
+
 ## 1.7.4
 
 Patch after 1.7.3: bump `golang.org/x/net` to v0.60.0 for govulncheck clear (HTTP/2 findings). Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.4`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
