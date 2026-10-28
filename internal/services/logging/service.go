@@ -2,6 +2,7 @@ package logging
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -246,23 +247,25 @@ func (s *Service) listEntries(w http.ResponseWriter, r *http.Request, p authn.Pr
 	if pageSize > 1000 {
 		pageSize = 1000
 	}
-	offset := 0
-	if req.PageToken != "" {
-		n, err := strconv.Atoi(req.PageToken)
-		if err != nil || n < 0 {
-			gcperrors.InvalidArgument(w, "invalid pageToken")
-			return
-		}
-		offset = n
+	offset, afterTS, afterID, err := decodeLogPageToken(req.PageToken)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "invalid pageToken")
+		return
 	}
-	entries, err := s.queryEntries(projectID, req.Filter, pageSize, offset)
+	descending, err := parseListOrder(req.OrderBy)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "invalid orderBy")
+		return
+	}
+	entries, err := s.queryEntries(projectID, req.Filter, pageSize, offset, afterTS, afterID, descending)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
 	resp := map[string]any{"entries": entriesToMaps(entries)}
 	if len(entries) == pageSize {
-		resp["nextPageToken"] = strconv.Itoa(offset + pageSize)
+		last := entries[len(entries)-1]
+		resp["nextPageToken"] = encodeLogPageToken(last.Timestamp, last.InsertID)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -291,7 +294,12 @@ func (s *Service) tailEntries(w http.ResponseWriter, r *http.Request, p authn.Pr
 	if pageSize <= 0 {
 		pageSize = 50
 	}
-	entries, err := s.queryEntries(projectID, req.Filter, pageSize, 0)
+	descending, err := parseListOrder(req.OrderBy)
+	if err != nil {
+		gcperrors.InvalidArgument(w, "invalid orderBy")
+		return
+	}
+	entries, err := s.queryEntries(projectID, req.Filter, pageSize, 0, "", "", descending)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
@@ -581,17 +589,19 @@ func mergeUniqueSorted(a, b []string) []string {
 	return out
 }
 
-func (s *Service) queryEntries(projectID, filter string, pageSize, offset int) ([]store.LogEntry, error) {
+func (s *Service) queryEntries(projectID, filter string, pageSize, offset int, afterTS, afterID string, descending bool) ([]store.LogEntry, error) {
 	exactLog, textContains, severity, tsGTE, tsLT, resourceType := parseFilter(filter)
 	lf := store.ListLogEntriesFilter{
 		ProjectID: projectID, ExactLogName: exactLog, TextPayloadContain: textContains,
 		Severity: severity, TimestampGTE: tsGTE, TimestampLT: tsLT, ResourceType: resourceType,
-		PageSize: pageSize, Offset: offset,
+		PageSize: pageSize, Offset: offset, AfterTimestamp: afterTS, AfterInsertID: afterID,
+		Descending: descending,
 	}
 	cf := store.ListCloudAuditFilter{
 		ProjectID: projectID, ExactLogName: exactLog,
 		TimestampGTE: tsGTE, TimestampLT: tsLT, ResourceType: resourceType,
-		PageSize: pageSize, Offset: offset,
+		PageSize: pageSize, Offset: offset, AfterTimestamp: afterTS, AfterInsertID: afterID,
+		Descending: descending,
 	}
 	if wantsCloudAudit(exactLog, filter) && resourceType == "" {
 		entries, err := s.Store.ListCloudAuditAsLogEntries(cf)
@@ -611,6 +621,12 @@ func (s *Service) queryEntries(projectID, filter string, pageSize, offset int) (
 		}
 		entries = append(entries, cal...)
 		sort.SliceStable(entries, func(i, j int) bool {
+			if descending {
+				if entries[i].Timestamp == entries[j].Timestamp {
+					return entries[i].InsertID > entries[j].InsertID
+				}
+				return entries[i].Timestamp > entries[j].Timestamp
+			}
 			if entries[i].Timestamp == entries[j].Timestamp {
 				return entries[i].InsertID < entries[j].InsertID
 			}
@@ -694,6 +710,46 @@ func entriesToMaps(entries []store.LogEntry) []map[string]any {
 		out = append(out, item)
 	}
 	return out
+}
+
+const logPageTokenPrefix = "k1."
+
+func encodeLogPageToken(timestamp, insertID string) string {
+	raw := timestamp + "\x00" + insertID
+	return logPageTokenPrefix + base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func parseListOrder(orderBy string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(orderBy)) {
+	case "", "timestamp asc":
+		return false, nil
+	case "timestamp desc":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid orderBy")
+	}
+}
+
+func decodeLogPageToken(token string) (offset int, afterTS, afterID string, err error) {
+	if token == "" {
+		return 0, "", "", nil
+	}
+	if strings.HasPrefix(token, logPageTokenPrefix) {
+		b, decErr := base64.RawURLEncoding.DecodeString(token[len(logPageTokenPrefix):])
+		if decErr != nil {
+			return 0, "", "", decErr
+		}
+		ts, id, ok := strings.Cut(string(b), "\x00")
+		if !ok || ts == "" || id == "" {
+			return 0, "", "", fmt.Errorf("invalid pageToken")
+		}
+		return 0, ts, id, nil
+	}
+	n, convErr := strconv.Atoi(token)
+	if convErr != nil || n < 0 {
+		return 0, "", "", fmt.Errorf("invalid pageToken")
+	}
+	return n, "", "", nil
 }
 
 func projectFromListReq(req listReq) (string, error) {

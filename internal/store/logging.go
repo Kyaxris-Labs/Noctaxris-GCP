@@ -69,11 +69,16 @@ type ListLogEntriesFilter struct {
 	TimestampLT        string
 	ResourceType       string
 	PageSize           int
-	// Offset is a simple numeric page token (lab).
+	// Offset is a numeric page token. Ignored when AfterTimestamp is set.
 	Offset int
+	// AfterTimestamp and AfterInsertID seek the next page in timestamp, insert_id order.
+	AfterTimestamp string
+	AfterInsertID  string
+	// Descending lists newest first (timestamp desc, insert_id desc).
+	Descending bool
 }
 
-// ListLogEntries returns matching entries ordered by timestamp ascending.
+// ListLogEntries returns matching entries ordered by timestamp, then insert id.
 func (s *Store) ListLogEntries(f ListLogEntriesFilter) ([]LogEntry, error) {
 	pageSize := f.PageSize
 	if pageSize <= 0 {
@@ -113,8 +118,7 @@ func (s *Store) ListLogEntries(f ListLogEntriesFilter) ([]LogEntry, error) {
 		q += ` AND json_extract(resource_json, '$.type') = ?`
 		args = append(args, f.ResourceType)
 	}
-	q += ` ORDER BY timestamp ASC, insert_id ASC LIMIT ? OFFSET ?`
-	args = append(args, pageSize, f.Offset)
+	q, args = appendLogListPage(q, args, f.AfterTimestamp, f.AfterInsertID, pageSize, f.Offset, f.Descending)
 
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -174,6 +178,30 @@ func (s *Store) ListLogNames(projectID string) ([]string, error) {
 		out = append(out, name)
 	}
 	return out, rows.Err()
+}
+
+// appendLogListPage orders by timestamp, insert_id and limits the page.
+// A seek cursor reads the next window in that order. A numeric offset is the fallback.
+func appendLogListPage(q string, args []any, afterTimestamp, afterInsertID string, pageSize, offset int, descending bool) (string, []any) {
+	if afterTimestamp != "" {
+		if descending {
+			q += ` AND (timestamp, insert_id) < (?, ?)`
+		} else {
+			q += ` AND (timestamp, insert_id) > (?, ?)`
+		}
+		args = append(args, afterTimestamp, afterInsertID)
+	}
+	if descending {
+		q += ` ORDER BY timestamp DESC, insert_id DESC LIMIT ?`
+	} else {
+		q += ` ORDER BY timestamp ASC, insert_id ASC LIMIT ?`
+	}
+	args = append(args, pageSize)
+	if afterTimestamp == "" {
+		q += ` OFFSET ?`
+		args = append(args, offset)
+	}
+	return q, args
 }
 
 func escapeLike(s string) string {

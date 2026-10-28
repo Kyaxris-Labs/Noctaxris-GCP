@@ -11,10 +11,10 @@ import (
 
 // Cloud Audit Logs lab log id suffixes (URL-encoded slash as in GCP log names).
 const (
-	CloudAuditLogIDActivity     = "cloudaudit.googleapis.com%2Factivity"
-	CloudAuditLogIDDataAccess   = "cloudaudit.googleapis.com%2Fdata_access"
-	CloudAuditLogIDSystemEvent  = "cloudaudit.googleapis.com%2Fsystem_event"
-	CloudAuditProtoPayloadType  = "type.googleapis.com/google.cloud.audit.AuditLog"
+	CloudAuditLogIDActivity    = "cloudaudit.googleapis.com%2Factivity"
+	CloudAuditLogIDDataAccess  = "cloudaudit.googleapis.com%2Fdata_access"
+	CloudAuditLogIDSystemEvent = "cloudaudit.googleapis.com%2Fsystem_event"
+	CloudAuditProtoPayloadType = "type.googleapis.com/google.cloud.audit.AuditLog"
 )
 
 const cloudAuditSchema = `
@@ -36,6 +36,8 @@ CREATE INDEX IF NOT EXISTS idx_cloud_audit_project_ts
   ON cloud_audit_entries (project_id, timestamp, insert_id);
 CREATE INDEX IF NOT EXISTS idx_cloud_audit_log_name
   ON cloud_audit_entries (project_id, log_name);
+CREATE INDEX IF NOT EXISTS idx_cloud_audit_log_ts
+  ON cloud_audit_entries (project_id, log_name, timestamp, insert_id);
 `
 
 // CloudAuditEntry is a stored Cloud Audit Logs–shaped Logging entry (protoPayload lite).
@@ -62,6 +64,12 @@ type ListCloudAuditFilter struct {
 	ResourceType string
 	PageSize     int
 	Offset       int
+	// AfterTimestamp and AfterInsertID seek the next page. When AfterTimestamp
+	// is set, Offset is ignored.
+	AfterTimestamp string
+	AfterInsertID  string
+	// Descending lists newest first (timestamp desc, insert_id desc).
+	Descending bool
 }
 
 // migrateCloudAudit creates the Cloud Audit Logs inject table.
@@ -183,8 +191,7 @@ func (s *Store) ListCloudAuditEntries(f ListCloudAuditFilter) ([]CloudAuditEntry
 		q += ` AND json_extract(resource_json, '$.type') = ?`
 		args = append(args, f.ResourceType)
 	}
-	q += ` ORDER BY timestamp ASC, insert_id ASC LIMIT ? OFFSET ?`
-	args = append(args, pageSize, f.Offset)
+	q, args = appendLogListPage(q, args, f.AfterTimestamp, f.AfterInsertID, pageSize, f.Offset, f.Descending)
 
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -274,10 +281,10 @@ func (s *Store) WriteCloudAuditFromKernelEvent(projectID string, ev audit.Event)
 		sev = "NOTICE"
 	}
 	proto := map[string]any{
-		"@type":         CloudAuditProtoPayloadType,
-		"serviceName":   ev.ServiceName,
-		"methodName":    ev.MethodName,
-		"resourceName":  ev.ResourceName,
+		"@type":        CloudAuditProtoPayloadType,
+		"serviceName":  ev.ServiceName,
+		"methodName":   ev.MethodName,
+		"resourceName": ev.ResourceName,
 		"authenticationInfo": map[string]any{
 			"principalEmail": ev.PrincipalEmail,
 		},
@@ -334,10 +341,10 @@ func mustProtoPayloadJSON(protoPayloadJSON string) []byte {
 
 func extractProtoLite(protoPayloadJSON string) (service, method, principal, resource string) {
 	var p struct {
-		ServiceName         string `json:"serviceName"`
-		MethodName          string `json:"methodName"`
-		ResourceName        string `json:"resourceName"`
-		AuthenticationInfo  struct {
+		ServiceName        string `json:"serviceName"`
+		MethodName         string `json:"methodName"`
+		ResourceName       string `json:"resourceName"`
+		AuthenticationInfo struct {
 			PrincipalEmail string `json:"principalEmail"`
 		} `json:"authenticationInfo"`
 	}

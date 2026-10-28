@@ -242,6 +242,9 @@ CREATE TABLE IF NOT EXISTS log_entries (
   resource_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE INDEX IF NOT EXISTS idx_log_entries_log_ts
+  ON log_entries (project_id, log_name, timestamp, insert_id);
+
 CREATE TABLE IF NOT EXISTS run_services (
   name TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,

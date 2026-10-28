@@ -41,13 +41,14 @@ Missing `insertId` / `timestamp` are filled by the emulator.
 
 ### List / Tail
 
-Body fields used: `resourceNames` (or deprecated `projectIds`), `filter`, `pageSize`, `pageToken`.
+Body fields used: `resourceNames` (or deprecated `projectIds`), `filter`, `orderBy`, `pageSize`, `pageToken`.
 
 | Limit | Value |
 |-------|-------|
 | Default page size | 50 |
 | Max page size | 1000 |
-| Page token | numeric offset (lab) |
+| Default order | `timestamp asc` (oldest first). `timestamp desc` is newest first. Equal timestamps follow `insertId` in that same direction. |
+| Page token | continuation from the last timestamp and insert id in the requested order. A numeric token is still an offset. |
 
 `entries:tail` is **one-shot**: returns currently matching entries (same filter subset as list). No streaming / long-poll.
 

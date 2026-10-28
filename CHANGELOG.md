@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.7.6
+
+Patch after 1.7.5: Logging `entries:list` pages by timestamp and insert id, including `timestamp desc`. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.6`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Logging `entries:list` reads the next page with a timestamp and insert id cursor, in `timestamp asc` (default) or `timestamp desc`. `log_entries` is indexed on project, log name, timestamp, and insert id. A numeric page token is still an offset.
+
 ## 1.7.5
 
 Patch after 1.7.4: Go 1.27.3 for stdlib crypto/x509 govulncheck clear, plus Go module refreshes. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.5`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
