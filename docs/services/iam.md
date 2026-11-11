@@ -69,6 +69,10 @@ Bind TokenCreator on the target service account (or grant impersonation via
 `roles/owner` / an explicit permission) when a principal must mint or actAs.
 Admin or securityAdmin alone is not enough.
 
+`iam.serviceAccounts.actAs` is evaluated on the service account home project
+(`projects/{home}/serviceAccounts/{email}`), not the caller project. Home is
+the service account row's project. A missing account is denied.
+
 ### Custom roles
 
 Project custom roles use Google IAM Admin shapes under

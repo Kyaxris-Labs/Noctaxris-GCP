@@ -67,7 +67,7 @@ func (h *restHandler) require(w http.ResponseWriter, r *http.Request, permission
 	return true
 }
 
-func (h *restHandler) requireActAs(w http.ResponseWriter, r *http.Request, project, email string) bool {
+func (h *restHandler) requireActAs(w http.ResponseWriter, r *http.Request, _ string, email string) bool {
 	email = strings.TrimSpace(email)
 	if email == "" {
 		return true
@@ -81,7 +81,7 @@ func (h *restHandler) requireActAs(w http.ResponseWriter, r *http.Request, proje
 		gcperrors.Unauthenticated(w, "")
 		return false
 	}
-	return restlab.RequireServiceAccountActAs(w, h.svc.Authz, p, project, email)
+	return restlab.RequireServiceAccountActAs(w, h.svc.Authz, h.svc.Store, p, email)
 }
 
 func (h *restHandler) requireTopicAttach(w http.ResponseWriter, r *http.Request, topic string) bool {

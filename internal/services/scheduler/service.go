@@ -150,7 +150,7 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 			}
 		}
 		if email := store.HTTPAuthServiceAccountEmail(job.HTTPTargetJSON); email != "" {
-			if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
+			if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, email) {
 				return
 			}
 		}
@@ -273,7 +273,7 @@ func (s *Service) patchJob(w http.ResponseWriter, r *http.Request, p authn.Princ
 			}
 		}
 		if email := store.HTTPAuthServiceAccountEmail(updated.HTTPTargetJSON); email != "" {
-			if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
+			if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, email) {
 				return
 			}
 		}
@@ -373,7 +373,7 @@ func (s *Service) runJob(w http.ResponseWriter, _ *http.Request, p authn.Princip
 		return
 	}
 	if email := store.HTTPAuthServiceAccountEmail(job.HTTPTargetJSON); email != "" {
-		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
+		if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, email) {
 			return
 		}
 	}

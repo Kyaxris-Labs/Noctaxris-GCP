@@ -320,7 +320,7 @@ func (s *Service) createTask(w http.ResponseWriter, r *http.Request, p authn.Pri
 			}
 		}
 		if email := store.HTTPAuthServiceAccountEmail(httpJSON); email != "" {
-			if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
+			if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, email) {
 				return
 			}
 		}
@@ -453,7 +453,7 @@ func (s *Service) runTaskOrUnknown(w http.ResponseWriter, r *http.Request, p aut
 		return
 	}
 	if email := store.HTTPAuthServiceAccountEmail(task.HTTPRequestJSON); email != "" {
-		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email) {
+		if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, email) {
 			return
 		}
 	}

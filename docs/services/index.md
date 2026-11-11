@@ -5,7 +5,7 @@ with honest emulator limits on each page.
 
 | Service | Status | Doc | Protocol |
 |---------|--------|-----|----------|
-| Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects (including lab-lite create), org seed, folders, tag keys/bindings lite |
+| Cloud Resource Manager | lab | [resourcemanager.md](resourcemanager.md) | REST v3 projects (including lab-lite create and an optional standalone project seed), org seed, folders, tag keys/bindings lite |
 | IAM | lab | [iam.md](iam.md) | REST v1 service accounts/keys (RSA PKCS#8 CreateKey), OAuth JWT bearer `/token` + `/oauth2/token`, WIF pool/provider + STS `/v1/token` (STS unrestricted under VPC-SC), TokenCreator mint/sign (Admin/securityAdmin do not impersonate); custom `stage=DISABLED` grants nothing; optional VPC-SC on Credentials |
 | Service Usage | lab | [serviceusage.md](serviceusage.md) | REST v1 enable / disable / list / batchEnable; DISABLED gates marketed create paths (with optional VPC-SC via RequireProjectAPIGates) |
 | Organization Policy | lab | [orgpolicy.md](orgpolicy.md) | REST v2 policies get/set/list; boolean constraints theatre (SA keys + GCS public IAM) |

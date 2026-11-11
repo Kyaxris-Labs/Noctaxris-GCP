@@ -124,6 +124,7 @@ func (s *Server) registerREST() {
 	s.mux.HandleFunc("POST "+catcher, s.handleHTTPCatcherAccept)
 	s.mux.HandleFunc("POST "+catcher+"/{rest...}", s.handleHTTPCatcherAccept)
 	s.registerLabForensics()
+	s.registerStandaloneProject()
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

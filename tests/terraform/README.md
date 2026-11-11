@@ -34,14 +34,17 @@ if (-not $env:NOCTAXRIS_GCP_ENDPOINT) { Write-Host "NOCTAXRIS_GCP_ENDPOINT unset
 | `lab-kafka` | Managed Kafka cluster (`capacity_config` + `gcp_config.access_config.network_configs`; nested Redpanda when Compose engine healthy). **Parity-only** until default Compose + fail-closed nested apply+destroy earns default `STACKS` (`STACK=lab-kafka` or `TF_GCP_PARITY=1`). | `managed_kafka_custom_endpoint` (`…/v1/`) |
 | `lab-compute-instance` | VPC + subnetwork + `google_compute_instance` with boot disk (metadata theatre; zone/region/global Operations.get for provider wait). **Parity-only** (`STACK=lab-compute-instance` or `TF_GCP_PARITY=1`). | `compute_custom_endpoint` (`…/compute/v1/`) |
 | `lab-lb-armor` | Minimal Armor attach: `google_compute_security_policy` + `google_compute_backend_service` (`security_policy`; lab `setSecurityPolicy` + DONE operations). **Parity-only** (`STACK=lab-lb-armor` or `TF_GCP_PARITY=1`). | `compute_custom_endpoint` (`…/compute/v1/`); attribution label off |
+| `lab-standalone` | One GCS bucket in the seeded standalone project. **Opt-in** (`STACK=lab-standalone`). Stays out of the default `STACKS` list. Provider `access_token` is `TF_VAR_access_token` from the seed response. `project` has no default. | `storage_custom_endpoint` (`…/storage/v1/`) |
 
 Secrets stay in `lab-storage` (no separate `lab-secrets` stack). Auth uses
 `GOOGLE_OAUTH_ACCESS_TOKEN` set from the root Bearer by `run.sh`.
+`lab-standalone` sets provider `access_token` from `TF_VAR_access_token` (the seed token).
 
 Default Compose starts nested DinD; `lab-sql` / `lab-redis` expect
 fail-closed nested create when the engine is up (`NOCTAXRIS_GCP_NESTED_ENGINE_FAIL_CLOSED`).
 `lab-kafka`, `lab-compute-instance`, and `lab-lb-armor` stay out of the default
 `STACKS` list (`lab-kafka` until nested fail-closed earn; the other two stay opt-in parity).
+`lab-standalone` stays out of that list too.
 
 ```bash
 # one stack
@@ -56,6 +59,16 @@ STACK=lab-lb-armor bash tests/terraform/run.sh
 STACK=lab-kafka bash tests/terraform/run.sh
 TF_GCP_PARITY=1 bash tests/run-all.sh
 ```
+
+## Standalone project
+
+`lab-standalone` stays out of the default `STACKS` list and out of `TF_GCP_PARITY`. Set `NOCTAXRIS_GCP_LAB_STANDALONE=1` on the API, seed `POST /_noctaxris-gcp/lab/projects:seedStandalone` with the root bearer, then export the returned `accessToken` as `TF_VAR_access_token` and `projectId` as `NOCTAXRIS_GCP_PROJECT` before:
+
+```bash
+STACK=lab-standalone bash tests/terraform/run.sh
+```
+
+The bucket is created in that project. Provider `access_token` is the seed token. `run.sh` still puts the process root token in `GOOGLE_OAUTH_ACCESS_TOKEN` for the other stacks. Steps: [stacks/lab-standalone/README.md](stacks/lab-standalone/README.md).
 
 ## Honest skips
 

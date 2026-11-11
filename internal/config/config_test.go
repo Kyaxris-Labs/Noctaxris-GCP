@@ -16,6 +16,7 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", "")
 	t.Setenv(config.EnvAllowNonLoopbackListen, "")
 	t.Setenv(config.EnvLabForensics, "")
+	t.Setenv(config.EnvLabStandalone, "")
 	t.Setenv(config.EnvLogsInject, "")
 	t.Setenv(config.EnvCloudHosts, "")
 	t.Setenv(config.EnvStripProduct, "")
@@ -27,6 +28,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.LabForensics {
 		t.Fatal("LabForensics must default off")
+	}
+	if cfg.LabStandalone {
+		t.Fatal("LabStandalone must default off")
 	}
 	if cfg.LogsInject {
 		t.Fatal("LogsInject must default off")
@@ -160,6 +164,7 @@ func TestLoadFromEnvLabForensicsAndLogsInject(t *testing.T) {
 	t.Setenv("NOCTAXRIS_GCP_LISTEN", "127.0.0.1:4588")
 	t.Setenv("NOCTAXRIS_GCP_DOCKER_HOST", "")
 	t.Setenv(config.EnvLabForensics, "1")
+	t.Setenv(config.EnvLabStandalone, "1")
 	t.Setenv(config.EnvLogsInject, "true")
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
@@ -167,6 +172,9 @@ func TestLoadFromEnvLabForensicsAndLogsInject(t *testing.T) {
 	}
 	if !cfg.LabForensics {
 		t.Fatal("LabForensics")
+	}
+	if !cfg.LabStandalone {
+		t.Fatal("LabStandalone")
 	}
 	if !cfg.LogsInject {
 		t.Fatal("LogsInject")

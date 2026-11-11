@@ -209,6 +209,103 @@ func TestGenerateAccessTokenViewerDenied(t *testing.T) {
 	}
 }
 
+func TestGenerateAccessTokenHomeProjectNotCallerProject(t *testing.T) {
+	h := openIAM(t)
+	const projectP = "workload-p"
+	const projectQ = "workload-q"
+	const prefixProject = "proj"
+	const prefixedHome = "proj-extra"
+	const defaultProject = "noctaxris-gcp-local"
+	owner := seedServiceAccount(t, h.store, projectP, "owner-p")
+	targetQ := seedServiceAccount(t, h.store, projectQ, "target-q")
+	targetPrefix := seedServiceAccount(t, h.store, prefixedHome, "target-prefix")
+	targetHome := seedServiceAccount(t, h.store, projectP, "target-home")
+	rootSA := "root@" + defaultProject + ".iam.gserviceaccount.com"
+	if err := h.store.PutIAMPolicyJSON("projects/"+projectP, authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/owner",
+			Members: []string{"serviceAccount:" + owner},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.PutIAMPolicyJSON("projects/"+prefixProject, authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/owner",
+			Members: []string{"serviceAccount:" + owner},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.setWho(owner, false)
+	body := []byte(`{"scope":["https://www.googleapis.com/auth/cloud-platform"]}`)
+	deny := []struct {
+		name  string
+		email string
+		paths []string
+	}{
+		{
+			name:  "SA in Q",
+			email: targetQ,
+			paths: []string{
+				"/v1/projects/-/serviceAccounts/" + targetQ + ":generateAccessToken",
+				"/v1/projects/" + projectQ + "/serviceAccounts/" + targetQ + ":generateAccessToken",
+				"/v1/projects/" + projectP + "/serviceAccounts/" + targetQ + ":generateAccessToken",
+			},
+		},
+		{
+			name:  "root SA in default project",
+			email: rootSA,
+			paths: []string{
+				"/v1/projects/-/serviceAccounts/" + rootSA + ":generateAccessToken",
+				"/v1/projects/" + defaultProject + "/serviceAccounts/" + rootSA + ":generateAccessToken",
+				"/v1/projects/" + projectP + "/serviceAccounts/" + rootSA + ":generateAccessToken",
+			},
+		},
+		{
+			name:  "SA project with caller project prefix",
+			email: targetPrefix,
+			paths: []string{
+				"/v1/projects/-/serviceAccounts/" + targetPrefix + ":generateAccessToken",
+				"/v1/projects/" + prefixedHome + "/serviceAccounts/" + targetPrefix + ":generateAccessToken",
+				"/v1/projects/" + prefixProject + "/serviceAccounts/" + targetPrefix + ":generateAccessToken",
+			},
+		},
+		{
+			name:  "unknown email",
+			email: "missing@workload-q.iam.gserviceaccount.com",
+			paths: []string{
+				"/v1/projects/-/serviceAccounts/missing@workload-q.iam.gserviceaccount.com:generateAccessToken",
+				"/v1/projects/" + projectP + "/serviceAccounts/missing@workload-q.iam.gserviceaccount.com:generateAccessToken",
+			},
+		},
+	}
+	for _, tc := range deny {
+		for _, path := range tc.paths {
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			h.mux.ServeHTTP(rec, req)
+			if rec.Code == http.StatusOK {
+				t.Fatalf("%s %s minted a token: %s", tc.name, path, rec.Body.String())
+			}
+			if rec.Code != http.StatusForbidden && rec.Code != http.StatusNotFound {
+				t.Fatalf("%s %s status=%d body=%s", tc.name, path, rec.Code, rec.Body.String())
+			}
+		}
+	}
+
+	allow := httptest.NewRequest(http.MethodPost,
+		"/v1/projects/"+projectP+"/serviceAccounts/"+targetHome+":generateAccessToken", bytes.NewReader(body))
+	allow.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, allow)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner generateAccessToken on home SA status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCustomRolesCRUD(t *testing.T) {
 	h := openIAM(t)
 	const project = "noctaxris-gcp-local"

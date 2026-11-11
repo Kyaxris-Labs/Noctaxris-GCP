@@ -176,7 +176,7 @@ func (s *Service) createService(w http.ResponseWriter, r *http.Request, p authn.
 	if template == nil {
 		template = map[string]any{}
 	}
-	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, runTemplateServiceAccountEmail(template, project)) {
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, runTemplateServiceAccountEmail(template, project)) {
 		return
 	}
 	tplRaw, _ := json.Marshal(template)
@@ -294,7 +294,7 @@ func (s *Service) patchService(w http.ResponseWriter, r *http.Request, p authn.P
 	tplRaw := ""
 	labBody := ""
 	if template != nil {
-		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, runTemplateServiceAccountEmail(template, project)) {
+		if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, runTemplateServiceAccountEmail(template, project)) {
 			return
 		}
 		b, _ := json.Marshal(template)
@@ -505,7 +505,7 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 	if template == nil {
 		template = map[string]any{}
 	}
-	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, runTemplateServiceAccountEmail(template, project)) {
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, runTemplateServiceAccountEmail(template, project)) {
 		return
 	}
 	tplRaw, _ := json.Marshal(template)

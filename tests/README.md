@@ -1,6 +1,6 @@
 # Integration tests
 
-Real SDK and Terraform suites against a running Noctaxris-GCP API. Soft-skip when the endpoint or root token is unset.
+Real SDK and Terraform suites against a running Noctaxris-GCP API. SDK tests skip when the endpoint is unset or the API is down. Standalone project SDK tests also skip when the seed route returns 404. Terraform skips when the endpoint is unset, the ready probe fails, terraform is missing, or the root token is unset.
 
 Endpoint default: `http://127.0.0.1:4588`. Use the same root Bearer as `docker/.env`.
 
@@ -49,6 +49,8 @@ Optional overrides: `NOCTAXRIS_GCP_ENDPOINT`, `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`,
 | Case | Behavior |
 |------|----------|
 | `NOCTAXRIS_GCP_ENDPOINT` unset inside an SDK/TF test | Soft-skip that test |
+| API down or `/_noctaxris-gcp/ready` not HTTP 200 inside an SDK test | Soft-skip that test |
+| Standalone seed route returns HTTP 404 | Soft-skip that SDK test (`NOCTAXRIS_GCP_LAB_STANDALONE` off) |
 | API not ready when running `tests/run-all.sh` | Hard-fail (exit 1) |
 | Root token unset when running `tests/run-all.sh` | Hard-fail (exit 1) |
 | Nested Cloud Run / DinD rows without healthy engine | Soft-skip inside SDK tests |
@@ -89,6 +91,10 @@ STACK=lab-kafka bash tests/terraform/run.sh
 
 # LB Armor attach stack (parity; not in default STACKS)
 STACK=lab-lb-armor bash tests/terraform/run.sh
+
+# Standalone project (opt-in; not in default STACKS). Seed first.
+# See terraform/stacks/lab-standalone/README.md.
+STACK=lab-standalone bash tests/terraform/run.sh
 
 # Opt-in parity Terraform loop (lab-compute-instance, lab-lb-armor, lab-kafka)
 TF_GCP_PARITY=1 bash tests/run-all.sh

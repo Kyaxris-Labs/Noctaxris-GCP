@@ -388,7 +388,7 @@ func (s *Service) retryBuild(w http.ResponseWriter, r *http.Request, p authn.Pri
 		Name: newName, ProjectID: project, Location: retryLoc, BuildID: buildID,
 		Status: "WORKING", StatusDetail: "retry of " + src.BuildID, BuildJSON: src.BuildJSON,
 		CreatorEmail: p.Email, SeedVisible: seedVisibleForPrincipal(p, cfg),
-		LogURL:       fmt.Sprintf("http://127.0.0.1:4588/v1/%s/logs", newName),
+		LogURL: fmt.Sprintf("http://127.0.0.1:4588/v1/%s/logs", newName),
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -654,7 +654,7 @@ func (s *Service) runTrigger(w http.ResponseWriter, r *http.Request, p authn.Pri
 		Name: name, ProjectID: project, Location: "global", BuildID: buildID,
 		Status: "WORKING", StatusDetail: "trigger run (no webhook)", BuildJSON: string(raw),
 		CreatorEmail: p.Email, SeedVisible: seedVisibleForPrincipal(p, buildCfg),
-		LogURL:       fmt.Sprintf("http://127.0.0.1:4588/v1/%s/logs", name),
+		LogURL: fmt.Sprintf("http://127.0.0.1:4588/v1/%s/logs", name),
 	})
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
@@ -692,7 +692,7 @@ func extractTriggerFilename(triggerJSON string) (string, bool) {
 // for the trigger serviceAccount (default Compute Engine SA when omitted).
 func (s *Service) requireTriggerServiceAccountActAs(w http.ResponseWriter, p authn.Principal, project string, cfg map[string]any) bool {
 	email := triggerServiceAccountEmail(cfg, project)
-	return restlab.RequireServiceAccountActAs(w, s.Authz, p, project, email)
+	return restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, email)
 }
 
 func triggerServiceAccountEmail(cfg map[string]any, project string) string {
@@ -836,21 +836,7 @@ func (s *Service) requireBuildServiceAccountActAs(w http.ResponseWriter, p authn
 	if email == "" {
 		email = labtoken.DefaultComputeSAEmail(project)
 	}
-	if email == "" {
-		gcperrors.PermissionDenied(w, "")
-		return false
-	}
-	saRes := fmt.Sprintf("projects/%s/serviceAccounts/%s", project, email)
-	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, "iam.serviceAccounts.actAs", saRes, "projects/"+project)
-	if err != nil {
-		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
-		return false
-	}
-	if !ok {
-		gcperrors.PermissionDenied(w, "")
-		return false
-	}
-	return true
+	return restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, email)
 }
 
 func workerPoolNameFromBuild(body map[string]any) string {

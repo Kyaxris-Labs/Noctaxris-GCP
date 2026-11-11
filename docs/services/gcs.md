@@ -111,8 +111,12 @@ this lab verifies on the JSON/upload paths returned by `:generateSignedUrl`.
 ### XML HMAC (lab)
 
 JSON HMAC key CRUD (`kind=storage#hmacKey` / `storage#hmacKeysMetadata`) returns
-`accessId` and `secret` once on create. XML List/Get/Put under `/storage/xml/`
-require header `Authorization: GOOG4-HMAC-SHA256 Credential=...` plus `x-goog-date`.
+`accessId` and `secret` once on create. Get checks `storage.hmacKeys.get` and
+delete checks `storage.hmacKeys.delete` on the URL project. When that check
+allows the call, get and delete return HTTP 404 unless the stored project
+equals the URL project. A mismatch does not delete the row. XML List/Get/Put under
+`/storage/xml/` require header
+`Authorization: GOOG4-HMAC-SHA256 Credential=...` plus `x-goog-date`.
 Signature skew uses wall clock. After HMAC verifies, XML List/Get/Put evaluate
 the same `storage.objects.list` / `get` / `create` IAM as JSON (bucket IAM
 resource or project, fail closed) as the HMAC key's service account. HMAC

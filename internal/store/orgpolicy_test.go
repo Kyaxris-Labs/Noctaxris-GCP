@@ -68,6 +68,9 @@ func TestOrgPolicySetGetListDelete(t *testing.T) {
 func TestOrgPolicyConstraintEnforcedAncestry(t *testing.T) {
 	st := openOrgPolicyStore(t)
 	const project = "noctaxris-gcp-local"
+	if _, created, err := st.CreateProject(store.Project{ID: project}); err != nil || !created {
+		t.Fatalf("create project created=%v err=%v", created, err)
+	}
 	constraint := store.ConstraintDisableServiceAccountKeyCreation
 
 	enforced, err := st.IsOrgPolicyConstraintEnforced("projects/"+project, constraint)

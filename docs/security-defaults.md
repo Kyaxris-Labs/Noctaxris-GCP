@@ -133,6 +133,14 @@ The pair shipped in `docker/.env.example` is refused when listen is non-loopback
 - The authenticated root principal bypasses IAM evaluation. This matches lab
   operator convenience in the AWS-shaped sibling product and is intentional.
   Documented here so operators do not treat root as a normal service account.
+  `NOCTAXRIS_GCP_LAB_STANDALONE` (default off) registers
+  `POST /_noctaxris-gcp/lab/projects:seedStandalone`. That path is not public.
+  Only the exact root access token may call it. A `roles/owner` token is not
+  enough. The standalone project has no CRM parent, so organization IAM does
+  not grant on it. Its service account is `roles/owner` on that project only.
+  It cannot get the default project or call `setIamPolicy` on
+  `organizations/noctaxris-gcp-org`. Projects whose parent is the lab
+  organization still inherit organization IAM.
 - Non-root evaluation uses role bindings. `roles/owner` grants all permissions.
   `roles/editor` grants mutators except `*.setIamPolicy`, service-account
   token/signing impersonation (`getAccessToken`, `actAs`, `signBlob`, …),

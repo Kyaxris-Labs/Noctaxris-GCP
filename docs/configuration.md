@@ -28,6 +28,7 @@ All settings use the `NOCTAXRIS_GCP_*` prefix.
 | `NOCTAXRIS_GCP_STS_VERIFY` | empty (off) | Set to `1` or `true` to fail-closed verify WIF STS `subject_token` as RS256 JWT when the provider has `issuerUri` (JWKS/discovery via `httpegress`). Default off keeps any non-empty token theatre so unit tests and smoke stay green. Empty `issuerUri` stays theatre even when verify is on. Built-in issuer `http://127.0.0.1:4588/_noctaxris-gcp/oidc-lab` (discovery + JWKS on the lab listener) needs no egress allowlist on loopback. |
 | `NOCTAXRIS_GCP_AUDIT_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/auditLogs:inject` (still requires Bearer root). Default off returns `PERMISSION_DENIED`. See [services/cloud-audit-logs.md](services/cloud-audit-logs.md). |
 | `NOCTAXRIS_GCP_LAB_FORENSICS` | empty (off) | Set to `1` or `true` to enable `POST /_noctaxris-gcp/lab/clock:freeze`, `:unfreeze`, `:set`, and `POST /_noctaxris-gcp/lab/bulkSeed` (Bearer root). Audit and log timestamps use the lab clock. Bearer token expiry and HMAC or signature skew stay wall clock. See [services/cloud-audit-logs.md](services/cloud-audit-logs.md). |
+| `NOCTAXRIS_GCP_LAB_STANDALONE` | empty (off) | Set to `1` or `true` to register `POST /_noctaxris-gcp/lab/projects:seedStandalone`. The path is not public. Only the exact root Bearer token may call it. The call creates a standalone project with no parent and a service account that is `roles/owner` on that project only. See [services/resourcemanager.md](services/resourcemanager.md). |
 | `NOCTAXRIS_GCP_LOGS_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/logs:inject` for non-CAL log planes (Bearer root). Default off returns `PERMISSION_DENIED`. See [services/logging.md](services/logging.md). |
 | `NOCTAXRIS_GCP_CLOUD_HOSTS` | unset / false | Second TLS listener with googleapis SANs (`cloudresourcemanager.googleapis.com`, `iam.googleapis.com`, `serviceusage.googleapis.com`, `storage.googleapis.com`, `compute.googleapis.com`, `logging.googleapis.com`, `iamcredentials.googleapis.com`, plus `oauth2.googleapis.com` / `www.googleapis.com`) |
 | `NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN` | `127.0.0.1:8443` when cloud hosts is on | Cloud-hosts TLS bind. Keep loopback unless `NOCTAXRIS_GCP_ALLOW_NONLOOPBACK_LISTEN=1` |
@@ -35,8 +36,11 @@ All settings use the `NOCTAXRIS_GCP_*` prefix.
 | `NOCTAXRIS_GCP_SCC_INJECT` | empty (off) | Set to `1` or `true` to enable lab `POST /_noctaxris-gcp/lab/securitycenter:injectFindings`. Default off returns PermissionDenied. |
 | `NOCTAXRIS_GCP_VPCSC_ENFORCE` | empty (off) | Set to `1` or `true` to deny cross-perimeter calls when a service perimeter restricts the API (dry-run `spec` included). Applies to GCS upload/copy, Pub/Sub publish, Cloud KMS decrypt, IAM Credentials mint/sign, and marketed create paths that call `RequireProjectAPIGates`. STS is not perimeter-restricted. Default off keeps Access Context Manager CRUD theatre only. See [services/access-context-manager.md](services/access-context-manager.md). |
 
-EnsureRoot also seeds lab organization `organizations/noctaxris-gcp-org` (folders
-CRUD lite attaches under that parent). See [services/resourcemanager.md](services/resourcemanager.md).
+EnsureRoot also seeds lab organization `organizations/noctaxris-gcp-org` and sets
+the default project's parent to that organization. Folders CRUD lite attaches
+under that parent. A standalone project (`NOCTAXRIS_GCP_LAB_STANDALONE`) stores
+an empty parent, so organization IAM does not apply to it. See
+[services/resourcemanager.md](services/resourcemanager.md).
 
 ## Compose
 
@@ -154,6 +158,7 @@ provider "google" {
 | `tests/terraform/stacks/lab-kafka` | Managed Kafka cluster (parity; not default `STACKS`) | `managed_kafka` (`…/v1/`) |
 | `tests/terraform/stacks/lab-compute-instance` | VPC + VM + boot disk (parity) | `compute` |
 | `tests/terraform/stacks/lab-lb-armor` | Armor policy + backend `security_policy` (parity) | `compute` |
+| `tests/terraform/stacks/lab-standalone` | One GCS bucket in the seeded standalone project. Opt-in (`STACK=lab-standalone`). Not in the default `STACKS` list or `TF_GCP_PARITY`. Provider `access_token` is the seed token. `project` is the seeded project id. | `storage` (`…/storage/v1/`) |
 
 Cloud Armor is Compute-shaped (`securityPolicies` under `compute_custom_endpoint`).
 Lab `byteMatchSet` + `:validate` preview allow/deny; backend attach is metadata via
@@ -163,8 +168,11 @@ and not Spanner `/v1/.../instances` or Memorystore location-scoped paths). Verte
 has no Terraform stack; call REST `:predict` / `:generateContent` with
 `api_endpoint_overrides/aiplatform`.
 
-Default `run.sh` stacks omit `lab-kafka`, `lab-compute-instance`, and `lab-lb-armor`
-(use `STACK=` or `TF_GCP_PARITY=1`). Not stacked: Bigtable (provider
+Default `run.sh` stacks omit `lab-kafka`, `lab-compute-instance`, `lab-lb-armor`,
+and `lab-standalone`. `lab-kafka`, `lab-compute-instance`, and `lab-lb-armor`
+use `STACK=` or `TF_GCP_PARITY=1`. `lab-standalone` is `STACK=lab-standalone`
+only. The provider `access_token` is the seed access token, and `project` is
+the seeded project id. Not stacked: Bigtable (provider
 gRPC admin client vs lab REST `/v2/` + Instance Admin gRPC lite), Filestore (lab
 `/file/v1/` path prefix vs provider BaseUrl `…/v1/`). Certificate Manager create
 returns completed Operation theatre. See `tests/terraform/README.md`.
@@ -290,9 +298,13 @@ Full service list (including Firebase Auth and Datastore emulator hosts):
 
 ### Soft-skip integration smoke
 
-SDK and Terraform under `tests/` skip when `NOCTAXRIS_GCP_ENDPOINT` is unset or
-`GET {endpoint}/_noctaxris-gcp/ready` is not HTTP 200. Authenticated cases also
-soft-skip when `NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is unset. Unit tests
+SDK tests under `tests/sdk/` skip when `NOCTAXRIS_GCP_ENDPOINT` is unset or the
+API is down (the ready probe errors or is not HTTP 200). Standalone project
+SDK tests also skip when `POST /_noctaxris-gcp/lab/projects:seedStandalone`
+returns 404. Terraform under `tests/terraform/` skips when the endpoint is
+unset, terraform is missing, the root token is unset, or the ready probe
+fails. Authenticated SDK cases also soft-skip when
+`NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN` is unset. Unit tests
 (`go test ./...`) stay green without a running container.
 
 | Variable | Role |

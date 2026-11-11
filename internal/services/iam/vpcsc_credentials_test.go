@@ -262,7 +262,7 @@ func TestVPCSCCredentialsSignBlobAndSignJwtEnforced(t *testing.T) {
 
 func TestVPCSCCredentialsHostUserSameProjectDenies(t *testing.T) {
 	f := setupVPCSCCredentials(t)
-	email := "player@example.com"
+	email := "host-user@example.com"
 	f.grantTokenCreator(t, email)
 	f.who = authn.Principal{Email: email, IsRoot: false}
 	assertVPCSCDenied(t, f.generateAccessToken(false), "host user generateAccessToken")

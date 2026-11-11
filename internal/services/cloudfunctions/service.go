@@ -157,7 +157,7 @@ func (s *Service) createFunction(w http.ResponseWriter, r *http.Request, p authn
 	if body == nil {
 		body = map[string]any{}
 	}
-	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, functionServiceAccountEmail(body, project)) {
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, functionServiceAccountEmail(body, project)) {
 		return
 	}
 	labResp := `{"ok":true}`
@@ -399,7 +399,7 @@ func (s *Service) patchFunction(w http.ResponseWriter, r *http.Request, p authn.
 		for k, v := range body {
 			existingCfg[k] = v
 		}
-		if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, functionServiceAccountEmail(existingCfg, project)) {
+		if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, functionServiceAccountEmail(existingCfg, project)) {
 			return
 		}
 		b, _ := json.Marshal(existingCfg)

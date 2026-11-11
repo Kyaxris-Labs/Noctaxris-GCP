@@ -312,12 +312,12 @@ func (h *Handler) getHMACKey(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireStorage(w, r, "storage.hmacKeys.get", "", project); !ok {
 		return
 	}
-	k, ok, err := h.Store.GetHMACKey(r.PathValue("accessId"))
+	k, found, err := h.Store.GetHMACKey(r.PathValue("accessId"))
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	if !ok {
+	if !found || !hmacKeyOwnedByProject(k, project) {
 		gcperrors.NotFound(w, "hmac key not found")
 		return
 	}
@@ -329,16 +329,31 @@ func (h *Handler) deleteHMACKey(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireStorage(w, r, "storage.hmacKeys.delete", "", project); !ok {
 		return
 	}
-	ok, err := h.Store.DeleteHMACKey(r.PathValue("accessId"))
+	accessID := r.PathValue("accessId")
+	k, found, err := h.Store.GetHMACKey(accessID)
 	if err != nil {
 		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
 		return
 	}
-	if !ok {
+	if !found || !hmacKeyOwnedByProject(k, project) {
+		gcperrors.NotFound(w, "hmac key not found")
+		return
+	}
+	deleted, err := h.Store.DeleteHMACKey(accessID)
+	if err != nil {
+		gcperrors.WriteREST(w, http.StatusInternalServerError, gcperrors.StatusInternal, err.Error())
+		return
+	}
+	if !deleted {
 		gcperrors.NotFound(w, "hmac key not found")
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// hmacKeyOwnedByProject is true when the stored project is non-empty and equals the URL project.
+func hmacKeyOwnedByProject(k *store.HMACKey, project string) bool {
+	return k != nil && k.ProjectID != "" && k.ProjectID == project
 }
 
 func hmacMeta(k *store.HMACKey, hideSecret bool) map[string]any {

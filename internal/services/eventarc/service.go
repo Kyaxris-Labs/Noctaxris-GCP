@@ -245,7 +245,7 @@ func (s *Service) createTrigger(w http.ResponseWriter, r *http.Request, p authn.
 	if actAsEmail == "" {
 		actAsEmail = labtoken.DefaultComputeSAEmail(project)
 	}
-	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, actAsEmail) {
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, actAsEmail) {
 		return
 	}
 	t, created, err := s.Store.CreateEventarcTrigger(store.EventarcTrigger{

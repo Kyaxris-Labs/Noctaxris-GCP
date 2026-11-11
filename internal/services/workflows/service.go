@@ -127,7 +127,7 @@ func (s *Service) createWorkflow(w http.ResponseWriter, r *http.Request, p authn
 	if actAs == "" {
 		actAs = labtoken.DefaultComputeSAEmail(project)
 	}
-	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, actAs) {
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, actAs) {
 		return
 	}
 	labelsJSON := "{}"
@@ -213,7 +213,7 @@ func (s *Service) patchWorkflow(w http.ResponseWriter, r *http.Request, p authn.
 			if actAs == "" {
 				actAs = labtoken.DefaultComputeSAEmail(project)
 			}
-			if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, actAs) {
+			if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, actAs) {
 				return
 			}
 			saPtr = &v

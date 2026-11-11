@@ -12,7 +12,8 @@ and search, and TagKeys / TagBindings lite.
 | List projects | `GET` | `/v3/projects` |
 | List projects (v1) | `GET` | `/v1/projects` (`projectId`, `projectNumber`, `lifecycleState`, v1 `parent`) |
 | Search projects | `POST` | `/v3/projects:search` |
-| Create project (lab-lite) | `POST` | `/v3/projects` (`projectId`, optional `displayName`, `parent`) |
+| Create project (lab-lite) | `POST` | `/v3/projects` (`projectId`, optional `displayName`, `parent` stored) |
+| Seed standalone project | `POST` | `/_noctaxris-gcp/lab/projects:seedStandalone` (only when `NOCTAXRIS_GCP_LAB_STANDALONE` is `1` or `true`) |
 | Get project | `GET` | `/v3/projects/{project}` |
 | Patch project | `PATCH` | `/v3/projects/{project}` |
 | Get IAM policy | `POST` | `/v3/projects/{project}:getIamPolicy` |
@@ -52,8 +53,12 @@ body `parent`, default `organizations/noctaxris-gcp-org`),
 `resourcemanager.folders.getIamPolicy`, `resourcemanager.folders.setIamPolicy`,
 `resourcemanager.tagKeys.create|get|list|delete`,
 `resourcemanager.tagBindings.create|get|list|delete`.
-List/search authorize against `projects/-` (or the optional `parent` query for
-list). Folder list/create authorize against the `parent` resource; move checks
+List authorizes `resourcemanager.projects.list` on the `parent` query when one
+is set, and on `projects/-` when it is omitted. The response includes a project
+only when its stored parent is that query value, or when the query is
+`projects/{that project}`. An empty-parent project is not listed under the lab
+organization. Search still authorizes against `projects/-`. Folder list/create
+authorize against the `parent` resource; move checks
 the folder and `destinationParent`. Folder search authorizes against `folders/-`.
 Tag key create/list authorize against the TagKey `parent`; tag binding create/list
 authorize against the binding `parent`. The root principal bypasses IAM
@@ -66,18 +71,50 @@ The lab seeds one organization resource name:
 
 `organizations/noctaxris-gcp-org`
 
-Seeded projects report `parent` as that organization. `getAncestry` returns the
-project then the organization (no folder unless you create one and wire it
-yourself outside this theatre). Org get/set IAM policy lite uses the shared
-policy store.
+The default project and any project created under that organization report
+`parent` as `organizations/noctaxris-gcp-org`. `POST /v3/projects` stores the
+parent it just authorized (`organizations/...` or `folders/...`). When the body
+omits `parent`, that parent is the lab organization. `getAncestry` returns the
+project, then each stored parent through the organization.
+
+A project with an empty parent omits `parent` from v1 and v3 project JSON.
+`getAncestry` returns only the project. Organization IAM does not apply, so a
+binding on `organizations/noctaxris-gcp-org` does not grant on that project.
+Org get/set IAM policy lite uses the shared policy store.
 
 Authz `Evaluate` walks CRM ancestry for project and folder resources: resource
-policy, then folder parents (when present), then the organization. A binding
-only on `organizations/noctaxris-gcp-org` therefore grants matching permissions
-on seeded projects (and on folders under that org). Seeded projects always
-parent to the lab org in this theatre; folder-under-project placement is not
-stored on the project row yet, but folder Evaluate still walks its own parent
-chain.
+policy, then the stored project parent, then folder parents, then the
+organization. A binding only on `organizations/noctaxris-gcp-org` grants
+matching permissions on projects whose parent chain reaches that organization,
+and on folders under that org. An empty project parent stops the walk.
+
+### Standalone project
+
+`NOCTAXRIS_GCP_LAB_STANDALONE` defaults off. Set it to `1` or `true` to register
+`POST /_noctaxris-gcp/lab/projects:seedStandalone`. When the flag is off the
+route is not registered. A call that already passed Bearer auth gets HTTP 404.
+It does not return `PERMISSION_DENIED`. The path is not public. A request with
+no Bearer token is unauthenticated.
+
+The handler accepts only the process root Bearer token
+(`NOCTAXRIS_GCP_ROOT_ACCESS_TOKEN`). A token whose principal holds `roles/owner`
+is not enough, including a token minted for the root service account email.
+
+The JSON body field `name` is the seed name and the new project id. A second
+call with the same name returns the same access token and does not mint
+another. The response fields are `name` (`projects/{id}`), `projectId`,
+`serviceAccountEmail`, and `accessToken`. The access token is not the root
+token. The response does not include the root token.
+
+The stored parent is empty, never a folder. The seed mints a service account
+in the new project and grants `roles/owner` on `projects/{id}` only. It enables
+the same Service Usage set as the default project. It does not copy the root
+service account binding and does not mint the root service account email.
+
+That principal can call APIs in the new project. It cannot use organization
+IAM, get the default project, or call `setIamPolicy` on
+`organizations/noctaxris-gcp-org`. Projects that still parent to the lab
+organization continue to inherit organization IAM.
 
 ### Folders
 
@@ -113,7 +150,7 @@ an LRO Operation.
 ## Emulator limits
 
 - No delete project and no CRM LRO; create returns Project JSON immediately.
-- No billing account, folder parent on the project row, or numeric `name`.
+- No billing account or numeric `name`. Project `parent` is stored (organization, folder, or empty).
 - TagValues are not a first-class CRUD API; bindings store namespaced names.
 - Nested folder height/fanout constraints are not enforced beyond parent existence.
 - Project `name` uses `projects/{projectId}` (string id), not a numeric project number.
@@ -121,7 +158,7 @@ an LRO Operation.
 
 ## Deferred depth
 
-- Project delete and CRM create LRO / billing / folder parent on the project row
+- Project delete and CRM create LRO / billing account
 - TagValues first-class CRUD (bindings store namespaced names only)
 - gRPC Projects / Folders / Organizations service registration
 
@@ -141,6 +178,14 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"parent":"projects/noctaxris-gcp-local","tagValueNamespacedName":"noctaxris-gcp-org/env/prod"}' \
   http://127.0.0.1:4588/v3/tagBindings
+```
+
+With `NOCTAXRIS_GCP_LAB_STANDALONE=1`, root can seed a standalone project:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"standalone-demo"}' \
+  http://127.0.0.1:4588/_noctaxris-gcp/lab/projects:seedStandalone
 ```
 
 Point `CLOUDSDK_AUTH_ACCESS_TOKEN` (or Application Default Credentials equivalent)

@@ -20,6 +20,8 @@ const (
 
 	// EnvLabForensics enables lab FreezeClock / UnfreezeClock / SetClock / BulkSeed.
 	EnvLabForensics = "NOCTAXRIS_GCP_LAB_FORENSICS"
+	// EnvLabStandalone registers POST /_noctaxris-gcp/lab/projects:seedStandalone.
+	EnvLabStandalone = "NOCTAXRIS_GCP_LAB_STANDALONE"
 	// EnvLogsInject enables lab POST /_noctaxris-gcp/lab/logs:inject (non-CAL log planes).
 	EnvLogsInject = "NOCTAXRIS_GCP_LOGS_INJECT"
 	// EnvCloudHosts enables the second loopback TLS listener with googleapis SANs.
@@ -65,6 +67,8 @@ type Config struct {
 	DockerTLSCertPath string
 	// LabForensics enables /_noctaxris-gcp/lab clock and BulkSeed routes (default off).
 	LabForensics bool
+	// LabStandalone registers POST /_noctaxris-gcp/lab/projects:seedStandalone (default off).
+	LabStandalone bool
 	// LogsInject enables /_noctaxris-gcp/lab/logs:inject (default off).
 	LogsInject bool
 	// CloudHosts starts a second TLS listener with googleapis DNS SANs (default off).
@@ -90,6 +94,7 @@ func LoadFromEnv() (Config, error) {
 		DockerHost:             getenv("NOCTAXRIS_GCP_DOCKER_HOST", ""),
 		DockerTLSCertPath:      getenv("NOCTAXRIS_GCP_DOCKER_CERT_PATH", ""),
 		LabForensics:           envTruthy(EnvLabForensics),
+		LabStandalone:          envTruthy(EnvLabStandalone),
 		LogsInject:             envTruthy(EnvLogsInject),
 		CloudHosts:             envTruthy(EnvCloudHosts),
 		CloudHostsListen:       getenv("NOCTAXRIS_GCP_CLOUD_HOSTS_LISTEN", ""),

@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -93,7 +92,7 @@ func (s *Service) require(ctx context.Context, permission, resource string) erro
 	return nil
 }
 
-func (s *Service) requireActAs(ctx context.Context, project, email string) error {
+func (s *Service) requireActAs(ctx context.Context, _ string, email string) error {
 	email = strings.TrimSpace(email)
 	if email == "" {
 		return nil
@@ -105,8 +104,7 @@ func (s *Service) requireActAs(ctx context.Context, project, email string) error
 	if err != nil {
 		return status.Error(codes.Unauthenticated, "unauthenticated")
 	}
-	saRes := fmt.Sprintf("projects/%s/serviceAccounts/%s", project, email)
-	ok, err := s.Authz.EvaluateAny(p.Email, p.IsRoot, "iam.serviceAccounts.actAs", saRes, "projects/"+project)
+	ok, err := restlab.CheckServiceAccountActAs(s.Authz, s.Store, p, email)
 	if err != nil {
 		return status.Errorf(codes.Internal, "%v", err)
 	}

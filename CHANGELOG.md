@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.8.0
+
+Minor after 1.7.6: opt-in standalone project. Docker Hub: `kyaxris/noctaxris-gcp` (`1.8.0`, `1.8`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- `NOCTAXRIS_GCP_LAB_STANDALONE` defaults off. `POST /_noctaxris-gcp/lab/projects:seedStandalone` is not registered when the flag is off, and it is not a public path. When it is on, only the process root access token can seed. The response is a service account in a new project, `roles/owner` on that project only, and an access token that is not the root token. The same name returns the stored token.
+- The new project parent is empty. Organization IAM does not apply. Project JSON omits `parent`. `getAncestry` returns only the project. Existing projects keep `organizations/noctaxris-gcp-org`.
+- `GET /v3/projects` and `GET /v1/projects` with a parent query return only projects whose stored parent is that value, or the project named by `projects/{id}`. An empty-parent project is not listed under the lab organization.
+- `iam.serviceAccounts.actAs` is evaluated on the service account home project.
+- HMAC key get and delete return HTTP 404 unless the stored project equals the URL project. A mismatch does not delete the row.
+- SDK tests skip when the endpoint is unset, the API is down, or the seed route returns 404. `STACK=lab-standalone` is opt-in and uses the seeded project id and that project's access token.
+
 ## 1.7.6
 
 Patch after 1.7.5: Logging `entries:list` pages by timestamp and insert id, including `timestamp desc`. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.6`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
@@ -29,7 +40,7 @@ Patch after 1.7.2: Go 1.27.2 for stdlib net/http govulncheck clear. Docker Hub: 
 
 ## 1.7.2
 
-Patch after 1.7.1: opt-in product strip for challenge images. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.2`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+Patch after 1.7.1: opt-in product strip for lab images. Docker Hub: `kyaxris/noctaxris-gcp` (`1.7.2`, `1.7`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
 
 - Ops: `NOCTAXRIS_GCP_STRIP_PRODUCT=1` (or `true`) serves readiness/liveness/version only at `/_lab/health|ready|version`, uses root SA display name `Root`, and labels the lab CA `Lab CA` / Org `Lab`. Default unset keeps `/_noctaxris-gcp/...`, root display name `Noctaxris-GCP root`, and product CA subject. Compose `healthcheck` follows the active ready path.
 

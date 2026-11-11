@@ -10,6 +10,10 @@ CREATE TABLE IF NOT EXISTS projects (
   display_name TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'ACTIVE',
   labels_json TEXT NOT NULL DEFAULT '{}',
+  parent TEXT NOT NULL DEFAULT '',
+  seed_name TEXT NOT NULL DEFAULT '',
+  seed_access_token TEXT NOT NULL DEFAULT '',
+  seed_sa_email TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 

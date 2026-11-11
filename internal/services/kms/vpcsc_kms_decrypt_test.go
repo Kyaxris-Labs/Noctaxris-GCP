@@ -182,7 +182,7 @@ func TestVPCSCKmsDecryptWIFOtherProjectDenies(t *testing.T) {
 
 func TestVPCSCKmsDecryptHostUserDenies(t *testing.T) {
 	f := setupVPCSCKms(t, []string{"projects/noctaxris-gcp-local"})
-	f.who = authn.Principal{Email: "player@example.com", IsRoot: true}
+	f.who = authn.Principal{Email: "host-user@example.com", IsRoot: true}
 	rec := f.decrypt()
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("host user decrypt status=%d body=%s", rec.Code, rec.Body.String())

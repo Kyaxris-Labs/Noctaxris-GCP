@@ -124,7 +124,7 @@ func (s *Service) createJob(w http.ResponseWriter, r *http.Request, p authn.Prin
 	if body == nil {
 		body = map[string]any{}
 	}
-	if !restlab.RequireServiceAccountActAs(w, s.Authz, p, project, dataflowServiceAccountEmail(body, project)) {
+	if !restlab.RequireServiceAccountActAs(w, s.Authz, s.Store, p, dataflowServiceAccountEmail(body, project)) {
 		return
 	}
 	jobName, _ := body["name"].(string)

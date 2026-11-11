@@ -182,6 +182,9 @@ func (s *Store) ensureDataColumns() error {
 		`ALTER TABLE gce_instances ADD COLUMN numeric_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE lb_backend_services ADD COLUMN security_policy TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE log_sinks ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE projects ADD COLUMN seed_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN seed_access_token TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN seed_sa_email TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range alters {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -239,6 +242,31 @@ func (s *Store) ensureDataColumns() error {
 			return fmt.Errorf("migrate artifact registry v2 tables: %w", err)
 		}
 	}
+	if err := s.migrateProjectParent(); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS projects_seed_name_uidx ON projects(seed_name) WHERE seed_name <> ''`); err != nil {
+		return fmt.Errorf("migrate project seed name index: %w", err)
+	}
+	return nil
+}
+
+// migrateProjectParent adds projects.parent and backfills rows that predate the column.
+// A later startup sees a duplicate column and leaves empty parents alone.
+func (s *Store) migrateProjectParent() error {
+	_, err := s.db.Exec(`ALTER TABLE projects ADD COLUMN parent TEXT NOT NULL DEFAULT ''`)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate projects.parent: %w", err)
+	}
+	if _, err := s.db.Exec(
+		`UPDATE projects SET parent = ? WHERE parent = ''`,
+		DefaultOrganizationName,
+	); err != nil {
+		return fmt.Errorf("backfill projects.parent: %w", err)
+	}
 	return nil
 }
 
@@ -274,69 +302,10 @@ func (s *Store) Unseal(ciphertext []byte) ([]byte, error) {
 	return Unseal(s.master, ciphertext)
 }
 
-// EnsureRoot seeds the default project and binds root SA as roles/owner on the project.
-// Root access tokens are held in process memory from config (not persisted).
-// Optional displayName overrides the root SA label; empty uses "Noctaxris-GCP root".
-func (s *Store) EnsureRoot(projectID, rootSAEmail string, displayName ...string) error {
-	if projectID == "" {
-		return fmt.Errorf("project id required")
-	}
-	if rootSAEmail == "" {
-		return fmt.Errorf("root service account required")
-	}
-	rootDisplay := config.RootSADisplayNameProduct
-	if len(displayName) > 0 && strings.TrimSpace(displayName[0]) != "" {
-		rootDisplay = displayName[0]
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.Exec(
-		`INSERT OR IGNORE INTO projects (id, display_name, state, created_at) VALUES (?, ?, 'ACTIVE', ?)`,
-		projectID, projectID, now,
-	); err != nil {
-		return fmt.Errorf("seed project: %w", err)
-	}
-
-	uniqueID := fmt.Sprintf("1%019d", time.Now().UnixNano()%1_000_000_000_000_000_000)
-	if _, err := tx.Exec(
-		`INSERT OR IGNORE INTO service_accounts (project_id, email, unique_id, display_name, disabled, created_at)
-		 VALUES (?, ?, ?, ?, 0, ?)`,
-		projectID, rootSAEmail, uniqueID, rootDisplay, now,
-	); err != nil {
-		return fmt.Errorf("seed root service account: %w", err)
-	}
-
-	resource := "projects/" + projectID
-	pol := authz.Policy{
-		Bindings: []authz.Binding{{
-			Role:    "roles/owner",
-			Members: []string{"serviceAccount:" + rootSAEmail},
-		}},
-		Etag: "ACAB",
-	}
-	raw, err := json.Marshal(pol)
-	if err != nil {
-		return err
-	}
-	var existing string
-	qerr := tx.QueryRow(`SELECT policy_json FROM iam_policies WHERE resource = ?`, resource).Scan(&existing)
-	if qerr == sql.ErrNoRows {
-		if _, err := tx.Exec(
-			`INSERT INTO iam_policies (resource, etag, policy_json) VALUES (?, ?, ?)`,
-			resource, pol.Etag, string(raw),
-		); err != nil {
-			return fmt.Errorf("seed iam policy: %w", err)
-		}
-	} else if qerr != nil {
-		return qerr
-	}
-
-	wave1 := []string{
+// LabSeedServiceNames is the Service Usage set enabled on the default project
+// and on a standalone project. EnsureRoot and the standalone seed both call it.
+func LabSeedServiceNames() []string {
+	return []string{
 		"cloudresourcemanager.googleapis.com",
 		"iam.googleapis.com",
 		"serviceusage.googleapis.com",
@@ -378,13 +347,90 @@ func (s *Store) EnsureRoot(projectID, rootSAEmail string, displayName ...string)
 		"orgpolicy.googleapis.com",
 		"accesscontextmanager.googleapis.com",
 	}
-	for _, svc := range wave1 {
+}
+
+func enableLabSeedServices(tx *sql.Tx, projectID string) error {
+	for _, svc := range LabSeedServiceNames() {
 		if _, err := tx.Exec(
 			`INSERT OR IGNORE INTO service_usage (project_id, service_name, state) VALUES (?, ?, 'ENABLED')`,
 			projectID, svc,
 		); err != nil {
 			return fmt.Errorf("seed service usage %s: %w", svc, err)
 		}
+	}
+	return nil
+}
+
+// EnsureRoot seeds the default project and binds root SA as roles/owner on the project.
+// Root access tokens are held in process memory from config (not persisted).
+// Optional displayName overrides the root SA label; empty uses "Noctaxris-GCP root".
+func (s *Store) EnsureRoot(projectID, rootSAEmail string, displayName ...string) error {
+	if projectID == "" {
+		return fmt.Errorf("project id required")
+	}
+	if rootSAEmail == "" {
+		return fmt.Errorf("root service account required")
+	}
+	rootDisplay := config.RootSADisplayNameProduct
+	if len(displayName) > 0 && strings.TrimSpace(displayName[0]) != "" {
+		rootDisplay = displayName[0]
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(
+		`INSERT OR IGNORE INTO projects (id, display_name, state, created_at, parent) VALUES (?, ?, 'ACTIVE', ?, ?)`,
+		projectID, projectID, now, DefaultOrganizationName,
+	); err != nil {
+		return fmt.Errorf("seed project: %w", err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE projects SET parent = ? WHERE id = ?`,
+		DefaultOrganizationName, projectID,
+	); err != nil {
+		return fmt.Errorf("seed project parent: %w", err)
+	}
+
+	uniqueID := fmt.Sprintf("1%019d", time.Now().UnixNano()%1_000_000_000_000_000_000)
+	if _, err := tx.Exec(
+		`INSERT OR IGNORE INTO service_accounts (project_id, email, unique_id, display_name, disabled, created_at)
+		 VALUES (?, ?, ?, ?, 0, ?)`,
+		projectID, rootSAEmail, uniqueID, rootDisplay, now,
+	); err != nil {
+		return fmt.Errorf("seed root service account: %w", err)
+	}
+
+	resource := "projects/" + projectID
+	pol := authz.Policy{
+		Bindings: []authz.Binding{{
+			Role:    "roles/owner",
+			Members: []string{"serviceAccount:" + rootSAEmail},
+		}},
+		Etag: "ACAB",
+	}
+	raw, err := json.Marshal(pol)
+	if err != nil {
+		return err
+	}
+	var existing string
+	qerr := tx.QueryRow(`SELECT policy_json FROM iam_policies WHERE resource = ?`, resource).Scan(&existing)
+	if qerr == sql.ErrNoRows {
+		if _, err := tx.Exec(
+			`INSERT INTO iam_policies (resource, etag, policy_json) VALUES (?, ?, ?)`,
+			resource, pol.Etag, string(raw),
+		); err != nil {
+			return fmt.Errorf("seed iam policy: %w", err)
+		}
+	} else if qerr != nil {
+		return qerr
+	}
+
+	if err := enableLabSeedServices(tx, projectID); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {

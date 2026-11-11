@@ -3,8 +3,10 @@
 # Soft-skips when terraform is missing, NOCTAXRIS_GCP_ENDPOINT is unset,
 # or /_noctaxris-gcp/ready fails.
 #
-# Default: all stacks under stacks/. Override with STACK=lab-storage or
+# Default: the explicit STACKS list below, not every directory under stacks/.
+# Override with STACK=lab-storage or
 # STACKS="lab-storage lab-run lab-dns lab-compute lab-armor" (parity: lab-kafka, lab-compute-instance via STACK= or TF_GCP_PARITY=1).
+# lab-standalone stays out of the default list. Operators run STACK=lab-standalone.
 set -euo pipefail
 
 TF_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,6 +40,7 @@ elif [[ -n "${STACKS:-}" ]]; then
   # shellcheck disable=SC2206
   STACKS=($STACKS)
 else
+  # lab-standalone is opt-in (STACK=lab-standalone) and stays out of this list.
   STACKS=(lab-storage lab-run lab-dns lab-compute lab-armor lab-kms lab-bigquery lab-iam lab-sql lab-redis)
 fi
 

@@ -132,15 +132,15 @@ type AppEngineService struct {
 
 // AppEngineVersion is an App Engine Version metadata row (no serving).
 type AppEngineVersion struct {
-	Name              string
-	AppID             string
-	ServiceID         string
-	VersionID         string
-	Runtime           string
-	Env               string
-	EnvVariablesJSON  string
-	ServingStatus     string
-	CreatedAt         string
+	Name             string
+	AppID            string
+	ServiceID        string
+	VersionID        string
+	Runtime          string
+	Env              string
+	EnvVariablesJSON string
+	ServingStatus    string
+	CreatedAt        string
 }
 
 // EnsureLabOrganization inserts the default lab organization when missing.
@@ -213,9 +213,11 @@ func (s *Store) GetOrganization(nameOrID string) (Organization, bool, error) {
 }
 
 // CRMParent implements authz.CRMParentStore for projects and folders.
-// Seeded projects hang under DefaultOrganizationName (same theatre as getAncestry /
-// project JSON parent). Folders use the stored parent chain. Organizations have
-// no parent.
+// A project's parent is the stored projects.parent value. Empty means no parent,
+// so policy evaluation stops at the project and organization IAM does not apply.
+// organizations/noctaxris-gcp-org keeps the organization walk. Folders use the
+// stored parent chain. Organizations have no parent. A missing project is not
+// treated as the lab organization.
 func (s *Store) CRMParent(resource string) (string, bool, error) {
 	resource = strings.TrimSpace(resource)
 	switch {
@@ -243,7 +245,15 @@ func (s *Store) CRMParent(resource string) (string, bool, error) {
 		if rest == "" || strings.Contains(rest, "/") {
 			return "", false, nil
 		}
-		return DefaultOrganizationName, true, nil
+		p, ok, err := s.GetProject(rest)
+		if err != nil || !ok {
+			return "", false, err
+		}
+		parent := strings.TrimSpace(p.Parent)
+		if parent == "" {
+			return "", false, nil
+		}
+		return parent, true, nil
 	default:
 		return "", false, nil
 	}

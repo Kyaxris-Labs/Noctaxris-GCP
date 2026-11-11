@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/kernel/authz"
@@ -17,7 +18,9 @@ type Project struct {
 	DisplayName string
 	State       string
 	LabelsJSON  string
-	CreatedAt   string
+	// Parent is organizations/... or folders/.... Empty means the project has no CRM parent.
+	Parent    string
+	CreatedAt string
 }
 
 // LabProjectNumber is the CRM v1 projectNumber theatre for a project id.
@@ -72,7 +75,7 @@ func scanProject(row interface {
 	Scan(dest ...any) error
 }) (Project, error) {
 	var p Project
-	err := row.Scan(&p.ID, &p.DisplayName, &p.State, &p.LabelsJSON, &p.CreatedAt)
+	err := row.Scan(&p.ID, &p.DisplayName, &p.State, &p.LabelsJSON, &p.Parent, &p.CreatedAt)
 	if err != nil {
 		return Project{}, err
 	}
@@ -82,7 +85,7 @@ func scanProject(row interface {
 	return p, nil
 }
 
-const projectSelectCols = `id, display_name, state, COALESCE(labels_json, '{}'), created_at`
+const projectSelectCols = `id, display_name, state, COALESCE(labels_json, '{}'), COALESCE(parent, ''), created_at`
 
 // GetProject loads a project by id.
 func (s *Store) GetProject(id string) (Project, bool, error) {
@@ -164,12 +167,18 @@ func (s *Store) CreateProject(p Project) (Project, bool, error) {
 	if p.LabelsJSON == "" {
 		p.LabelsJSON = "{}"
 	}
+	// An omitted parent is the lab organization. The standalone seed stores an
+	// empty parent through its own insert and does not call CreateProject.
+	p.Parent = strings.TrimSpace(p.Parent)
+	if p.Parent == "" {
+		p.Parent = DefaultOrganizationName
+	}
 	if p.CreatedAt == "" {
 		p.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO projects (id, display_name, state, labels_json, created_at) VALUES (?, ?, ?, ?, ?)`,
-		p.ID, p.DisplayName, p.State, p.LabelsJSON, p.CreatedAt,
+		`INSERT OR IGNORE INTO projects (id, display_name, state, labels_json, parent, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		p.ID, p.DisplayName, p.State, p.LabelsJSON, p.Parent, p.CreatedAt,
 	)
 	if err != nil {
 		return Project{}, false, fmt.Errorf("create project: %w", err)
@@ -290,17 +299,41 @@ func (s *Store) EnsureServiceAccount(projectID, email, displayName string) error
 	if displayName == "" {
 		displayName = "lab service account"
 	}
-	uniqueID := fmt.Sprintf("1%019d", time.Now().UnixNano()%1_000_000_000_000_000_000)
-	err := s.CreateServiceAccount(ServiceAccount{
-		ProjectID:   projectID,
-		Email:       email,
-		UniqueID:    uniqueID,
-		DisplayName: displayName,
-	})
-	if err != nil && err != ErrAlreadyExists {
-		return err
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		err := s.CreateServiceAccount(ServiceAccount{
+			ProjectID:   projectID,
+			Email:       email,
+			UniqueID:    newLabServiceAccountUniqueID(),
+			DisplayName: displayName,
+		})
+		if err == nil {
+			return nil
+		}
+		if err != ErrAlreadyExists {
+			return err
+		}
+		if _, ok, getErr := s.GetServiceAccount(email); getErr != nil {
+			return getErr
+		} else if ok {
+			return nil
+		}
+		// unique_id collided with a different account. Try another id.
+		lastErr = err
 	}
-	return nil
+	return fmt.Errorf("ensure service account: %w", lastErr)
+}
+
+var labSAUniqueSeq uint64
+
+func newLabServiceAccountUniqueID() string {
+	seq := atomic.AddUint64(&labSAUniqueSeq, 1)
+	n := uint64(time.Now().UnixNano()) ^ (seq * 0x9E3779B97F4A7C15)
+	n = n % 1_000_000_000_000_000_000
+	if n == 0 {
+		n = seq
+	}
+	return fmt.Sprintf("1%019d", n)
 }
 
 func scanServiceAccount(row interface {

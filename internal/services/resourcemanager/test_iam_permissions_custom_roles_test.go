@@ -16,8 +16,8 @@ import (
 	"github.com/Kyaxris-Labs/Noctaxris-GCP/internal/store"
 )
 
-// Glass Kiln intersection shape: custom Cloud Build create on the workload
-// project, actAs-only on the builder SA resource, and workerPoolUser on a
+// Custom role intersection: Cloud Build create on the workload project,
+// actAs-only on the builder service account resource, and workerPoolUser on a
 // separate pool-host project. testIamPermissions must report each grant only
 // on the resource where it is bound.
 func TestTestIamPermissionsCustomRoleIntersection(t *testing.T) {
