@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.8.1
+
+Patch after 1.8.0: Go 1.27.4 for stdlib net/http govulncheck clear. Docker Hub: `kyaxris/noctaxris-gcp` (`1.8.1`, `1.8`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
+
+- Toolchain: Go 1.27.4. Digest-pinned `golang:1.27.4-bookworm` (GO-2026-6859).
+
 ## 1.8.0
 
 Minor after 1.7.6: opt-in standalone project. Docker Hub: `kyaxris/noctaxris-gcp` (`1.8.0`, `1.8`, `1`, `latest`). Cut steps: [docs/release.md](docs/release.md).
